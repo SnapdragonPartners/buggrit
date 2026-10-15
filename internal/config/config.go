@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -72,10 +73,10 @@ type Config struct {
 // Models holds the default model and optional per-stage overrides. A stage
 // override changes only the fields it sets; see Stage.
 type Models struct {
-	Find    *Model `json:"find,omitempty"`
-	Verify  *Model `json:"verify,omitempty"`
-	Dedupe  *Model `json:"dedupe,omitempty"`
-	Default Model  `json:"default"`
+	Find    *ModelOverride `json:"find,omitempty"`
+	Verify  *ModelOverride `json:"verify,omitempty"`
+	Dedupe  *ModelOverride `json:"dedupe,omitempty"`
+	Default Model          `json:"default"`
 }
 
 // Model selects one model on one provider.
@@ -93,16 +94,30 @@ type Model struct {
 	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
+// ModelOverride is a per-stage change to the default model. Every field is a
+// pointer so that a field present in the file, even as "" or 0, replaces the
+// default, and only a field absent from the file is inherited.
+type ModelOverride struct {
+	Provider        *string   `json:"provider,omitempty"`
+	BaseURL         *string   `json:"base_url,omitempty"`
+	Model           *string   `json:"model,omitempty"`
+	APIKeyEnv       *string   `json:"api_key_env,omitempty"`
+	RequestTimeout  *Duration `json:"request_timeout,omitempty"`
+	MaxOutputTokens *int      `json:"max_output_tokens,omitempty"`
+}
+
 // Limits bound a single pass (§9).
 type Limits struct {
 	Profile string `json:"profile"`
 	// PassDeadline must sit below the job's timeout-minutes so a pass always
 	// has time to publish partial results.
-	PassDeadline      Duration `json:"pass_deadline"`
-	MaxConcurrency    int      `json:"max_concurrency"`
-	MaxToolIterations int      `json:"max_tool_iterations"`
-	// MaxTokensPerPass of 0 means no ceiling.
-	MaxTokensPerPass int `json:"max_tokens_per_pass"`
+	PassDeadline   Duration `json:"pass_deadline"`
+	MaxConcurrency int      `json:"max_concurrency"`
+	// MaxToolIterations and MaxTokensPerPass of 0 mean no ceiling. Whatever
+	// calls toolloop must translate 0 itself: toolloop treats MaxIterations
+	// <= 0 as its own small default, not as unlimited.
+	MaxToolIterations int `json:"max_tool_iterations"`
+	MaxTokensPerPass  int `json:"max_tokens_per_pass"`
 }
 
 // Review controls what is reviewed and which findings are reported.
@@ -179,7 +194,8 @@ func Parse(data []byte) (*Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", Path, err)
 	}
-	if dec.More() {
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("decode %s: unexpected data after the config object", Path)
 	}
 	if err := cfg.Validate(); err != nil {
@@ -196,28 +212,28 @@ func (c *Config) Stage(s Stage) Model {
 	if o == nil {
 		return m
 	}
-	if o.Provider != "" {
-		m.Provider = o.Provider
+	if o.Provider != nil {
+		m.Provider = *o.Provider
 	}
-	if o.BaseURL != "" {
-		m.BaseURL = o.BaseURL
+	if o.BaseURL != nil {
+		m.BaseURL = *o.BaseURL
 	}
-	if o.Model != "" {
-		m.Model = o.Model
+	if o.Model != nil {
+		m.Model = *o.Model
 	}
-	if o.APIKeyEnv != "" {
-		m.APIKeyEnv = o.APIKeyEnv
+	if o.APIKeyEnv != nil {
+		m.APIKeyEnv = *o.APIKeyEnv
 	}
-	if o.RequestTimeout != 0 {
-		m.RequestTimeout = o.RequestTimeout
+	if o.RequestTimeout != nil {
+		m.RequestTimeout = *o.RequestTimeout
 	}
-	if o.MaxOutputTokens != 0 {
-		m.MaxOutputTokens = o.MaxOutputTokens
+	if o.MaxOutputTokens != nil {
+		m.MaxOutputTokens = *o.MaxOutputTokens
 	}
 	return m
 }
 
-func (c *Config) override(s Stage) *Model {
+func (c *Config) override(s Stage) *ModelOverride {
 	switch s {
 	case StageFind:
 		return c.Models.Find
@@ -331,8 +347,8 @@ func (l *Limits) validate() []error {
 	if l.MaxConcurrency < 1 {
 		errs = append(errs, errors.New("limits.max_concurrency must be >= 1"))
 	}
-	if l.MaxToolIterations < 1 {
-		errs = append(errs, errors.New("limits.max_tool_iterations must be >= 1"))
+	if l.MaxToolIterations < 0 {
+		errs = append(errs, errors.New("limits.max_tool_iterations must be >= 0 (0 means no ceiling)"))
 	}
 	if l.MaxTokensPerPass < 0 {
 		errs = append(errs, errors.New("limits.max_tokens_per_pass must be >= 0 (0 means no ceiling)"))

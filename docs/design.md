@@ -263,7 +263,9 @@ error. Settings left out take defaults from code, and `version` is required.
 
 Notes:
 - `models.default` is used for every stage. A per-stage entry (`find`,
-  `verify`, `dedupe`) overrides only the fields it sets.
+  `verify`, `dedupe`) overrides only the fields it sets. A field that is
+  present counts as set even when it's `""` or `0`; for example,
+  `"base_url": ""` switches a stage to its provider's default endpoint.
 - `provider` is a buggrit name, not a `maestro-llms` package name:
   `anthropic | openai | google | ollama | openai-compatible`.
   `openai-compatible` (LunaRoute, vLLM, other Chat Completions endpoints) is

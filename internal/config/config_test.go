@@ -94,6 +94,10 @@ func TestParseRejects(t *testing.T) {
 		{"unknown key", `{"version": 1, "modles": {}}`, `unknown field "modles"`},
 		{"unknown nested key", strings.Replace(minimal, `"model": "qwen3-coder"`, `"model": "qwen3-coder", "temp": 0`, 1), `unknown field "temp"`},
 		{"trailing data", minimal + `{}`, "unexpected data"},
+		{"trailing close bracket", minimal + `] not-json`, "unexpected data"},
+		{"trailing close brace", minimal + `}`, "unexpected data"},
+		{"negative iterations", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": -1},`, 1), "max_tool_iterations"},
+		{"explicit zero stage timeout", strings.Replace(minimal, `}}`, `}, "verify": {"request_timeout": "0s"}}`, 1), "models.verify: request_timeout must be positive"},
 		{"missing version", `{"models": {"default": {"provider": "ollama", "model": "m"}}}`, "version is required"},
 		{"future version", strings.Replace(minimal, `"version": 1`, `"version": 2`, 1), "version 2 is not supported"},
 		{"missing model", `{"version": 1}`, "models.default must set provider and model"},
@@ -119,6 +123,39 @@ func TestParseRejects(t *testing.T) {
 				t.Errorf("error = %v\nwant it to contain %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestStageOverrideExplicitEmptyReplacesDefault(t *testing.T) {
+	cfg, err := Parse([]byte(`{
+	  "version": 1,
+	  "models": {
+	    "default": {"provider": "openai-compatible", "base_url": "https://llm.example", "model": "qwen3-coder", "api_key_env": "KEY", "max_output_tokens": 4096},
+	    "verify": {"provider": "ollama", "model": "glm4", "base_url": "", "api_key_env": "", "max_output_tokens": 0}
+	  }
+	}`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	v := cfg.Stage(StageVerify)
+	if v.BaseURL != "" || v.APIKeyEnv != "" || v.MaxOutputTokens != 0 {
+		t.Errorf("explicit empty override fields were not applied: %+v", v)
+	}
+	if v.Provider != ProviderOllama || v.Model != "glm4" {
+		t.Errorf("override fields = %+v", v)
+	}
+	if v.RequestTimeout != cfg.Models.Default.RequestTimeout {
+		t.Errorf("absent request_timeout was not inherited: %v", v.RequestTimeout.Std())
+	}
+}
+
+func TestZeroIterationsMeansNoCeiling(t *testing.T) {
+	cfg, err := Parse([]byte(strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": 0},`, 1)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Limits.MaxToolIterations != 0 {
+		t.Errorf("max_tool_iterations = %d, want 0", cfg.Limits.MaxToolIterations)
 	}
 }
 
