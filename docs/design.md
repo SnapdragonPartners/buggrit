@@ -157,7 +157,11 @@ jobs:
           app-id: ${{ vars.BUGGRIT_APP_ID }}
           private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
       - id: head   # the PR's head now, not the event's (§2)
-        run: echo "sha=$(gh pr view "$PR" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          sha=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
@@ -392,16 +396,21 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   - every `open` and `needs_human` finding, including resolved threads,
     because resolving isn't proof;
   - every finding with a reply buggrit hasn't handled yet;
-  - every `fixed` finding whose file changed since the fix commit;
+  - every `fixed` finding where **any of its evidence files** changed since
+    the fix commit. A `fixed` verdict from the verifier must list the files
+    it relied on (`evidence_files`: the anchor file plus wherever the fix
+    actually lives, such as a caller that now initializes the state). The
+    list is stored in the transition marker. So undoing a fix in another
+    file still triggers re-verification;
   - every transition whose recorded `sha` isn't in the current head's history
     (force-push).
 
   **Why a late transition from an older head is safe.** Suppose run A passes
   the publish fence, then head B is pushed before A's mutation lands. Each
   transition type is still handled:
-  - **fixed:** recorded with fix SHA A. If B touches the file, the finding is
-    re-verified at B ("fixed findings whose file changed"). If B doesn't
-    touch it, the verdict for A still holds at B.
+  - **fixed:** recorded with fix SHA A and its evidence files. If B touches
+    any of them, the finding is re-verified at B. If B touches none, the
+    files the verdict relied on are unchanged, so it still holds at B.
   - **dismissed:** a judgment about a reply or a human decision, not about
     the code. Landing late doesn't make it wrong.
   - **reopen, rebuttal reply, needs_human:** never suppress anything, and
@@ -427,6 +436,9 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   "resolve".
 - **Outdated anchors** (the code moved) are handled by giving the verifier the
   original snippet plus the current file, not by trusting line numbers.
+- **Verdicts carry evidence.** `submit_verdicts` returns, for each finding:
+  the state, a short reason, and for `fixed`, a required non-empty
+  `evidence_files` list that includes the anchor file.
 
 ### Review baseline
 Two SHAs are recorded in the summary marker and in each pass's review body:
