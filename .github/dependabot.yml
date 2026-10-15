@@ -1,0 +1,39 @@
+version: 2
+
+# Updates are grouped so a week's bumps cost one CI run and one review
+# per ecosystem instead of one per package. Security updates group
+# separately from version updates, so a fix for a live advisory never
+# waits on the weekly batch. Major version bumps stay ungrouped: each is
+# a potential API break and deserves its own PR. If one bump in a group
+# breaks the build, `@dependabot ignore <dependency>` on the group PR
+# drops it and Dependabot re-opens the group without it.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
+    groups:
+      gomod-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      gomod-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
