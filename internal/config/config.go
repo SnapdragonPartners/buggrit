@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -316,14 +317,19 @@ func validateModel(field string, m *Model) []error {
 			add("provider %s needs base_url", m.Provider)
 		}
 	case ProviderOllama:
+		// maestro-llms' Ollama provider has no authentication option, so a
+		// configured key could only be silently ignored.
+		if m.APIKeyEnv != "" {
+			add("provider %s does not support api_key_env (maestro-llms' Ollama provider has no authentication)", m.Provider)
+		}
 	default:
 		add("unknown provider %q (want anthropic, openai, google, ollama or openai-compatible)", m.Provider)
 	}
 	if m.APIKeyEnv != "" && !envNameRE.MatchString(m.APIKeyEnv) {
 		add("api_key_env %q is not a valid environment variable name", m.APIKeyEnv)
 	}
-	if m.BaseURL != "" && !strings.HasPrefix(m.BaseURL, "http://") && !strings.HasPrefix(m.BaseURL, "https://") {
-		add("base_url %q must start with http:// or https://", m.BaseURL)
+	if m.BaseURL != "" && !validEndpoint(m.BaseURL) {
+		add("base_url %q must be an http:// or https:// URL with a host", m.BaseURL)
 	}
 	if m.RequestTimeout <= 0 {
 		add("request_timeout must be positive")
@@ -332,6 +338,15 @@ func validateModel(field string, m *Model) []error {
 		add("max_output_tokens must be >= 0")
 	}
 	return errs
+}
+
+// validEndpoint reports whether u is an absolute HTTP(S) URL with a host.
+func validEndpoint(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	return (p.Scheme == "http" || p.Scheme == "https") && p.Hostname() != ""
 }
 
 func (l *Limits) validate() []error {

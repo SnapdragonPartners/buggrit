@@ -146,3 +146,50 @@ func TestStagesShareTheConcurrencyLimit(t *testing.T) {
 		t.Errorf("peak concurrent calls = %d, want 1", p)
 	}
 }
+
+func TestMaxOutputTokensCapsRequests(t *testing.T) {
+	cfg := parse(t, `{"version": 1, "models": {
+	  "default": {"provider": "ollama", "model": "m", "max_output_tokens": 4096},
+	  "verify": {"max_output_tokens": 1024},
+	  "dedupe": {"max_output_tokens": 0}}}`)
+
+	var seen []int
+	fake := func(m *config.Model, _ string) (llms.ChatClient, error) {
+		return &testllm.FakeChatClient{
+			ModelRef: llms.ModelRef{Provider: m.Provider, Name: m.Model},
+			Func: func(_ context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+				seen = append(seen, req.MaxTokens)
+				return testllm.TextResponse("ok"), nil
+			},
+		}, nil
+	}
+	clients, err := New(cfg, func(o *options) { o.newBase = fake })
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		client llms.ChatClient
+		asked  int
+		want   int
+	}{
+		{"default cap fills an unset limit", clients.Find, 0, 4096},
+		{"default cap lowers a larger limit", clients.Find, 100000, 4096},
+		{"a smaller caller limit is kept", clients.Find, 512, 512},
+		{"stage cap overrides the default", clients.Verify, 0, 1024},
+		{"explicit 0 means no cap", clients.Dedupe, 100000, 100000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen = nil
+			req := llms.ChatRequest{Messages: []llms.Message{llms.UserText("hi")}, MaxTokens: tt.asked}
+			if _, err := tt.client.Complete(context.Background(), req); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if len(seen) != 1 || seen[0] != tt.want {
+				t.Errorf("provider saw MaxTokens %v, want [%d]", seen, tt.want)
+			}
+		})
+	}
+}

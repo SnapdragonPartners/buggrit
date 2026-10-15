@@ -279,9 +279,12 @@ Notes:
   `min_confidence` filter is what controls noise.
 - `request_timeout` bounds one model-call attempt; retries each get their
   own. `max_output_tokens` of `0` means the provider's default.
-- `api_key_env` is required for `anthropic`, `openai` and `google`. For
-  `ollama` and `openai-compatible` it's optional, since those endpoints may
-  run without auth.
+- `api_key_env` is required for `anthropic`, `openai` and `google`, and
+  optional for `openai-compatible` (those endpoints may run without auth).
+  `ollama` rejects it: maestro-llms' Ollama provider has no authentication
+  option, and a key that would be silently ignored is worse than an error.
+- `max_output_tokens` caps every request a stage makes. A caller's smaller
+  limit is kept.
 - `gate.fail_on`: `none | P0 | P1` (§8).
 - `identity.bot_login` is the login buggrit's own comments must be authored
   by (§3, "Own comments"). Change it when using `GITHUB_TOKEN`

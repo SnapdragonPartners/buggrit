@@ -9,6 +9,7 @@
 package llm
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -91,12 +92,12 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		if err != nil {
 			return nil, fmt.Errorf("stage %s: %w", s, err)
 		}
-		c := middleware.RecommendedChat(base, middleware.RecommendedConfig{
+		c := capOutput(middleware.RecommendedChat(base, middleware.RecommendedConfig{
 			Limiter:  lim,
 			Observer: o.observer,
 			Retry:    middleware.DefaultRetryConfig(),
 			Timeout:  m.RequestTimeout.Std(),
-		})
+		}), m.MaxOutputTokens)
 		switch s {
 		case config.StageFind:
 			out.Find = c
@@ -107,6 +108,31 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		}
 	}
 	return out, nil
+}
+
+// capOutput applies a stage's max_output_tokens to every request. A caller's
+// smaller limit is kept; 0 means no cap.
+func capOutput(c llms.ChatClient, maxTokens int) llms.ChatClient {
+	if maxTokens <= 0 {
+		return c
+	}
+	return &cappedClient{ChatClient: c, max: maxTokens}
+}
+
+type cappedClient struct {
+	llms.ChatClient
+	max int
+}
+
+// Complete applies the cap and forwards the request. The signature is fixed
+// by llms.ChatClient.
+//
+//nolint:gocritic // hugeParam: req is passed by value to satisfy the interface
+func (c *cappedClient) Complete(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+	if req.MaxTokens <= 0 || req.MaxTokens > c.max {
+		req.MaxTokens = c.max
+	}
+	return c.ChatClient.Complete(ctx, req) //nolint:wrapcheck // a transparent decorator; callers inspect the provider error directly
 }
 
 // keyRequired reports whether a provider cannot work without an API key.
