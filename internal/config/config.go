@@ -261,9 +261,6 @@ func (c *Config) Validate() error {
 		add("version %d is not supported (this build supports %d)", c.Version, SupportedVersion)
 	}
 
-	if c.Models.Default.Provider == "" || c.Models.Default.Model == "" {
-		add("models.default must set provider and model")
-	}
 	errs = append(errs, validateModel("models.default", &c.Models.Default)...)
 	for _, s := range Stages() {
 		if c.override(s) != nil {
@@ -304,9 +301,12 @@ func validateModel(field string, m *Model) []error {
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf("%s: "+format, append([]any{field}, args...)...))
 	}
+	if m.Model == "" {
+		add("model is required")
+	}
 	switch m.Provider {
 	case "":
-		return nil // reported once, against models.default
+		add("provider is required")
 	case ProviderAnthropic, ProviderOpenAI, ProviderGoogle:
 		if m.APIKeyEnv == "" {
 			add("provider %s needs api_key_env", m.Provider)

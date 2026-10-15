@@ -39,7 +39,7 @@ func TestConfigValidateReportsProblems(t *testing.T) {
 	if code := run([]string{"config", "validate", path}, &out, &errOut); code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
-	if !strings.Contains(errOut.String(), "models.default must set provider and model") {
+	if !strings.Contains(errOut.String(), "models.default: model is required") {
 		t.Errorf("stderr = %q", errOut.String())
 	}
 }
