@@ -70,11 +70,17 @@ GitHub event
                           repairs, summary
 ```
 
-**Mode comes from state, not from the event.** GitHub keeps only one pending
-run per concurrency group, so a comment-triggered run can replace a pending
-push-triggered one. Any run that finds HEAD without a completed pass
-therefore does the full pass. A reconcile-only run (step 2 plus publish, no
-finder) happens only when HEAD has already been fully reviewed.
+**Every run reviews the PR as it is now, whatever triggered it.** GitHub
+keeps only one pending run per concurrency group, so any run can replace a
+pending one, including a comment-triggered run replacing a push-triggered
+one. Every run therefore:
+- looks up the PR's **current** head from the API before checking out, never
+  the head in the event payload;
+- picks its mode from state: a full pass if that head has no completed pass,
+  otherwise reconcile only (step 2 plus publish, no finder).
+
+This keeps an invariant: the last run to start in a PR's group saw the
+latest head, so replacing a pending run never loses work.
 
 **Publishing is fenced to the reviewed head.** All model work happens in
 steps 2–4. Before publishing, and again before each state-changing mutation
@@ -122,7 +128,13 @@ on:
   workflow_dispatch:
     inputs: { pr: { required: true } }
 concurrency:
-  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  # Events caused by buggrit's own comments get a throwaway group, so they
+  # never replace a pending run (§3 "Bot events").
+  group: >-
+    ${{ (github.event.comment.user.login == 'buggrit[bot]' ||
+         github.event.review.user.login == 'buggrit[bot]')
+        && format('buggrit-ignored-{0}', github.run_id)
+        || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   # pushes cancel an in-flight pass; comment-triggered runs wait their turn
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
@@ -144,9 +156,14 @@ jobs:
         with:
           app-id: ${{ vars.BUGGRIT_APP_ID }}
           private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+      - id: head   # the PR's head now, not the event's (§2)
+        run: echo "sha=$(gh pr view "$PR" --json headRefOid -q .headRefOid)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}   # the PR head, not the merge commit
+          ref: ${{ steps.head.outputs.sha }}   # the PR head, not the merge commit
           fetch-depth: 0
           persist-credentials: false                       # keep tokens out of .git/config
       - uses: SnapdragonPartners/buggrit@v1
@@ -167,12 +184,18 @@ passes secrets.
   authenticated public endpoint.
 - **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
   from the PR at startup. The checkout, the diff, line anchors and markers all
-  refer to that commit. GitHub's synthetic merge commit is never used. At
-  startup buggrit checks that the checkout's `HEAD` matches the PR's current
-  head SHA, and exits without doing anything if not. For example, a
-  comment-triggered run whose payload predates a newer push; that push's own
-  run takes over. For `workflow_dispatch` the reusable workflow looks up the
-  head SHA (`gh pr view`) before checking out.
+  refer to that commit. GitHub's synthetic merge commit is never used. The
+  workflow looks up the current head before checking out, for every trigger
+  (§2). At startup buggrit checks again. If the head has moved since the
+  lookup, it exits without doing anything. That's safe: the push that moved
+  it queued a newer run in the same group, and whichever run ends up pending
+  will look up the head again.
+- **Bot events:** with the App token, buggrit's own reviews and replies
+  trigger workflow events. A job-level `if` would skip them, but the run
+  would still enter the PR's concurrency group and replace a pending run
+  queued by a human reply. So the concurrency group expression sends events
+  authored by buggrit to a group of their own (§3 YAML), and the job-level
+  `if` then skips them.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit[bot]`.
@@ -371,7 +394,21 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   - every finding with a reply buggrit hasn't handled yet;
   - every `fixed` finding whose file changed since the fix commit;
   - every transition whose recorded `sha` isn't in the current head's history
-    (§2 fencing, force-push).
+    (force-push).
+
+  **Why a late transition from an older head is safe.** Suppose run A passes
+  the publish fence, then head B is pushed before A's mutation lands. Each
+  transition type is still handled:
+  - **fixed:** recorded with fix SHA A. If B touches the file, the finding is
+    re-verified at B ("fixed findings whose file changed"). If B doesn't
+    touch it, the verdict for A still holds at B.
+  - **dismissed:** a judgment about a reply or a human decision, not about
+    the code. Landing late doesn't make it wrong.
+  - **reopen, rebuttal reply, needs_human:** never suppress anything, and
+    are re-evaluated by B's run anyway.
+
+  So the fence is an optimization that avoids pointless mutations, and
+  correctness comes from the rules above.
 - **Humans settle findings.** Under the trust model in §1, any reply or
   resolution by someone other than buggrit is a human action. That includes
   Claude Code acting with a person's credentials. Replies to `open` findings
