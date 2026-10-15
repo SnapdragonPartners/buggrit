@@ -33,9 +33,13 @@ thread, and check for new feedback. That shapes the design:
 - An agent will loop for as long as the reviewer keeps producing new findings,
   so **convergence is a first-class requirement** (§7), not a tuning knob.
 
-**At first, it runs only on our own repos.** PRs come from trusted branches,
-not forks. We still treat PR content as untrusted prompt input (§10), because
-that costs us almost nothing.
+**Trust model: private, trusted repos (our own, at first).** PRs come from
+trusted branches, not forks. Anyone with permission to comment on the repo,
+whether a person or an agent using a person's credentials, counts as a
+**human** for buggrit's purposes. The real integrity check is that **agents
+never merge**: a person on the team approves and merges. So buggrit doesn't
+try to be airtight against people who already have write access, which
+matches Copilot's posture. We still take the cheap precautions in §10.
 
 ### Non-goals (for now)
 
@@ -49,21 +53,39 @@ that costs us almost nothing.
 ## 2. Architecture
 
 ```
-GitHub event (pull_request: opened | synchronize | reopened | ready_for_review)
+GitHub event
+  pull_request: opened | synchronize | reopened | ready_for_review
+  pull_request_review_comment: created     (replies, §3)
+  pull_request_review: submitted
+  workflow_dispatch                        (manual rerun)
   └─ Action job (composite action → prebuilt buggrit binary)
        └─ buggrit review
-            1. Load      PR metadata, diff, checkout, config (base branch), history
-            2. Verify    every earlier buggrit finding against HEAD
-            3. Find      new findings (scope depends on pass number, §7)
-            4. Reconcile dedupe against history, group into classes, apply thresholds
-            5. Publish   one review (N threads) + thread replies/resolutions + summary
+            0. Pick mode  full pass if HEAD has no completed pass yet; otherwise reconcile only
+            1. Load       PR metadata, diff, checkout at HEAD, config (base branch), history
+            2. Verify     open findings, findings with new replies, fixed findings whose
+                          files changed, stale transitions (§6)
+            3. Find       new findings (full pass only; scope from the completed baseline, §7)
+            4. Reconcile  dedupe against history, group into classes, apply thresholds
+            5. Publish    head-fenced: one review (N threads), replies, resolve/unresolve,
+                          repairs, summary
 ```
 
-All model work happens in steps 2–4. Step 5 is short and mostly API calls, so
-when a newer push cancels the run (`concurrency: cancel-in-progress`), the
-cancellation almost always lands before anything is posted. Publishing is
-idempotent through the markers (§6), so a run cancelled partway through
-publishing is repaired by the next pass.
+**Mode comes from state, not from the event.** GitHub keeps only one pending
+run per concurrency group, so a comment-triggered run can replace a pending
+push-triggered one. Any run that finds HEAD without a completed pass
+therefore does the full pass. A reconcile-only run (step 2 plus publish, no
+finder) happens only when HEAD has already been fully reviewed.
+
+**Publishing is fenced to the reviewed head.** All model work happens in
+steps 2–4. Before publishing, and again before each state-changing mutation
+(resolve, unresolve, transition reply), buggrit re-reads the PR head. If it
+moved, the run stops publishing and exits, because the newer run owns the
+PR. Workflow cancellation is asynchronous, so the fence is what keeps a
+stale run from resolving threads on the evidence of an old commit. Anything
+that slips through is caught next pass (§6, stale transitions).
+Publishing is idempotent through the markers, and every pass repairs side
+effects that are missing (§6), so a run killed partway through publishing
+leaves nothing broken.
 
 ### Package layout
 
@@ -93,25 +115,48 @@ so the engine can be tested against fakes and reused by other front ends.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+    inputs: { pr: { required: true } }
 concurrency:
-  group: buggrit-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  # pushes cancel an in-flight pass; comment-triggered runs wait their turn
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
   pull-requests: write
   checks: write          # only if the gate check (§8) is enabled
 jobs:
   review:
-    if: ${{ !github.event.pull_request.draft }}
+    # skip drafts, and skip events caused by buggrit's own comments
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.comment.user.login != 'buggrit[bot]' &&
+      github.event.review.user.login != 'buggrit[bot]'
     runs-on: [self-hosted]   # must be able to reach the model endpoint
     timeout-minutes: 45      # hard wall-clock ceiling; buggrit's own deadline is lower
     steps:
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}   # the PR head, not the merge commit
+          fetch-depth: 0
+          persist-credentials: false                       # keep tokens out of .git/config
       - uses: SnapdragonPartners/buggrit@v1
         env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
 ```
+
+The reusable workflow (below) hides all of this; a consuming repo only
+passes secrets.
 
 - **Packaging:** a composite action that downloads a prebuilt release binary
   for the runner's OS and architecture. It doesn't use a Docker container
@@ -120,9 +165,29 @@ jobs:
   repo needs only one `uses:` line.
 - **Network:** self-hosted models usually require self-hosted runners, or an
   authenticated public endpoint.
-- **Identity:** comments appear as `github-actions[bot]`. buggrit recognizes
-  its own comments by marker (§6), not by author, because other workflows
-  share that identity.
+- **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
+  from the PR at startup. The checkout, the diff, line anchors and markers all
+  refer to that commit. GitHub's synthetic merge commit is never used. At
+  startup buggrit checks that the checkout's `HEAD` matches the PR's current
+  head SHA, and exits without doing anything if not. For example, a
+  comment-triggered run whose payload predates a newer push; that push's own
+  run takes over. For `workflow_dispatch` the reusable workflow looks up the
+  head SHA (`gh pr view`) before checking out.
+- **Identity:** the supported setup is a small **GitHub App** (no hosting).
+  The workflow mints an installation token with
+  `actions/create-github-app-token`, so comments appear as `buggrit[bot]`.
+  The built-in `GITHUB_TOKEN` also works as a fallback, with comments
+  appearing as `github-actions[bot]`.
+  GitHub documents that `resolveReviewThread` can fail with "Resource not
+  accessible by integration" for the Actions `GITHUB_TOKEN`. That limitation
+  applies to the Actions integration token. Claude Code's personal `gh`
+  token, which resolves threads without trouble today, is a different kind
+  of token. Build step 2 tests both early. If resolving or unresolving
+  fails, buggrit keeps the state in markers, lists the affected threads in
+  the summary as "resolve manually", and carries on.
+- **Own comments:** a comment is buggrit's only if it has the
+  `buggrit:v1` marker **and** its author is buggrit's configured login.
+  Other workflows share `github-actions[bot]`, so neither check works alone.
 
 ## 4. Configuration
 
@@ -215,10 +280,17 @@ find cross-cutting issues. A reconcile step merges and deduplicates their
 results.
 
 ### Structured output
-Findings come back through a `submit_findings` tool call that also ends the
-loop. If the arguments don't match the schema, buggrit returns a tool error
-(`ToolResult{IsError: true}`) naming the problem, so the model can correct
-itself and resubmit inside the same loop. Finding schema:
+Each stage ends with a **terminal tool**: `submit_findings` (find) or
+`submit_verdicts` (verify). If the arguments don't match the schema, buggrit
+returns a tool error (`ToolResult{IsError: true}`) naming the problem, so the
+model can correct itself and resubmit inside the same loop. A valid
+submission ends the loop successfully.
+
+`toolloop` in maestro-llms v0.7.1 can't do this: a successful tool call
+always triggers another model call. The fix is tracked in
+[maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
+and buggrit depends on it. buggrit calls `toolloop` from one function in
+`internal/review`, so the change is confined to one place. Finding schema:
 
 ```json
 {
@@ -260,9 +332,11 @@ Every buggrit comment ends with a hidden marker:
 
 Each buggrit reply in a thread carries a transition marker
 (`{"id":"f-7f3a2c","to":"fixed","sha":"def456"}`). The state of a finding is
-the result of replaying its thread. The **summary comment** (one per PR,
-updated in place) is a *derived view* that buggrit regenerates every pass.
-It's never read back as authoritative, so it can't drift from the threads.
+the result of replaying its thread. Replay only counts markers that pass the
+own-comment check in §3; marker text in anyone else's comment is ignored.
+The **summary comment** (one per PR, updated in place) is a *derived view*
+that buggrit regenerates every pass. It's never read back as authoritative,
+so it can't drift from the threads.
 
 History is read with GraphQL `pullRequest.reviewThreads`, which gives
 `isResolved`, `isOutdated`, the anchor, and all comments with authors. That
@@ -280,28 +354,53 @@ now, comments are the only store.
 ### Finding state machine
 
 ```
-            ┌──────────── verify: still present ─────────────┐
-            ▼                                                │
-open ──verify: fixed──► fixed (reply "fixed in <sha>", resolve thread)
- │                                                           │
- ├─ reply judged a valid rebuttal ─► dismissed (ack, resolve; never re-raised)
+open ──verify: fixed──────────────► fixed      (reply "fixed in <sha>", resolve)
+ │
+ ├─ reply judged a valid rebuttal ─► dismissed  (ack, resolve; never re-raised)
  ├─ reply judged invalid, rebuttals < max ─► open (reply with reasoning)
- ├─ reply judged invalid, rebuttals = max ─► needs_human (reply, leave open, flag in summary)
- └─ thread resolved but issue still present ─► open (unresolve + reply with evidence)
+ ├─ reply judged invalid, rebuttals = max ─► needs_human (reply, leave open)
+ └─ thread resolved, no reply, issue still present ─► open (unresolve + reply with evidence)
+
+needs_human ── any later reply or resolution ─► dismissed (ack, resolve)
+fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve + "regressed in <sha>")
 ```
 
-- **Verify every non-terminal finding each pass**, including ones whose
-  threads are resolved. Resolving isn't proof.
-- `fixed` and `dismissed` are terminal. `needs_human` stays put until a human
-  resolves the thread or replies. A human's resolution or reply is final:
-  buggrit acknowledges it and doesn't argue.
-- Outdated anchors (the code moved) are handled by giving the verifier the
+- **What gets verified each pass:**
+  - every `open` and `needs_human` finding, including resolved threads,
+    because resolving isn't proof;
+  - every finding with a reply buggrit hasn't handled yet;
+  - every `fixed` finding whose file changed since the fix commit;
+  - every transition whose recorded `sha` isn't in the current head's history
+    (§2 fencing, force-push).
+- **Humans settle findings.** Under the trust model in §1, any reply or
+  resolution by someone other than buggrit is a human action. That includes
+  Claude Code acting with a person's credentials. Replies to `open` findings
+  go through the rebuttal rules in §7. Once a finding is `needs_human`, the
+  next reply or resolution from anyone settles it as `dismissed`, and buggrit
+  doesn't argue. The one thing that never settles a finding is **a bare
+  resolution with no reply while the issue is still present**. That reopens
+  the thread, because it's the "resolved without fixing" case.
+- **`dismissed` is terminal. `fixed` is terminal unless the defect comes
+  back**: then the original thread reopens rather than a new thread being
+  opened, so its history stays in one place.
+- **Repair every pass.** After replay, buggrit compares each finding's state
+  with the thread's actual `isResolved`, including terminal findings. If they
+  disagree, it does the missing resolve or unresolve without reposting the
+  transition reply. This repairs runs killed between "post marker" and
+  "resolve".
+- **Outdated anchors** (the code moved) are handled by giving the verifier the
   original snippet plus the current file, not by trusting line numbers.
 
-### Last reviewed SHA
-Recorded in the summary marker and in each pass's review body. Used for the
-incremental scope (§7). If it isn't an ancestor of HEAD (force-push or
-rebase), the pass falls back to the full PR diff.
+### Review baseline
+Two SHAs are recorded in the summary marker and in each pass's review body:
+- `attempted_sha`: the head of the most recent pass, complete or not.
+- `completed_sha`: the head of the most recent pass that covered its whole
+  scope **and** finished publishing.
+
+Incremental scope (§7) starts from `completed_sha`. An interrupted pass
+(deadline, ceiling, cancellation, fence) doesn't advance it, so the next
+pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
+(force-push or rebase), the pass falls back to the full PR diff.
 
 ## 7. Convergence (the critical requirement)
 
@@ -316,7 +415,7 @@ buggrit doesn't end. The rules, in order of importance:
    framed as "fix this at one point where all cases pass". This mirrors the
    "a repeated finding is a class" rule in our CLAUDE.md.
 2. **Incremental scope.** Pass 1 reviews the whole PR. Later passes look for
-   new findings **only in lines changed since `last_reviewed_sha`**, using the
+   new findings **only in lines changed since `completed_sha`** (§6), using the
    whole PR as context. Fix commits can still produce findings, which is
    correct, because fixes can introduce regressions. Code that was already
    reviewed isn't re-reviewed by a model that just happened to notice
@@ -324,8 +423,12 @@ buggrit doesn't end. The rules, in order of importance:
 3. **Stable identity and deduplication.** Every candidate is compared to all
    earlier findings, including fixed and dismissed ones. A deterministic
    fingerprint (path, category, normalized snippet) does the first pass and a
-   short model call catches near-duplicates. **A dismissed finding is never
-   raised again** in any form.
+   short model call catches near-duplicates. What happens to a match depends
+   on the earlier finding's state:
+   - **dismissed:** the candidate is dropped. A dismissed finding is never
+     raised again in any form.
+   - **fixed:** the original thread reopens as a regression (§6).
+   - **open, or another reviewer's thread:** the candidate is dropped.
 4. **Bounded disputes.** At most `max_rebuttals` (default 1) buggrit replies
    per disputed finding, then `needs_human`. buggrit never argues in a loop,
    which matches "if Codex reaffirms, stop and bring it to Dan". For
@@ -338,8 +441,14 @@ buggrit doesn't end. The rules, in order of importance:
    toward convergence. Open advisory findings are listed but don't keep the
    PR from converging.
 6. **A clear final state.** The summary always ends with a status line Claude
-   can act on, for example:
-   `converged at abc123: 0 open blocking, 3 open advisory, 2 needs_human, 5 fixed, 1 dismissed`.
+   can act on. One of:
+   - `converged at abc123: 0 open blocking, 3 open advisory, 5 fixed, 1 dismissed`
+   - `awaiting human at abc123: 2 needs_human, 0 open blocking, …`
+   - `not converged at abc123: 2 open blocking, …`
+   - `incomplete at abc123: deadline reached, …`
+
+   `converged` requires zero open blocking findings, zero `needs_human`, and a
+   completed pass at HEAD.
    It also carries a hidden JSON ledger, so the agent can fetch the whole
    state with one `gh api` call.
 7. **Watch for non-convergence; don't suppress findings.** If a PR reaches
@@ -403,7 +512,8 @@ There are two profiles that use the same knobs but treat them differently:
 internal `context` deadline set below the job's `timeout-minutes`, so buggrit
 always has time to publish partial results and say so. A pass that ends
 without posting looks the same as "no findings" to an agent, which we can't
-allow.
+allow. An incomplete pass doesn't advance `completed_sha` (§6), so its
+unreviewed scope is covered next time.
 
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
@@ -411,25 +521,43 @@ enforce lane limits (for example LunaRoute) or limits shared across runs,
 reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
 and circuit-breaker policy come from the `maestro-llms` recommended chain.
 
-## 10. Security
+## 10. Security (proportionate to the trust model)
 
-- PR content (diff, body, comments, files) is **untrusted prompt input**. The
-  model can't affect anything outside its review output: its tools are
-  read-only and confined to the checkout (no symlink escape, no `..`), and it
-  has no network or GitHub access. Everything posted goes through
-  `submit_findings` and our renderer, so the worst a prompt injection can do
-  is produce bad comments.
-- Config and model endpoints come from the base branch. API keys come from
-  secrets through the environment and are never echoed in logs or comments.
+We take the precautions that are cheap. We deliberately don't defend against
+people who already have write access to the repo (§1).
+
+- **The model only reads.** Its tools are read-only and confined to the
+  checkout: no symlink escape, no `..`, and no `.git/` (which can hold
+  credentials and isn't needed for review, since diffs come from
+  `get_diff`). It has no network or GitHub access. Everything posted goes
+  through the terminal tool and our renderer.
+- **No tokens on disk.** Checkout uses `persist-credentials: false`. The
+  GitHub and LLM tokens exist only in buggrit's process environment, never
+  in files the tools can read, and they're never echoed in logs or comments.
+- **Config comes from the base branch**, so a PR can't redirect the model
+  endpoint.
 - No PR code is run, and `pull_request_target` is never used.
-- `GITHUB_TOKEN` gets the minimum permissions listed in §3.
+- Tokens get the minimum permissions listed in §3.
+
+Not in scope: telling an agent apart from the person whose credentials it
+uses, or stopping someone with write access from dismissing findings. The
+merge gate is the control for those.
 
 ## 11. Testing
 
 - Unit tests with `llms/testllm` fakes and an `httptest` fake GitHub (REST +
   GraphQL) that holds a PR with threads and replies.
-- **State-machine tests** that script multi-pass scenarios: fix, false
-  resolve, valid and invalid rebuttal, force-push, cancelled publish.
+- **State-machine tests** that script multi-pass scenarios:
+  - fix, and false resolve (resolved without a reply while the issue remains);
+  - valid and invalid rebuttal, `needs_human` settled by a reply or by a
+    resolution;
+  - a fixed finding that regresses;
+  - force-push;
+  - a pass interrupted by the deadline (the baseline must not advance);
+  - a publish killed between the marker and the resolve (repaired next pass);
+  - the head moving during publish (the fence stops it);
+  - a comment-triggered run replacing a pending push-triggered run;
+  - a forged marker in a non-buggrit comment (ignored).
 - Golden tests for diff→line mapping and comment rendering.
 - Dogfooding: buggrit reviews its own PRs from the first working milestone.
 
@@ -438,10 +566,13 @@ and circuit-breaker policy come from the `maestro-llms` recommended chain.
 1. **Skeleton:** go module, Makefile, lint, CI, config loading and validation,
    `internal/llm` factory with limiter and per-stage models.
 2. **GitHub layer:** PR fetch, diff parsing and line mapping, reading
-   `reviewThreads`, posting reviews and replies, resolve/unresolve, markers.
-   All tested against the fake.
+   `reviewThreads`, posting reviews and replies, resolve/unresolve, markers,
+   head fencing. All tested against the fake. Includes an early **live
+   check** that resolving and unresolving threads works with both the App
+   token and the Actions `GITHUB_TOKEN`.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
+   Needs maestro-llms#53 (terminal tools).
 4. **Verifier and thread lifecycle:** the state machine in §6, rebuttal judging.
 5. **Convergence controls:** incremental scope, dedupe (including other
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
@@ -452,9 +583,12 @@ and circuit-breaker policy come from the `maestro-llms` recommended chain.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal
    agents. Measures precision, recall and passes to convergence per model.
 
-Steps 1–2 don't depend on the LunaRoute work. Step 3 needs a working
-Qwen/GLM path, which can be stubbed with any provider `maestro-llms` already
-supports until that lands.
+Steps 1–2 don't depend on any maestro-llms work. Step 3 needs
+[maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)
+(terminal tools). It also needs a working Qwen/GLM path,
+[maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
+but any provider maestro-llms already supports can stand in until that's
+done.
 
 ## 13. Decisions
 
@@ -473,5 +607,15 @@ supports until that lands.
   `GitHub` interfaces (§2), so a local front end would provide a git-diff
   workspace and print findings instead of posting them. Don't put anything
   Action-specific (env vars, event payload parsing) inside the engine.
+- **Trust model** (§1): private, trusted repos. Anyone who can comment counts
+  as human, including an agent using a person's credentials. Agents never
+  merge, and that is the integrity control. Security work is limited to
+  cheap precautions (§10).
+- **Identity:** a GitHub App token (`buggrit[bot]`) is the supported setup,
+  with the Actions `GITHUB_TOKEN` as a fallback (§3).
+- **Terminal tools** are required from `toolloop`
+  ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)).
+  LunaRoute verification is
+  [maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54).
 
 No open questions remain.
