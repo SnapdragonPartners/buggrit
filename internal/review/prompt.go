@@ -1,0 +1,215 @@
+package review
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Prompt budgets. Past these, the opening message lists what it left out and
+// the model reads the rest with tools. Splitting large PRs into sub-reviews
+// is build step 6 (design §12).
+//
+// maxPromptDiffBytes bounds the whole opening message: diffs are added only
+// while it fits. The sections before the diff have budgets of their own that
+// sum to well under it, so they can't crowd the message past it.
+const (
+	maxPromptDiffBytes    = 300 << 10
+	maxDescriptionBytes   = 32 << 10
+	maxInstructionBytes   = 50 << 10  // one instruction file
+	maxInstructionsTotal  = 100 << 10 // every instruction file, plus review.instructions
+	maxOtherThreads       = 50
+	maxOtherThreadExcerpt = 500
+	maxPromptFileList     = 48 << 10
+	// maxDeferredList is held back from the diff for the closing list of
+	// files deferred to get_diff and the final instruction.
+	maxDeferredList = 16 << 10
+)
+
+// systemPrompt is the finder's standing instructions (design §5, §7).
+const systemPrompt = `You are buggrit, a code reviewer for a pull request. You report real defects so the author can fix them before merge. Another agent, usually Claude Code, reads each finding as its own review thread and acts on it.
+
+How to work:
+- The opening message has the pull request description, the repository's instructions, and the diff with head-side line numbers. Start from it, then investigate with the tools: read_file, grep, list_dir, get_diff. Read callers, tests, docs and design files the change touches or relies on. All tools are read-only.
+- When you are done, call submit_findings exactly once with every finding. If there is nothing worth raising, submit an empty list. Do not answer in plain text.
+
+What to report:
+- Concrete problems introduced or exposed by this change: bugs, unsafe concurrency, mishandled errors, security exposures, broken API contracts, missing tests for new behavior, and documentation drift. Documentation drift means docs, ADRs, help text, comments or config examples that this change made inaccurate; look for it actively, including in files the diff did not touch.
+- Not: style preferences the repository's instructions don't ask for, speculative concerns you could not confirm by reading the code, or things the pull request description says it intentionally does not do.
+- Respect the repository's instructions and design documents. A deliberate, documented decision is not a defect.
+
+Severity:
+- P0: data loss, corruption, critical security exposure, or an unusable result.
+- P1: a concrete correctness, robustness, architectural or maintainability defect.
+- P2: a real issue that doesn't block merge, such as documentation drift, a missing edge-case test, or a misleading name or comment.
+- P3: a minor nit.
+Confidence is how sure you are after reading the code: high (verified), medium (likely), low (plausible but unconfirmed). Prefer to investigate until you are sure.
+
+Report each pattern once, completely:
+- When you find an issue, search for every other instance of the same pattern in the change and the code it touches. Report them as one finding: anchor it at the first instance, set class to a short name for the pattern, and list every other instance in instances. Frame the fix as one change that handles every case. Never report one instance and leave the rest for a later round.
+- Don't repeat issues already raised in the existing review threads listed in the opening message.
+
+Anchoring:
+- path must be a file this pull request changes. line is a head-side line number as shown in the diff or by read_file; use start_line for a range. A finding about a file the diff doesn't touch (for example a stale doc) is anchored at the changed line that made it wrong, and names the other file in problem and instances.
+- suggestion, if given, is the exact replacement text for the anchored lines and nothing else.
+
+Writing: be specific and brief. problem says what is wrong and why, citing code. impact says what breaks. fix says what to change.`
+
+// Context is what the finder knows about the pull request.
+type Context struct {
+	Title   string
+	Body    string
+	HeadSHA string
+	BaseRef string
+	Number  int
+}
+
+// ThreadNote is an existing review thread from another reviewer, given to the
+// finder so it doesn't repeat it (design §6).
+type ThreadNote struct {
+	Path     string
+	Author   string
+	Body     string
+	Line     int
+	Resolved bool
+}
+
+// openingMessage builds the finder's first user message.
+func openingMessage(in *FindInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Pull request #%d: %s\n\n", in.PR.Number, in.PR.Title)
+	fmt.Fprintf(&b, "Base branch: %s. Reviewed head commit: %s.\n\n", in.PR.BaseRef, in.PR.HeadSHA)
+	b.WriteString("## Description\n\n")
+	if body := strings.TrimSpace(in.PR.Body); body != "" {
+		b.WriteString(truncate(body, maxDescriptionBytes))
+	} else {
+		b.WriteString("(no description)")
+	}
+	b.WriteString("\n\n")
+
+	writeInstructions(&b, in)
+	writeOtherThreads(&b, in.OtherThreads)
+
+	b.WriteString("## Changed files\n\n")
+	b.WriteString(fileList(in.Diff, in.Scope.InScope, 0, maxPromptFileList))
+	b.WriteString("\nFiles marked \"excluded from review\" may be read for context but must not be the subject of findings.\n\n")
+
+	b.WriteString("## Diff\n\nHead-side line numbers are on the left; deleted lines have none.\n\n")
+	var skipped []string
+	for i := range in.Diff.Files {
+		f := &in.Diff.Files[i]
+		if !in.Scope.InScope(f.Path()) {
+			continue
+		}
+		text := renderFileDiff(f, 0, maxResultBytes)
+		if b.Len()+len(text) > maxPromptDiffBytes-maxDeferredList {
+			skipped = append(skipped, f.Path())
+			continue
+		}
+		b.WriteString(text)
+		b.WriteByte('\n')
+	}
+	if len(skipped) > 0 {
+		b.WriteString("The diff is too large to show in full. Call get_diff for each of these files:\n")
+		for i, p := range skipped {
+			if b.Len() > maxPromptDiffBytes-maxDeferredList {
+				fmt.Fprintf(&b, "(and %d more; page through the full list with get_diff and no path)\n", len(skipped)-i)
+				break
+			}
+			b.WriteString(p)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
+	return b.String()
+}
+
+// writeInstructions adds the repository's instruction files and
+// review.instructions, within maxInstructionsTotal. review.instructions comes
+// first, since the repository wrote it for buggrit. Files that don't fit are
+// named, so the model can read them with read_file.
+func writeInstructions(b *strings.Builder, in *FindInput) {
+	budget := maxInstructionsTotal
+	extra := truncate(strings.TrimSpace(in.Instructions), maxInstructionBytes)
+	budget -= len(extra)
+
+	files := make([]string, 0, len(in.InstructionFiles))
+	var omitted []string
+	for _, name := range in.InstructionFiles {
+		p, err := cleanPath(name)
+		if err != nil {
+			continue
+		}
+		text, complete, err := readPrefix(in.Workspace, p, min(budget, maxInstructionBytes))
+		switch {
+		case err != nil:
+			continue // missing, binary or unreadable: not an instruction file
+		case text == "" && !complete:
+			omitted = append(omitted, p)
+			continue
+		case !complete:
+			text += "\n[truncated; read_file " + p + " for the rest]"
+		}
+		budget -= len(text)
+		files = append(files, fmt.Sprintf("### %s\n\n%s\n", p, strings.TrimSpace(text)))
+	}
+	if len(files) == 0 && len(omitted) == 0 && extra == "" {
+		return
+	}
+	b.WriteString("## Repository instructions\n\n")
+	for _, f := range files {
+		b.WriteString(f)
+		b.WriteByte('\n')
+	}
+	if len(omitted) > 0 {
+		fmt.Fprintf(b, "Not shown, for space; read them with read_file: %s\n\n", strings.Join(omitted, ", "))
+	}
+	if extra != "" {
+		b.WriteString("### Review instructions\n\n")
+		b.WriteString(extra)
+		b.WriteString("\n\n")
+	}
+}
+
+// readPrefix returns as many whole lines of a file as fit in limit bytes,
+// and whether that was the whole file.
+func readPrefix(ws Workspace, name string, limit int) (text string, complete bool, err error) {
+	var sb strings.Builder
+	complete = true
+	_, err = scanLines(ws, name, func(_ int, raw []byte, size int) bool {
+		line := clipSized(string(raw), size)
+		if sb.Len()+len(line)+1 > limit {
+			complete = false
+			return false
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+		return true
+	})
+	return sb.String(), complete, err
+}
+
+func writeOtherThreads(b *strings.Builder, threads []ThreadNote) {
+	if len(threads) == 0 {
+		return
+	}
+	b.WriteString("## Existing review threads from other reviewers\n\nDon't raise these again.\n\n")
+	for i := range threads {
+		t := &threads[i]
+		if i >= maxOtherThreads {
+			fmt.Fprintf(b, "(%d more not shown)\n", len(threads)-i)
+			break
+		}
+		state := "open"
+		if t.Resolved {
+			state = "resolved"
+		}
+		loc := t.Path
+		if t.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", t.Path, t.Line)
+		}
+		body := truncate(strings.Join(strings.Fields(t.Body), " "), maxOtherThreadExcerpt)
+		fmt.Fprintf(b, "- %s (%s, %s): %s\n", loc, t.Author, state, body)
+	}
+	b.WriteByte('\n')
+}

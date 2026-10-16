@@ -17,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/SnapdragonPartners/buggrit/internal/glob"
 )
 
 // Path is where the config lives in a consuming repository.
@@ -141,6 +143,11 @@ type Convergence struct {
 type Gate struct {
 	FailOn string `json:"fail_on"`
 }
+
+// MaxToolIterationsLimit is the highest max_tool_iterations accepted. No pass
+// can use that many turns before its deadline, and maestro-llms' toolloop
+// preallocates its transcript in proportion to the limit.
+const MaxToolIterationsLimit = 10_000
 
 // Identity says which GitHub login is buggrit's own. A comment is buggrit's
 // only if it carries the marker and is authored by this login (§3).
@@ -362,8 +369,8 @@ func (l *Limits) validate() []error {
 	if l.MaxConcurrency < 1 {
 		errs = append(errs, errors.New("limits.max_concurrency must be >= 1"))
 	}
-	if l.MaxToolIterations < 0 {
-		errs = append(errs, errors.New("limits.max_tool_iterations must be >= 0 (0 means no ceiling)"))
+	if l.MaxToolIterations < 0 || l.MaxToolIterations > MaxToolIterationsLimit {
+		errs = append(errs, fmt.Errorf("limits.max_tool_iterations must be between 0 and %d (0 means no ceiling)", MaxToolIterationsLimit))
 	}
 	if l.MaxTokensPerPass < 0 {
 		errs = append(errs, errors.New("limits.max_tokens_per_pass must be >= 0 (0 means no ceiling)"))
@@ -388,6 +395,21 @@ func (r *Review) validate() []error {
 		for _, p := range list {
 			if strings.TrimSpace(p) == "" {
 				errs = append(errs, errors.New("review paths and patterns must not be empty strings"))
+			}
+		}
+	}
+	lists := []struct {
+		name     string
+		patterns []string
+	}{{"review.include", r.Include}, {"review.exclude", r.Exclude}}
+	for i := range lists {
+		list := &lists[i]
+		for _, p := range list.patterns {
+			if strings.TrimSpace(p) == "" {
+				continue // reported above
+			}
+			if err := glob.Validate(p); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", list.name, err))
 			}
 		}
 	}

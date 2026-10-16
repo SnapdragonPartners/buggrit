@@ -321,6 +321,11 @@ Notes:
 - Existing threads from other reviewers (Copilot, humans) so it doesn't
   repeat findings they've already raised (§6).
 
+The opening message is bounded (300 KiB). Each section before the diff has
+its own share, and the diff fills the rest. Whatever doesn't fit is named, so
+the model fetches it with `read_file` or `get_diff`. The tools stream files,
+so a large file costs time, not memory.
+
 ### Every review uses tools
 Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
@@ -350,11 +355,27 @@ returns a tool error (`ToolResult{IsError: true}`) naming the problem, so the
 model can correct itself and resubmit inside the same loop. A valid
 submission ends the loop successfully.
 
-`toolloop` in maestro-llms v0.7.1 can't do this: a successful tool call
-always triggers another model call. The fix is tracked in
-[maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
-and buggrit depends on it. buggrit calls `toolloop` from one function in
-`internal/review`, so the change is confined to one place. Finding schema:
+This uses `toolloop`'s terminal tools, added in maestro-llms v0.8.0
+([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
+its ADR-0017). buggrit calls `toolloop` from one function in
+`internal/review`.
+
+- **Validation:** `submit_findings` checks every finding: enums, required
+  fields, that the path is a changed, in-scope file, and that every line
+  exists at the head. It reports all problems at once, so one resubmission
+  can fix them.
+- **Files outside the diff:** a finding about a file the diff doesn't touch,
+  such as a stale doc, is anchored at the changed line that made it wrong.
+- **No submission:** a model that answers in text instead of submitting gets
+  one nudge. If it still doesn't submit, or the run hits a ceiling, the
+  deadline or a model error, the pass is reported incomplete with that
+  reason. It never comes back silently empty (§9).
+- **"No ceiling":** `max_tool_iterations: 0` is run as 10,000, which is also
+  the configurable maximum. toolloop would read 0 as its own default of 8,
+  and it preallocates its transcript in proportion to the limit
+  ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
+
+Finding schema:
 
 ```json
 {
@@ -624,9 +645,12 @@ We take the precautions that are cheap. We deliberately don't defend against
 people who already have write access to the repo (§1).
 
 - **The model only reads.** Its tools are read-only and confined to the
-  checkout: no symlink escape, no `..`, and no `.git/` (which can hold
+  checkout: no `..`, no symlinks followed, and no `.git/` (which can hold
   credentials and isn't needed for review, since diffs come from
-  `get_diff`). It has no network or GitHub access. Everything posted goes
+  `get_diff`). A path through a symlink is refused, and the refusal names
+  the link's target so the model can ask for that path, where the same
+  rules apply. That closes links that point into `.git/`, which `os.Root`
+  alone would allow. It has no network or GitHub access. Everything posted goes
   through the terminal tool and our renderer.
 - **No tokens on disk.** Checkout uses `persist-credentials: false`. The
   GitHub and LLM tokens exist only in buggrit's process environment, never
