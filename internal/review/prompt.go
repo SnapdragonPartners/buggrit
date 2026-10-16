@@ -2,6 +2,8 @@ package review
 
 import (
 	"fmt"
+	"io/fs"
+	"path"
 	"strings"
 )
 
@@ -136,11 +138,13 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 
 	files := make([]string, 0, len(in.InstructionFiles))
 	var omitted []string
+	seen := map[string]bool{}
 	for _, name := range in.InstructionFiles {
-		p, err := cleanPath(name)
-		if err != nil {
+		p, label, ok := instructionPath(in.Workspace, name)
+		if !ok || seen[p] {
 			continue
 		}
+		seen[p] = true
 		text, complete, err := readPrefix(in.Workspace, p, min(budget, maxInstructionBytes))
 		switch {
 		case err != nil:
@@ -152,7 +156,7 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 			text += "\n[truncated; read_file " + p + " for the rest]"
 		}
 		budget -= len(text)
-		files = append(files, fmt.Sprintf("### %s\n\n%s\n", p, strings.TrimSpace(text)))
+		files = append(files, fmt.Sprintf("### %s\n\n%s\n", label, strings.TrimSpace(text)))
 	}
 	if len(files) == 0 && len(omitted) == 0 && extra == "" {
 		return
@@ -170,6 +174,33 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 		b.WriteString(extra)
 		b.WriteString("\n\n")
 	}
+}
+
+// instructionPath resolves a configured instruction file to the path to
+// read and the label to show. A symlink is followed one hop, because
+// AGENTS.md -> CLAUDE.md is common; its target must pass cleanPath like any
+// other path (design §10). ok is false for a missing or refused file.
+func instructionPath(ws Workspace, name string) (p, label string, ok bool) {
+	p, err := cleanPath(name)
+	if err != nil {
+		return "", "", false
+	}
+	info, err := ws.Lstat(p)
+	if err != nil {
+		return "", "", false
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return p, p, true
+	}
+	target, err := ws.ReadLink(p)
+	if err != nil || path.IsAbs(target) {
+		return "", "", false
+	}
+	resolved, err := cleanPath(path.Join(path.Dir(p), target))
+	if err != nil {
+		return "", "", false
+	}
+	return resolved, p + " → " + resolved, true
 }
 
 // readPrefix returns as many whole lines of a file as fit in limit bytes,

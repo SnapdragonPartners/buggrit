@@ -30,8 +30,8 @@ jobs:
   review:
     if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    # Above limits.pass_deadline (30m), so buggrit always has time to publish.
-    timeout-minutes: 45
+    # Above limits.pass_deadline (40m), so buggrit always has time to publish.
+    timeout-minutes: 55
     steps:
       - name: Check out buggrit from main
         uses: actions/checkout@v7

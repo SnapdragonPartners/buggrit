@@ -85,6 +85,19 @@ func TestSubmitRejectsTrailingData(t *testing.T) {
 	}
 }
 
+// A missing location field doesn't hide the finding's other problems: one
+// resubmission must be able to fix everything (design §5).
+func TestSubmitMissingLineStillReportsFields(t *testing.T) {
+	s := testSubmit(t)
+	bad := strings.Replace(strings.Replace(validFinding, `"line": 3, `, ``, 1), `"P1"`, `"P7"`, 1)
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [`+bad+`]}`)
+	wantErr(t, res, "line is required")
+	wantErr(t, res, "severity must be")
+	if strings.Contains(res.Content, "has 5 lines") || strings.Contains(res.Content, "not changed") {
+		t.Errorf("anchor checks ran on a defaulted line:\n%s", res.Content)
+	}
+}
+
 func TestSubmitRejects(t *testing.T) {
 	with := func(old, repl string) string { return strings.Replace(validFinding, old, repl, 1) }
 	tests := []struct{ name, finding, want string }{

@@ -139,10 +139,12 @@ func (s *submitTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	for i := range sub.Findings {
 		f := &sub.Findings[i]
 		normalize(f)
-		ps := missing[i]
-		if len(ps) == 0 {
-			// Anchor checks on a defaulted line would be misleading.
-			ps = s.validate(f)
+		// Every field problem is reported at once (§5). Only the anchor
+		// checks are skipped for a missing location: on a defaulted line
+		// they would be misleading.
+		ps := append(missing[i], s.validateFields(f)...)
+		if len(missing[i]) == 0 {
+			ps = append(ps, s.validateLocations(f)...)
 		}
 		for _, p := range ps {
 			problems = append(problems, fmt.Sprintf("findings[%d] (%s): %s", i, f.Path, p))
@@ -220,8 +222,9 @@ func normalize(f *Finding) {
 	}
 }
 
-// validate returns every problem with one finding, phrased for the model.
-func (s *submitTool) validate(f *Finding) []string {
+// validateFields returns the problems with a finding's fields other than
+// its locations, phrased for the model.
+func (s *submitTool) validateFields(f *Finding) []string {
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
 
@@ -251,8 +254,13 @@ func (s *submitTool) validate(f *Finding) []string {
 	if len(f.Instances) > 0 && f.Class == "" {
 		add("instances need a class naming the shared pattern")
 	}
+	return out
+}
 
-	out = append(out, s.validateAnchor(f)...)
+// validateLocations checks the finding's anchor and its instances.
+func (s *submitTool) validateLocations(f *Finding) []string {
+	out := s.validateAnchor(f)
+	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
 	for j, loc := range f.Instances {
 		if p := s.checkLine(loc.Path, loc.Line); p != "" {
 			add("instances[%d]: %s", j, p)

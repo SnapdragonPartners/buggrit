@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -107,6 +108,29 @@ func TestFindLargeDiffDefersToTools(t *testing.T) {
 	}
 	if len(msg) > maxPromptDiffBytes+64<<10 {
 		t.Errorf("opening message is %d bytes", len(msg))
+	}
+}
+
+// A symlinked instruction file is followed one hop, and a target that's
+// already included isn't repeated; a link into .git is still refused.
+func TestFindOpeningMessageSymlinkedInstructions(t *testing.T) {
+	in := findInput(t, &testllm.FakeChatClient{})
+	ws := testWorkspace()
+	ws["docs/rules.md"] = &fstest.MapFile{Data: []byte("Wrap every error.\n")}
+	ws["AGENTS.md"] = &fstest.MapFile{Data: []byte("docs/rules.md"), Mode: fs.ModeSymlink}
+	ws["COPILOT.md"] = &fstest.MapFile{Data: []byte("CLAUDE.md"), Mode: fs.ModeSymlink}
+	ws["SNEAKY.md"] = &fstest.MapFile{Data: []byte(".git/config"), Mode: fs.ModeSymlink}
+	in.Workspace = ws
+	in.InstructionFiles = []string{"CLAUDE.md", "AGENTS.md", "COPILOT.md", "SNEAKY.md"}
+	msg := openingMessage(in)
+	if !strings.Contains(msg, "### AGENTS.md → docs/rules.md\n\nWrap every error.") {
+		t.Error("symlinked instruction file not followed")
+	}
+	if strings.Count(msg, "Always initialize maps in constructors.") != 1 {
+		t.Error("a link to an included file repeated it")
+	}
+	if strings.Contains(msg, "SECRET") || strings.Contains(msg, "SNEAKY") {
+		t.Error("a link into .git was followed")
 	}
 }
 

@@ -338,10 +338,12 @@ so a large file costs time, not memory.
 ### Every review uses tools
 Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
-- `read_file(path, start, end)`
-- `grep(pattern, path_glob)`
-- `list_dir`
-- `get_diff(path)`
+- `read_file(path, start_line, end_line)`
+- `grep(pattern, path_glob, ignore_case)`
+- `list_dir(path)`
+- `get_diff(path, offset)`: one file's diff with head-side line numbers, or,
+  with no path, the list of changed files. `offset` continues output that
+  was truncated.
 - `get_thread(id)`: earlier threads, during verification
 
 The model can follow callers, read the ADRs and docs the PR body links to, and
@@ -693,7 +695,9 @@ people who already have write access to the repo (§1).
   `get_diff`). A path through a symlink is refused, and the refusal names
   the link's target so the model can ask for that path, where the same
   rules apply. That closes links that point into `.git/`, which `os.Root`
-  alone would allow. It has no network or GitHub access. Everything posted goes
+  alone would allow. The one exception is a configured instruction file in
+  the opening message: a link such as `AGENTS.md -> CLAUDE.md` is followed
+  one hop, and its target passes the same path rules. It has no network or GitHub access. Everything posted goes
   through the terminal tool and our renderer.
 - **No tokens on disk.** Checkout uses `persist-credentials: false`. The
   GitHub and LLM tokens exist only in buggrit's process environment, never
@@ -768,6 +772,15 @@ done.
 - buggrit reads other reviewers' threads and deduplicates against them (§6).
 - MVP models: **Qwen and GLM through LunaRoute**. Any `maestro-llms` changes
   needed to support them are tracked separately, in that repo.
+- **Dogfooding uses `deepseek-4.1-flash`** through LunaRoute. In October
+  2026 trials (dry runs of PR #4, a 126 KB diff, 30-minute deadline), it
+  submitted 4 real findings in 24 minutes, at 1–2 minutes per turn. GLM-5.3
+  and `glm-5.3-flash` sometimes reasoned for 5–12 minutes on one turn, often
+  spending their whole output budget, and never submitted. What matters is
+  wall clock to convergence: every extra pass also costs a repair cycle and
+  a CI run, so a slower pass that finds everything beats fast drip-feeding.
+  Reasoning control is
+  [maestro-llms#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86).
 - Every review uses tools. There's no tool-free mode.
 - Comments are the only store for now. A database may come later.
 - **LunaRoute** is OpenAI-compatible and is reached through
