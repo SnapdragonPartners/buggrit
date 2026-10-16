@@ -120,6 +120,14 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 		}
 		return "model error: " + truncate(fmt.Sprint(out.Err), 300), nil
 	case toolloop.OutcomeToolError:
+		// A tool stopped by the deadline or cancellation (grep's walk checks
+		// the context) is an incomplete pass, not a bug.
+		switch {
+		case deadline:
+			return "deadline reached", nil
+		case ctx.Err() != nil:
+			return "canceled", nil //nolint:nilerr // cancellation is an incomplete pass, not a fault
+		}
 		return "", fmt.Errorf("find: %w", out.Err)
 	case toolloop.OutcomeTerminalTool:
 	}

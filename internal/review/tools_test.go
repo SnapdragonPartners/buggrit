@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 )
 
 func TestCleanPath(t *testing.T) {
@@ -139,7 +141,9 @@ func TestOpenDirConfines(t *testing.T) {
 	defer func() { _ = closeFn() }()
 	tools := readOnlyTools(&toolEnv{ws: ws, diff: testDiffParsed(t)})
 	wantOK(t, call(t, tools, "read_file", `{"path": "ok.txt"}`), "fine")
-	wantOK(t, call(t, tools, "read_file", `{"path": "inside.txt"}`), "fine")
+	// An in-repo link is refused too, naming its target so the model can
+	// read that path directly.
+	wantErr(t, call(t, tools, "read_file", `{"path": "inside.txt"}`), "symbolic link to ok.txt")
 	res := call(t, tools, "read_file", `{"path": "escape.txt"}`)
 	if !res.IsError || strings.Contains(res.Content, "SECRET") {
 		t.Errorf("symlink escape not refused: %+v", res)
@@ -150,6 +154,109 @@ func TestOpenDirConfines(t *testing.T) {
 	if res := call(t, tools, "grep", `{"pattern": "SECRET"}`); res.Content != "no matches" {
 		t.Errorf("grep followed an escaping symlink: %s", res.Content)
 	}
+}
+
+// A symlink pointing into .git must not expose it (design §10).
+func TestSymlinkIntoGitRefused(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "config"), []byte("token=SECRET\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".git", filepath.Join(dir, "metadata")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	ws, closeFn, err := OpenDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeFn() }()
+	tools := readOnlyTools(&toolEnv{ws: ws, diff: testDiffParsed(t)})
+	for _, tc := range []struct{ tool, args string }{
+		{"read_file", `{"path": "metadata/config"}`},
+		{"list_dir", `{"path": "metadata"}`},
+	} {
+		res := call(t, tools, tc.tool, tc.args)
+		if !res.IsError || strings.Contains(res.Content, "SECRET") || strings.Contains(res.Content, "config\n") {
+			t.Errorf("%s through a .git symlink: %+v", tc.tool, res)
+		}
+	}
+	// Following the named target hits the .git rule.
+	wantErr(t, call(t, tools, "read_file", `{"path": ".git/config"}`), "not available")
+	if res := call(t, tools, "grep", `{"pattern": "SECRET"}`); res.Content != "no matches" {
+		t.Errorf("grep reached .git: %s", res.Content)
+	}
+}
+
+// A submodule's .git is a regular file; grep must skip it too.
+func TestGrepSkipsGitFile(t *testing.T) {
+	env := &toolEnv{ws: fstest.MapFS{"sub/.git": {Data: []byte("gitdir: SECRET\n")}}, diff: testDiffParsed(t)}
+	if res := call(t, readOnlyTools(env), "grep", `{"pattern": "SECRET"}`); res.Content != "no matches" {
+		t.Errorf("grep searched a .git file: %s", res.Content)
+	}
+}
+
+// One enormous line can't push a result past the byte cap.
+func TestLongLinesClipped(t *testing.T) {
+	long := strings.Repeat("x", 400<<10)
+	diff := "diff --git a/min.js b/min.js\n--- a/min.js\n+++ b/min.js\n@@ -1 +1 @@\n-" + long + "\n+" + long + "\n"
+	d, err := github.ParseDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &toolEnv{ws: fstest.MapFS{"min.js": {Data: []byte(long + "\n")}}, diff: d}
+	tools := readOnlyTools(env)
+	for _, tc := range []struct{ tool, args string }{
+		{"read_file", `{"path": "min.js"}`},
+		{"get_diff", `{"path": "min.js"}`},
+	} {
+		res := call(t, tools, tc.tool, tc.args)
+		wantOK(t, res, "clipped")
+		if len(res.Content) > maxResultBytes+2*maxReadLineBytes {
+			t.Errorf("%s returned %d bytes", tc.tool, len(res.Content))
+		}
+	}
+}
+
+// A long diff pages with offset, so deleted lines past the cap stay
+// reachable even though the head checkout doesn't have them.
+func TestGetDiffPages(t *testing.T) {
+	var b strings.Builder
+	n := 30000
+	fmt.Fprintf(&b, "diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ /dev/null\n@@ -1,%d +0,0 @@\n", n)
+	for i := 1; i <= n; i++ {
+		fmt.Fprintf(&b, "-deleted line %d\n", i)
+	}
+	d, err := github.ParseDiff(b.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := readOnlyTools(&toolEnv{ws: fstest.MapFS{}, diff: d})
+	seen := map[string]bool{}
+	offset := 0
+	for page := 0; page < 20; page++ {
+		res := call(t, tools, "get_diff", fmt.Sprintf(`{"path": "gone.txt", "offset": %d}`, offset))
+		wantOK(t, res)
+		for _, line := range strings.Split(res.Content, "\n") {
+			if i := strings.Index(line, "deleted line "); i >= 0 {
+				seen[line[i:]] = true
+			}
+		}
+		_, rest, found := strings.Cut(res.Content, `"gone.txt" and offset `)
+		if !found {
+			break
+		}
+		next, _, _ := strings.Cut(rest, " ")
+		if _, err := fmt.Sscan(next, &offset); err != nil {
+			t.Fatalf("bad continuation %q", next)
+		}
+	}
+	if len(seen) != n {
+		t.Errorf("paging reached %d of %d deleted lines", len(seen), n)
+	}
+	wantErr(t, call(t, tools, "get_diff", `{"path": "gone.txt", "offset": -1}`), "must not be negative")
 }
 
 func TestTruncate(t *testing.T) {

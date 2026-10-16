@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"slices"
 	"strings"
 
@@ -264,10 +263,15 @@ func leftProblems(f *Finding, fd *github.FileDiff) []string {
 // rightProblems checks a finding on head-side lines.
 func (s *submitTool) rightProblems(f *Finding, fd *github.FileDiff) []string {
 	var out []string
-	if fd.Status == github.StatusDeleted {
+	switch {
+	case fd.Status == github.StatusDeleted && f.Line == 0:
+		// A file-level finding about the deletion itself.
+	case fd.Status == github.StatusDeleted:
 		out = append(out, fmt.Sprintf("%s is deleted; use side LEFT with a deleted line number, or line 0", f.Path))
-	} else if p := s.checkLine(f.Path, f.Line); p != "" {
-		out = append(out, p)
+	default:
+		if p := s.checkLine(f.Path, f.Line); p != "" {
+			out = append(out, p)
+		}
 	}
 	if f.Suggestion != "" && f.Line == 0 {
 		out = append(out, "suggestion needs a line to replace")
@@ -281,7 +285,7 @@ func (s *submitTool) checkLine(path string, line int) string {
 	if err != nil {
 		return err.Error()
 	}
-	data, err := fs.ReadFile(s.env.ws, name)
+	data, err := readFile(s.env.ws, name)
 	if err != nil {
 		return fmt.Sprintf("%s: %s", name, describeFSError(err))
 	}

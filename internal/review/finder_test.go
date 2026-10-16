@@ -12,6 +12,7 @@ import (
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/glob"
 )
 
@@ -87,11 +88,24 @@ func TestFindOpeningMessage(t *testing.T) {
 
 func TestFindLargeDiffDefersToTools(t *testing.T) {
 	in := findInput(t, &testllm.FakeChatClient{})
-	big := strings.Repeat("x", maxPromptDiffBytes)
-	in.Diff.Files[0].Hunks[0].Lines[1].Text = big
+	h := &in.Diff.Files[0].Hunks[0]
+	for i := range maxPromptDiffBytes / 20 {
+		h.Lines = append(h.Lines, github.DiffLine{Kind: github.LineAdded, New: 100 + i, Text: "padding padding pad"})
+	}
+	second := in.Diff.Files[0]
+	second.NewPath, second.OldPath = "internal/cache/cache2.go", "internal/cache/cache2.go"
+	in.Diff.Files = append(in.Diff.Files, second)
 	msg := openingMessage(in)
-	if strings.Contains(msg, big) || !strings.Contains(msg, "Call get_diff for each of these files:\ninternal/cache/cache.go") {
-		t.Error("oversized file diff was not deferred to get_diff")
+	// The first large file is shown up to the per-file cap, with a hint to
+	// page on; the second no longer fits and is deferred to get_diff.
+	if !strings.Contains(msg, `call get_diff with path "internal/cache/cache.go" and offset`) {
+		t.Error("truncated file diff has no continuation hint")
+	}
+	if !strings.Contains(msg, "Call get_diff for each of these files:\ninternal/cache/cache2.go") {
+		t.Error("file past the prompt budget was not deferred to get_diff")
+	}
+	if len(msg) > maxPromptDiffBytes+64<<10 {
+		t.Errorf("opening message is %d bytes", len(msg))
 	}
 }
 
@@ -182,6 +196,34 @@ func TestFindDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	res, err := Find(ctx, findInput(t, fake))
+	if err != nil || res.Complete || res.Reason != "deadline reached" {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+}
+
+// The deadline expiring inside a tool (grep checks the context) is an
+// incomplete pass, not an error.
+func TestFindDeadlineDuringTool(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		cancel() // expires before grep's walk runs
+		return testllm.ToolCallResponse("1", "grep", `{"pattern": "x"}`), nil
+	}}
+	res, err := Find(ctx, findInput(t, fake))
+	if err != nil || res.Complete || res.Reason != "canceled" {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+
+	dctx, dcancel := context.WithTimeout(context.Background(), time.Hour)
+	defer dcancel()
+	deadlineCtx, stop := context.WithDeadline(dctx, time.Now().Add(30*time.Millisecond))
+	defer stop()
+	fake = &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		time.Sleep(50 * time.Millisecond) // the deadline passes before the tool runs
+		return testllm.ToolCallResponse("1", "grep", `{"pattern": "x"}`), nil
+	}}
+	res, err = Find(deadlineCtx, findInput(t, fake))
 	if err != nil || res.Complete || res.Reason != "deadline reached" {
 		t.Fatalf("result = %+v, %v", res, err)
 	}

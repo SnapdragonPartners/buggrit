@@ -2,7 +2,6 @@ package review
 
 import (
 	"fmt"
-	"io/fs"
 	"strings"
 )
 
@@ -91,7 +90,7 @@ func openingMessage(in *FindInput) string {
 		if !in.Scope.InScope(f.Path()) {
 			continue
 		}
-		text := renderFileDiff(f, maxResultBytes)
+		text := renderFileDiff(f, 0, maxResultBytes)
 		if b.Len()+len(text) > maxPromptDiffBytes {
 			skipped = append(skipped, f.Path())
 			continue
@@ -114,7 +113,7 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 		if err != nil {
 			continue
 		}
-		data, err := fs.ReadFile(in.Workspace, p)
+		data, err := readFile(in.Workspace, p)
 		if err != nil || isBinary(data) {
 			continue
 		}

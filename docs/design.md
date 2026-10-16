@@ -639,9 +639,12 @@ We take the precautions that are cheap. We deliberately don't defend against
 people who already have write access to the repo (§1).
 
 - **The model only reads.** Its tools are read-only and confined to the
-  checkout: no symlink escape, no `..`, and no `.git/` (which can hold
+  checkout: no `..`, no symlinks followed, and no `.git/` (which can hold
   credentials and isn't needed for review, since diffs come from
-  `get_diff`). It has no network or GitHub access. Everything posted goes
+  `get_diff`). A path through a symlink is refused, and the refusal names
+  the link's target so the model can ask for that path, where the same
+  rules apply. That closes links that point into `.git/`, which `os.Root`
+  alone would allow. It has no network or GitHub access. Everything posted goes
   through the terminal tool and our renderer.
 - **No tokens on disk.** Checkout uses `persist-credentials: false`. The
   GitHub and LLM tokens exist only in buggrit's process environment, never

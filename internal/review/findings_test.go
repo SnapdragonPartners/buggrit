@@ -97,6 +97,16 @@ func TestSubmitRejects(t *testing.T) {
 	}
 }
 
+// A file-level finding about a deleted file is allowed (design §8).
+func TestSubmitFileLevelOnDeletedFile(t *testing.T) {
+	s := testSubmit(t)
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "old.txt", "line": 0,
+	  "severity": "P2", "category": "docs-drift", "confidence": "medium", "title": "t", "problem": "p", "fix": "f"}]}`)
+	if res.IsError {
+		t.Fatalf("rejected: %s", res.Content)
+	}
+}
+
 func TestSubmitDeletedLineOnLeft(t *testing.T) {
 	s := testSubmit(t)
 	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "old.txt", "line": 2, "side": "LEFT",

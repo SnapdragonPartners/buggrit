@@ -26,7 +26,10 @@ const (
 	maxGrepMatches = 200
 	maxGrepFile    = 1 << 20
 	maxLineChars   = 300
-	maxDirEntries  = 1000
+	// maxReadLineBytes caps one line of read_file or get_diff output, so a
+	// minified file can't blow past maxResultBytes in a single line.
+	maxReadLineBytes = 4 << 10
+	maxDirEntries    = 1000
 )
 
 // toolEnv is what the read-only tools work over.
@@ -103,7 +106,7 @@ func (e *toolEnv) readFile(_ context.Context, call llms.ToolCall) (toolloop.Tool
 	if err != nil {
 		return toolError("%v", err)
 	}
-	data, err := fs.ReadFile(e.ws, name)
+	data, err := readFile(e.ws, name)
 	if err != nil {
 		return toolError("read %s: %v", name, describeFSError(err))
 	}
@@ -133,7 +136,7 @@ func (e *toolEnv) readFile(_ context.Context, call llms.ToolCall) (toolloop.Tool
 		if i-start >= maxReadLines || b.Len() > maxResultBytes {
 			break
 		}
-		fmt.Fprintf(&b, "%6d| %s\n", i, lines[i-1])
+		fmt.Fprintf(&b, "%6d| %s\n", i, clipLine(lines[i-1]))
 		last = i
 	}
 	if last < end {
@@ -248,10 +251,13 @@ func (g *grepper) visit(name string, d fs.DirEntry, err error) error {
 	switch {
 	case err != nil:
 		return nil //nolint:nilerr // skip unreadable entries
-	case d.IsDir():
-		if name != "." && hiddenPath(name) {
+	case name != "." && hiddenPath(name):
+		// .git as a directory, or as a gitfile in a submodule.
+		if d.IsDir() {
 			return fs.SkipDir
 		}
+		return nil
+	case d.IsDir():
 		return nil
 	case !d.Type().IsRegular() || !glob.Match(g.glob, name):
 		return nil
@@ -263,6 +269,11 @@ func (g *grepper) visit(name string, d fs.DirEntry, err error) error {
 	if rerr != nil || isBinary(data) {
 		return nil //nolint:nilerr // unreadable or binary files aren't searched
 	}
+	return g.search(name, data)
+}
+
+// search appends data's matching lines, stopping the walk at the cap.
+func (g *grepper) search(name string, data []byte) error {
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, 0, 64<<10), maxGrepFile)
 	for n := 1; sc.Scan(); n++ {
@@ -281,6 +292,14 @@ func (g *grepper) visit(name string, d fs.DirEntry, err error) error {
 }
 
 func clip(line string) string { return truncate(line, maxLineChars) }
+
+// clipLine bounds one line of file or diff output, saying how long it was.
+func clipLine(line string) string {
+	if len(line) <= maxReadLineBytes {
+		return line
+	}
+	return truncate(line, maxReadLineBytes) + fmt.Sprintf(" [line is %d bytes; clipped]", len(line))
+}
 
 func listDirDef() llms.ToolDefinition {
 	return llms.ToolDefinition{
@@ -308,7 +327,7 @@ func (e *toolEnv) listDir(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 	if err != nil {
 		return toolError("%v", err)
 	}
-	entries, err := fs.ReadDir(e.ws, name)
+	entries, err := readDir(e.ws, name)
 	if err != nil {
 		return toolError("list %s: %v", name, describeFSError(err))
 	}
@@ -343,7 +362,8 @@ func getDiffDef() llms.ToolDefinition {
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "A changed file (head path; base path for a deleted file)"}
+    "path": {"type": "string", "description": "A changed file (head path; base path for a deleted file)"},
+    "offset": {"type": "integer", "minimum": 0, "description": "Skip this many diff lines, to continue a truncated diff"}
   },
   "additionalProperties": false
 }`),
@@ -353,10 +373,14 @@ func getDiffDef() llms.ToolDefinition {
 //nolint:gocritic // hugeParam: the signature is fixed by toolloop.Tool.Execute
 func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolResult, error) {
 	var args struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
 	}
 	if err := decodeArgs(&call, &args); err != nil {
 		return toolError("%v", err)
+	}
+	if args.Offset < 0 {
+		return toolError("offset must not be negative")
 	}
 	p := strings.TrimPrefix(strings.TrimSpace(args.Path), "./")
 	if p == "" {
@@ -366,7 +390,7 @@ func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 	if f == nil {
 		return toolError("%s is not changed by this pull request; call get_diff without a path to list changed files", p)
 	}
-	return ok(renderFileDiff(f, maxResultBytes))
+	return ok(renderFileDiff(f, args.Offset, maxResultBytes))
 }
 
 // fileList renders the changed files, one per line. If inScope is non-nil,
@@ -410,14 +434,16 @@ func lineCounts(f *github.FileDiff) (added, deleted int) {
 	return added, deleted
 }
 
-// renderFileDiff renders one file's diff for the model. Each head-side line
-// carries its line number, which is what findings anchor to:
+// renderFileDiff renders one file's diff for the model, skipping its first
+// offset diff lines and stopping near limit bytes with a continuation hint.
+// Each head-side line carries its line number, which is what findings anchor
+// to:
 //
 //	@@ -10,3 +10,4 @@
-//	   10   ctx line
-//	   11 + added line
-//	      - deleted line
-func renderFileDiff(f *github.FileDiff, limit int) string {
+//	    10   ctx line
+//	    11 + added line
+//	       - deleted line
+func renderFileDiff(f *github.FileDiff, offset, limit int) string {
 	var b strings.Builder
 	header := f.Path()
 	switch f.Status {
@@ -436,20 +462,33 @@ func renderFileDiff(f *github.FileDiff, limit int) string {
 		b.WriteString("(no content changes)\n")
 		return b.String()
 	}
+	if offset > 0 {
+		fmt.Fprintf(&b, "(continuing after %d diff lines)\n", offset)
+	}
+	n := 0 // diff lines seen, across hunks
 	for hi := range f.Hunks {
 		h := &f.Hunks[hi]
+		if n+len(h.Lines) <= offset {
+			n += len(h.Lines)
+			continue
+		}
 		fmt.Fprintf(&b, "@@ -%d,%d +%d,%d @@\n", h.OldStart, h.OldLines, h.NewStart, h.NewLines)
 		for li := range h.Lines {
-			l := &h.Lines[li]
+			if n < offset {
+				n++
+				continue
+			}
 			if b.Len() > limit {
-				fmt.Fprintf(&b, "[diff truncated; use read_file on %s for the rest]\n", f.Path())
+				fmt.Fprintf(&b, "[diff truncated; call get_diff with path %q and offset %d to continue]\n", f.Path(), n)
 				return b.String()
 			}
+			l := &h.Lines[li]
 			num := "      "
 			if l.Kind != github.LineDeleted {
 				num = fmt.Sprintf("%6d", l.New)
 			}
-			fmt.Fprintf(&b, "%s %c %s\n", num, byte(l.Kind), l.Text)
+			fmt.Fprintf(&b, "%s %c %s\n", num, byte(l.Kind), clipLine(l.Text))
+			n++
 		}
 	}
 	return b.String()
