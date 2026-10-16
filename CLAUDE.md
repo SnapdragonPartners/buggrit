@@ -33,11 +33,13 @@ internal/llm/      # Config → maestro-llms chat clients per stage, shared limi
 internal/github/   # REST + GraphQL client, diff parsing, line → anchor mapping, head fence (design §2, §3, §8)
 internal/github/githubtest/  # httptest fake of the GitHub endpoints we use (design §11)
 internal/state/    # Comment markers and the own-comment check; later the ledger and state machine (design §6)
+internal/glob/     # include/exclude path globs with ** (design §4)
+internal/review/   # Engine: workspace, read-only tools, prompts, agentic finder with submit_findings (design §5)
 docs/design.md     # The binding design
 hooks/             # Git hooks (pre-push: lint + test)
 ```
 
-Packages planned in the design (§2) but not yet created: `internal/review`, `internal/publish`.
+Packages planned in the design (§2) but not yet created: `internal/publish`.
 
 `internal/github` uses only the standard library (no go-github). Tests drive the real client against `githubtest`; `TestLive` is skipped unless `BUGGRIT_LIVE_*` is set (see `internal/github/live_test.go`).
 

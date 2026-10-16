@@ -350,11 +350,26 @@ returns a tool error (`ToolResult{IsError: true}`) naming the problem, so the
 model can correct itself and resubmit inside the same loop. A valid
 submission ends the loop successfully.
 
-`toolloop` in maestro-llms v0.7.1 can't do this: a successful tool call
-always triggers another model call. The fix is tracked in
-[maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
-and buggrit depends on it. buggrit calls `toolloop` from one function in
-`internal/review`, so the change is confined to one place. Finding schema:
+This uses `toolloop`'s terminal tools, added in maestro-llms v0.8.0
+([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
+its ADR-0017). buggrit calls `toolloop` from one function in
+`internal/review`.
+
+- **Validation:** `submit_findings` checks every finding: enums, required
+  fields, that the path is a changed, in-scope file, and that every line
+  exists at the head. It reports all problems at once, so one resubmission
+  can fix them.
+- **Files outside the diff:** a finding about a file the diff doesn't touch,
+  such as a stale doc, is anchored at the changed line that made it wrong.
+- **No submission:** a model that answers in text instead of submitting gets
+  one nudge. If it still doesn't submit, or the run hits a ceiling, the
+  deadline or a model error, the pass is reported incomplete with that
+  reason. It never comes back silently empty (§9).
+- **"No ceiling":** `max_tool_iterations: 0` is run as 10,000, which is also
+  the configurable maximum. toolloop would read 0 as its own default of 8,
+  and it preallocates its transcript in proportion to the limit.
+
+Finding schema:
 
 ```json
 {
