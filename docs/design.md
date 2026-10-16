@@ -676,7 +676,10 @@ sooner deadline: between one and ten minutes, and never more than half). If it h
 submitted by then, one more turn tells the model time is up and forces
 `submit_findings` with what it has. Those findings are posted, and the pass
 is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
-for minutes on one turn) would lose a whole pass's work at the deadline.
+for minutes on one turn) would lose a whole pass's work at the deadline. A
+turn that spends its whole output budget on reasoning comes back empty, and
+the finder drops it before continuing, since maestro-llms rejects an empty
+assistant message in a transcript.
 
 **The model knows the clock.** The opening message states the time budget
 and when to submit, and every tool result ends with
@@ -773,12 +776,19 @@ merge gate is the control for those.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal
    agents. Measures precision, recall and passes to convergence per model.
 
-Steps 1–2 don't depend on any maestro-llms work. Step 3 needs
-[maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)
-(terminal tools). It also needs a working Qwen/GLM path,
-[maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
-but any provider maestro-llms already supports can stand in until that's
-done.
+**Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
+reviews its own PRs. The maestro-llms work step 3 needed has shipped:
+terminal tools
+([#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
+v0.8.0), the LunaRoute path
+([#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
+v0.8.1), and the toolloop preallocation fix
+([#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73),
+v0.9.0). Still open upstream:
+[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86)
+(reasoning-effort control). The empty-turn fix
+([#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85)) is
+merged but not yet released, so buggrit keeps its own guard (§9).
 
 ## 13. Decisions
 
@@ -812,9 +822,10 @@ done.
   cheap precautions (§10).
 - **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).
-- **Terminal tools** are required from `toolloop`
-  ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)).
-  LunaRoute verification is
-  [maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54).
+- **Terminal tools** come from `toolloop`
+  ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
+  shipped in v0.8.0). LunaRoute was verified in
+  [maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54)
+  (v0.8.1).
 
 No open questions remain.
