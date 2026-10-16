@@ -30,11 +30,16 @@ Prefer the standard library. If the needed behavior can be written clearly in ro
 cmd/buggrit/       # Entrypoint: review (Action), config validate, version
 internal/config/   # .github/buggrit.json: strict decoding, defaults, validation (design §4)
 internal/llm/      # Config → maestro-llms chat clients per stage, shared limiter (design §4, §9)
+internal/github/   # REST + GraphQL client, diff parsing, line → anchor mapping, head fence (design §2, §3, §8)
+internal/github/githubtest/  # httptest fake of the GitHub endpoints we use (design §11)
+internal/state/    # Comment markers and the own-comment check; later the ledger and state machine (design §6)
 docs/design.md     # The binding design
 hooks/             # Git hooks (pre-push: lint + test)
 ```
 
-Packages planned in the design (§2) but not yet created: `internal/github`, `internal/state`, `internal/review`, `internal/publish`.
+Packages planned in the design (§2) but not yet created: `internal/review`, `internal/publish`.
+
+`internal/github` uses only the standard library (no go-github). Tests drive the real client against `githubtest`; `TestLive` is skipped unless `BUGGRIT_LIVE_*` is set (see `internal/github/live_test.go`).
 
 ## Makefile Targets
 
@@ -84,5 +89,5 @@ AI reviewers see only the diff and the PR body, so the body carries the design c
 
 ## Testing
 
-- New behavior comes with tests. Use `llms/testllm` fakes for model calls; tests never touch the network.
+- New behavior comes with tests. Use `llms/testllm` fakes for model calls and `githubtest` for GitHub; tests never touch the network. The one exception is `TestLive`, which runs only when explicitly configured.
 - Failing tests on a branch belong to that branch. We don't waive failures as "unrelated"; fix the code or fix the test.

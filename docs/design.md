@@ -131,8 +131,8 @@ concurrency:
   # Events caused by buggrit's own comments get a throwaway group, so they
   # never replace a pending run (§3 "Bot events").
   group: >-
-    ${{ (github.event.comment.user.login == 'buggrit[bot]' ||
-         github.event.review.user.login == 'buggrit[bot]')
+    ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
+         github.event.review.user.login == 'buggrit-bot[bot]')
         && format('buggrit-ignored-{0}', github.run_id)
         || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   # pushes cancel an in-flight pass; comment-triggered runs wait their turn
@@ -146,8 +146,8 @@ jobs:
     # skip drafts, and skip events caused by buggrit's own comments
     if: >-
       !github.event.pull_request.draft &&
-      github.event.comment.user.login != 'buggrit[bot]' &&
-      github.event.review.user.login != 'buggrit[bot]'
+      github.event.comment.user.login != 'buggrit-bot[bot]' &&
+      github.event.review.user.login != 'buggrit-bot[bot]'
     runs-on: [self-hosted]   # must be able to reach the model endpoint
     timeout-minutes: 45      # hard wall-clock ceiling; buggrit's own deadline is lower
     steps:
@@ -202,19 +202,38 @@ passes secrets.
   `if` then skips them.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
-  `actions/create-github-app-token`, so comments appear as `buggrit[bot]`.
+  `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
+  (The App is `buggrit-bot` because GitHub reserves the name `buggrit` for
+  the existing @buggrit account.)
   The built-in `GITHUB_TOKEN` also works as a fallback, with comments
   appearing as `github-actions[bot]`.
-  GitHub documents that `resolveReviewThread` can fail with "Resource not
-  accessible by integration" for the Actions `GITHUB_TOKEN`. That limitation
-  applies to the Actions integration token. Claude Code's personal `gh`
-  token, which resolves threads without trouble today, is a different kind
-  of token. Build step 2 tests both early. If resolving or unresolving
-  fails, buggrit keeps the state in markers, lists the affected threads in
-  the summary as "resolve manually", and carries on.
+  **Resolving threads needs write access to repository contents.** The
+  build-step-2 live check (`TestLive`, October 2026) measured each token
+  kind:
+
+  | Token | Post, reply, summary | Resolve / unresolve |
+  |---|---|---|
+  | Personal token (`repo` scope) | yes | yes |
+  | App, Contents: Read | yes | no: "Resource not accessible by integration" |
+  | App, Contents: Read and write | yes | yes |
+  | Actions `GITHUB_TOKEN`, `contents: read` | yes | no, same error |
+
+  So the App needs **Pull requests: Read and write**, **Contents: Read and
+  write**, and, for the gate check, **Checks: Read and write**. The Actions
+  `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
+  unresolving is refused, buggrit keeps the state in markers, lists the
+  affected threads in the summary as "resolve manually", and carries on.
+- **App credentials** are set once at the org level: the variable
+  `BUGGRIT_APP_ID` and the secret `BUGGRIT_APP_PRIVATE_KEY`, both visible to
+  the repos buggrit runs in. The App's installation needs those repos too.
+  Runs triggered by Dependabot see only Dependabot secrets, so reviewing
+  Dependabot PRs also needs the key added there.
 - **Own comments:** a comment is buggrit's only if it has the
   `buggrit:v1` marker **and** its author is buggrit's configured login.
   Other workflows share `github-actions[bot]`, so neither check works alone.
+  Logins compare case-insensitively, in REST form (`buggrit-bot[bot]`). GraphQL
+  reports a bot's login without the `[bot]` suffix, so the GitHub layer adds
+  it back for `Bot` authors before anything compares logins.
 
 ## 4. Configuration
 
@@ -257,7 +276,7 @@ error. Settings left out take defaults from code, and `version` is required.
     "warn_after_pass": 5
   },
   "gate": { "fail_on": "none" },
-  "identity": { "bot_login": "buggrit[bot]" }
+  "identity": { "bot_login": "buggrit-bot[bot]" }
 }
 ```
 
@@ -553,6 +572,10 @@ Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same cl
 
 Findings that can't be anchored to a changed line are posted as file-level
 review comments (`subject_type: file`) so they still get their own thread.
+GitHub's create-review call can't carry file-level comments, so they're
+posted one by one right after the review. A range that crosses hunks is
+narrowed to its last line, and a line outside every hunk falls back to
+file level.
 
 ### Completion signal
 - The job's check run tells the agent the pass is finished
@@ -588,6 +611,13 @@ enforce lane limits (for example LunaRoute) or limits shared across runs,
 reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
 and circuit-breaker policy come from the `maestro-llms` recommended chain.
 
+GitHub calls retry rate limits (429, or 403 with `Retry-After` or an
+exhausted quota) for every method, waiting up to 60 seconds. Longer waits
+fail the call, so the pass reports itself incomplete. Server errors and
+transport failures are retried only for reads, including GraphQL queries.
+A mutation that fails that way may still have landed, and the next pass's
+replay and repair (§6) finish the job without risking a duplicate.
+
 ## 10. Security (proportionate to the trust model)
 
 We take the precautions that are cheap. We deliberately don't defend against
@@ -604,7 +634,10 @@ people who already have write access to the repo (§1).
 - **Config comes from the base branch**, so a PR can't redirect the model
   endpoint.
 - No PR code is run, and `pull_request_target` is never used.
-- Tokens get the minimum permissions listed in §3.
+- Tokens get the minimum permissions listed in §3. The App's Contents
+  write access, needed only to resolve threads, could push code; it's
+  acceptable because the token lives only in buggrit's process and the
+  model's tools can't reach it.
 
 Not in scope: telling an agent apart from the person whose credentials it
 uses, or stopping someone with write access from dismissing findings. The
@@ -636,7 +669,9 @@ merge gate is the control for those.
    `reviewThreads`, posting reviews and replies, resolve/unresolve, markers,
    head fencing. All tested against the fake. Includes an early **live
    check** that resolving and unresolving threads works with both the App
-   token and the Actions `GITHUB_TOKEN`.
+   token and the Actions `GITHUB_TOKEN`: `TestLive`, run by
+   `.github/workflows/livecheck.yml` when a PR is labeled
+   `buggrit-livecheck`.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
    Needs maestro-llms#53 (terminal tools).
@@ -645,6 +680,8 @@ merge gate is the control for those.
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
    summary ledger, gate check.
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
+   GitHub won't render very large diffs (`ErrDiffTooLarge`); for those the
+   diff comes from the checkout (`git diff <merge-base>..<head>`) instead.
 7. **Packaging:** release binaries, composite action, reusable workflow.
    Run in morris **alongside Copilot**, compare, then switch Copilot off.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal
@@ -678,7 +715,7 @@ done.
   as human, including an agent using a person's credentials. Agents never
   merge, and that is the integrity control. Security work is limited to
   cheap precautions (§10).
-- **Identity:** a GitHub App token (`buggrit[bot]`) is the supported setup,
+- **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).
 - **Terminal tools** are required from `toolloop`
   ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)).

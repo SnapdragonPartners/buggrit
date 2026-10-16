@@ -183,7 +183,7 @@ func Defaults() Config {
 		},
 		Convergence: Convergence{MaxRebuttals: 1, WarnAfterPass: 5},
 		Gate:        Gate{FailOn: GateNone},
-		Identity:    Identity{BotLogin: "buggrit[bot]"},
+		Identity:    Identity{BotLogin: "buggrit-bot[bot]"},
 	}
 }
 
