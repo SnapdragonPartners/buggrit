@@ -108,13 +108,8 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	}
 	known, notes := readThreads(threads, cfg.Identity.BotLogin)
 
-	findCtx, wrapUp := ctx, time.Duration(0)
-	if d := cfg.Limits.PassDeadline.Std(); d > 0 {
-		wrapUp = wrapUpReserve(d)
-		var cancel context.CancelFunc
-		findCtx, cancel = context.WithTimeout(ctx, d)
-		defer cancel()
-	}
+	findCtx, cancel, wrapUp := findTimes(ctx, cfg.Limits.PassDeadline.Std())
+	defer cancel()
 	scope := glob.Filter{Include: cfg.Review.Include, Exclude: cfg.Review.Exclude}
 	found, err := Find(findCtx, &FindInput{
 		Client:           opts.Find,
@@ -137,6 +132,21 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	res.Findings, res.Duplicates, res.BelowThreshold = rec.kept, rec.duplicates, rec.belowThreshold
 	res.Elapsed = time.Since(start)
 	return res, nil
+}
+
+// findTimes bounds the finder by the pass deadline and works out its
+// wrap-up reserve from the deadline that actually applies, which may be the
+// caller's if it's sooner. With no deadline at all there's no reserve.
+func findTimes(ctx context.Context, passDeadline time.Duration) (context.Context, context.CancelFunc, time.Duration) {
+	findCtx, cancel := ctx, context.CancelFunc(func() {})
+	if passDeadline > 0 {
+		findCtx, cancel = context.WithTimeout(ctx, passDeadline)
+	}
+	deadline, ok := findCtx.Deadline()
+	if !ok {
+		return findCtx, cancel, 0
+	}
+	return findCtx, cancel, wrapUpReserve(time.Until(deadline))
 }
 
 // wrapUpReserve is how much of the pass deadline the finder holds back to

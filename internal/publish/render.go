@@ -14,6 +14,21 @@ import (
 // FindingBody renders one finding's thread comment (design §8), ending with
 // its marker. pass and sha identify the pass that raised it.
 func FindingBody(c *review.Candidate, pass int, sha string) (string, error) {
+	text := findingText(c, c.HasSuggestion())
+	if len(text) > maxBody && c.HasSuggestion() {
+		// Truncating would cut through the suggestion block and leave
+		// broken replacement code, so it goes as a whole.
+		text = findingText(c, false)
+	}
+	body, err := state.Append(capBody(text), &state.Marker{ID: c.ID, FP: c.FP, Severity: c.Severity, Pass: pass, SHA: sha})
+	if err != nil {
+		return "", fmt.Errorf("render %s: %w", c.ID, err)
+	}
+	return body, nil
+}
+
+// findingText renders a finding's comment without its marker.
+func findingText(c *review.Candidate, suggestion bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s · %s** · confidence: %s — %s\n\n", c.Severity, c.Category, c.Confidence, c.Title)
 	b.WriteString(strings.TrimSpace(c.Problem))
@@ -22,7 +37,7 @@ func FindingBody(c *review.Candidate, pass int, sha string) (string, error) {
 		fmt.Fprintf(&b, "**Impact:** %s\n\n", impact)
 	}
 	fmt.Fprintf(&b, "**Fix:** %s\n\n", strings.TrimSpace(c.Fix))
-	if c.HasSuggestion() {
+	if suggestion {
 		fence := codeFence(c.Suggestion)
 		fmt.Fprintf(&b, "%ssuggestion\n%s\n%s\n\n", fence, strings.TrimSuffix(c.Suggestion, "\n"), fence)
 	}
@@ -41,11 +56,7 @@ func FindingBody(c *review.Candidate, pass int, sha string) (string, error) {
 		weight = "blocking"
 	}
 	fmt.Fprintf(&b, "<sub>buggrit %s · %s · Fix it, or reply explaining why not.</sub>", c.ID, weight)
-	body, err := state.Append(capBody(b.String()), &state.Marker{ID: c.ID, FP: c.FP, Severity: c.Severity, Pass: pass, SHA: sha})
-	if err != nil {
-		return "", fmt.Errorf("render %s: %w", c.ID, err)
-	}
-	return body, nil
+	return b.String()
 }
 
 // codeFence returns a backtick fence longer than any run of backticks in s,

@@ -159,6 +159,31 @@ func TestReviewIncomplete(t *testing.T) {
 	}
 }
 
+// The reserve follows the deadline that applies: a caller's shorter one
+// wins over pass_deadline.
+func TestFindTimes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	findCtx, stop, wrapUp := findTimes(ctx, 30*time.Minute)
+	defer stop()
+	if dl, _ := findCtx.Deadline(); time.Until(dl) > 2*time.Minute {
+		t.Errorf("deadline in %s, want the caller's 2m", time.Until(dl))
+	}
+	if wrapUp > time.Minute {
+		t.Errorf("wrap-up reserve %s exceeds half of the 2m that applies", wrapUp)
+	}
+	if _, stop2, w := findTimes(context.Background(), 0); w != 0 {
+		t.Errorf("reserve %s with no deadline", w)
+	} else {
+		stop2()
+	}
+	_, stop3, w := findTimes(context.Background(), 30*time.Minute)
+	defer stop3()
+	if w < 7*time.Minute || w > 7*time.Minute+30*time.Second {
+		t.Errorf("reserve for 30m = %s", w)
+	}
+}
+
 func TestWrapUpReserve(t *testing.T) {
 	for d, want := range map[time.Duration]time.Duration{
 		30 * time.Second: 15 * time.Second,

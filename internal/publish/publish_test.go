@@ -124,6 +124,23 @@ func TestBodiesCapped(t *testing.T) {
 	}
 }
 
+// An oversized suggestion is dropped whole rather than truncated into
+// broken replacement code.
+func TestOversizedSuggestionOmitted(t *testing.T) {
+	c := classFinding()
+	c.Suggestion = strings.Repeat("x := 1\n", 10000)
+	body, err := FindingBody(&c, 1, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(body, "suggestion") || strings.Contains(body, "[truncated]") || len(body) > 65536 {
+		t.Errorf("body is %d bytes; suggestion or truncation present", len(body))
+	}
+	if !strings.Contains(body, "**Fix:** Initialize") {
+		t.Error("the rest of the finding was lost")
+	}
+}
+
 func TestReviewBodyGolden(t *testing.T) {
 	cases := map[string]*review.Result{
 		"review-complete.md": {HeadSHA: head, Pass: 2, Complete: true, Summary: "Adds Put; one real bug.",
