@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Pinned tool versions. Bumping one is intentional and changes the cache key,
+# so the next run reinstalls.
+env:
+  GOLANGCI_VERSION: v1.64.8
+  GOVULNCHECK_VERSION: v1.1.4
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Cache Go tool binaries
+        id: cache-go-tools
+        uses: actions/cache@v6
+        with:
+          path: ~/go/bin
+          key: go-tools-${{ runner.os }}-golangci-${{ env.GOLANGCI_VERSION }}-vuln-${{ env.GOVULNCHECK_VERSION }}
+
+      - name: Install Go tools
+        if: steps.cache-go-tools.outputs.cache-hit != 'true'
+        run: |
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@${{ env.GOLANGCI_VERSION }}
+          go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+
+      - name: Download Go module dependencies
+        run: go mod download
+
+      - name: Lint
+        run: make lint
+
+      - name: Vulnerability check
+        run: make vuln
+
+      - name: Build
+        run: make build
+
+      - name: Unit tests
+        run: make test

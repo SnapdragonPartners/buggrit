@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+
+echo "Running lint and unit tests before push..."
+make lint
+make test

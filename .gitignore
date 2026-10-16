@@ -1,0 +1,33 @@
+# Build artifacts
+bin/
+dist/
+
+# Test artifacts
+*.test
+*.out
+coverage/
+
+# Go workspace (use one locally to develop against ../maestro-llms; never commit it)
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets
+*.env
+.env*
+
+# .claude holds machine-local settings AND shared project skills. The
+# contents are ignored rather than the directory, so skills/ can be
+# un-ignored and shared.
+.claude/*
+!.claude/skills/
