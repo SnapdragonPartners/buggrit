@@ -8,7 +8,7 @@ import (
 )
 
 // Comment is a review-thread or conversation comment. Author is the REST-form
-// login: bots end in "[bot]" (for example "buggrit[bot]").
+// login: bots end in "[bot]" (for example "buggrit-bot[bot]").
 type Comment struct {
 	CreatedAt time.Time
 	// ID is the GraphQL node ID.

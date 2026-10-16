@@ -131,8 +131,8 @@ concurrency:
   # Events caused by buggrit's own comments get a throwaway group, so they
   # never replace a pending run (§3 "Bot events").
   group: >-
-    ${{ (github.event.comment.user.login == 'buggrit[bot]' ||
-         github.event.review.user.login == 'buggrit[bot]')
+    ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
+         github.event.review.user.login == 'buggrit-bot[bot]')
         && format('buggrit-ignored-{0}', github.run_id)
         || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   # pushes cancel an in-flight pass; comment-triggered runs wait their turn
@@ -146,8 +146,8 @@ jobs:
     # skip drafts, and skip events caused by buggrit's own comments
     if: >-
       !github.event.pull_request.draft &&
-      github.event.comment.user.login != 'buggrit[bot]' &&
-      github.event.review.user.login != 'buggrit[bot]'
+      github.event.comment.user.login != 'buggrit-bot[bot]' &&
+      github.event.review.user.login != 'buggrit-bot[bot]'
     runs-on: [self-hosted]   # must be able to reach the model endpoint
     timeout-minutes: 45      # hard wall-clock ceiling; buggrit's own deadline is lower
     steps:
@@ -202,7 +202,9 @@ passes secrets.
   `if` then skips them.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
-  `actions/create-github-app-token`, so comments appear as `buggrit[bot]`.
+  `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
+  (The App is `buggrit-bot` because GitHub reserves the name `buggrit` for
+  the existing @buggrit account.)
   The built-in `GITHUB_TOKEN` also works as a fallback, with comments
   appearing as `github-actions[bot]`.
   GitHub documents that `resolveReviewThread` can fail with "Resource not
@@ -215,7 +217,7 @@ passes secrets.
 - **Own comments:** a comment is buggrit's only if it has the
   `buggrit:v1` marker **and** its author is buggrit's configured login.
   Other workflows share `github-actions[bot]`, so neither check works alone.
-  Logins compare case-insensitively, in REST form (`buggrit[bot]`). GraphQL
+  Logins compare case-insensitively, in REST form (`buggrit-bot[bot]`). GraphQL
   reports a bot's login without the `[bot]` suffix, so the GitHub layer adds
   it back for `Bot` authors before anything compares logins.
 
@@ -260,7 +262,7 @@ error. Settings left out take defaults from code, and `version` is required.
     "warn_after_pass": 5
   },
   "gate": { "fail_on": "none" },
-  "identity": { "bot_login": "buggrit[bot]" }
+  "identity": { "bot_login": "buggrit-bot[bot]" }
 }
 ```
 
@@ -696,7 +698,7 @@ done.
   as human, including an agent using a person's credentials. Agents never
   merge, and that is the integrity control. Security work is limited to
   cheap precautions (§10).
-- **Identity:** a GitHub App token (`buggrit[bot]`) is the supported setup,
+- **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).
 - **Terminal tools** are required from `toolloop`
   ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53)).

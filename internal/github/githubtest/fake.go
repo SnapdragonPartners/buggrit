@@ -24,7 +24,7 @@ import (
 // DefaultToken authenticates as DefaultLogin.
 const (
 	DefaultToken = "buggrit-token"
-	DefaultLogin = "buggrit[bot]"
+	DefaultLogin = "buggrit-bot[bot]"
 )
 
 // Comment is a stored review comment.

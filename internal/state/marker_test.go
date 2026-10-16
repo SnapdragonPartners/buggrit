@@ -106,16 +106,16 @@ func TestOwnMarker(t *testing.T) {
 		name, author, body string
 		own                bool
 	}{
-		{"buggrit", "buggrit[bot]", body, true},
-		{"case-insensitive login", "Buggrit[bot]", body, true},
+		{"buggrit", "buggrit-bot[bot]", body, true},
+		{"case-insensitive login", "Buggrit-Bot[bot]", body, true},
 		{"forged by a human", "dratner", body, false},
 		{"shared actions bot", "github-actions[bot]", body, false},
-		{"buggrit without marker", "buggrit[bot]", "hello", false},
+		{"buggrit without marker", "buggrit-bot[bot]", "hello", false},
 		{"ghost author", "", body, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, own := OwnMarker(&github.Comment{Author: tt.author, Body: tt.body}, "buggrit[bot]")
+			_, own := OwnMarker(&github.Comment{Author: tt.author, Body: tt.body}, "buggrit-bot[bot]")
 			if own != tt.own {
 				t.Errorf("own = %v, want %v", own, tt.own)
 			}
