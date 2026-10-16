@@ -387,6 +387,12 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   transcript by the limit
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
+`submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
+`coverage` is required: `complete` if the model reviewed the whole change,
+`partial` if it didn't (it says what it missed in `summary`). A partial
+submission's findings are posted, but the pass is incomplete, so the next
+run reviews that head again (§9).
+
 Finding schema:
 
 ```json
@@ -671,6 +677,14 @@ submitted by then, one more turn tells the model time is up and forces
 `submit_findings` with what it has. Those findings are posted, and the pass
 is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
 for minutes on one turn) would lose a whole pass's work at the deadline.
+
+**The model knows the clock.** The opening message states the time budget
+and when to submit, and every tool result ends with
+`[time: 14 min of 40 min used; submit by 30 min]`. Wall clock, not turns,
+is what bounds a pass, and one turn can take seconds or minutes. Because
+time pressure could make a model submit before it has covered everything,
+`submit_findings` asks for `coverage`, and a `partial` review leaves the
+pass incomplete instead of recording a complete pass over partial work.
 
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can

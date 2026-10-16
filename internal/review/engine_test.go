@@ -46,7 +46,7 @@ func TestReviewFullPass(t *testing.T) {
 	low := strings.Replace(validFinding, `"high"`, `"low"`, 1)
 	fileLevel := `{"path": "internal/cache/cache.go", "line": 0, "severity": "P2", "category": "docs-drift",
 	  "confidence": "high", "title": "README doesn't mention Put", "problem": "p", "fix": "f"}`
-	model := submitting(`{"summary": "One real bug.", "findings": [` + validFinding + `, ` + validFinding + `, ` + low + `, ` + fileLevel + `]}`)
+	model := submitting(`{"summary": "One real bug.", "coverage": "complete", "findings": [` + validFinding + `, ` + validFinding + `, ` + low + `, ` + fileLevel + `]}`)
 
 	res, err := Review(context.Background(), ref, testWorkspace(), gh, engineOptions(model))
 	if err != nil {
@@ -76,7 +76,7 @@ func TestReviewFullPass(t *testing.T) {
 // buggrit's own earlier finding, matched by fingerprint, isn't raised again.
 func TestReviewDedupesAgainstOwnThreads(t *testing.T) {
 	fake, gh, ref := engineSetup(t)
-	first, err := Review(context.Background(), ref, testWorkspace(), gh, engineOptions(submitting(`{"findings": [`+validFinding+`]}`)))
+	first, err := Review(context.Background(), ref, testWorkspace(), gh, engineOptions(submitting(`{"coverage": "complete", "findings": [`+validFinding+`]}`)))
 	if err != nil || len(first.Findings) != 1 {
 		t.Fatalf("first pass: %+v, %v", first, err)
 	}
@@ -87,7 +87,7 @@ func TestReviewDedupesAgainstOwnThreads(t *testing.T) {
 	}
 	fake.AddThread(7, githubtest.DefaultLogin, c.Path, c.Line, body)
 
-	model := submitting(`{"findings": [` + validFinding + `]}`)
+	model := submitting(`{"coverage": "complete", "findings": [` + validFinding + `]}`)
 	second, err := Review(context.Background(), ref, testWorkspace(), gh, engineOptions(model))
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestReviewSkipsCompletedHead(t *testing.T) {
 	if _, perr := gh.CreateReview(context.Background(), engineRepo, 7, &github.Review{Body: body, CommitID: ref.HeadSHA}); perr != nil {
 		t.Fatal(perr)
 	}
-	res, err = Review(context.Background(), ref, testWorkspace(), gh, engineOptions(submitting(`{"findings": []}`)))
+	res, err = Review(context.Background(), ref, testWorkspace(), gh, engineOptions(submitting(`{"coverage": "complete", "findings": []}`)))
 	if err != nil || res.Skipped || res.Pass != 3 {
 		t.Errorf("after an incomplete pass: %+v, %v", res, err)
 	}

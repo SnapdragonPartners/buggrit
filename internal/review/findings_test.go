@@ -30,7 +30,7 @@ const validFinding = `{
 
 func TestSubmitAccepts(t *testing.T) {
 	s := testSubmit(t)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"summary": "one bug", "findings": [`+validFinding+`]}`)
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"summary": "one bug", "coverage": "complete", "findings": [`+validFinding+`]}`)
 	if res.IsError || !res.Stop {
 		t.Fatalf("result = %+v", res)
 	}
@@ -42,7 +42,7 @@ func TestSubmitAccepts(t *testing.T) {
 
 func TestSubmitNormalizes(t *testing.T) {
 	s := testSubmit(t)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [{
 	  "path": "./internal/cache/cache.go", "line": 3, "start_line": 3, "severity": "p2", "category": "Docs-Drift",
 	  "confidence": "HIGH", "title": " t ", "problem": "p", "fix": "f"}]}`)
 	if res.IsError {
@@ -57,7 +57,7 @@ func TestSubmitNormalizes(t *testing.T) {
 
 func TestSubmitEmpty(t *testing.T) {
 	s := testSubmit(t)
-	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": []}`); !res.Stop {
+	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": []}`); !res.Stop {
 		t.Errorf("empty submission not accepted: %+v", res)
 	}
 	s = testSubmit(t)
@@ -71,7 +71,7 @@ func TestSubmitEmpty(t *testing.T) {
 // decodeArgs reads one JSON value; a second value or trailing text must not
 // slip through as an accepted (empty) submission.
 func TestSubmitRejectsTrailingData(t *testing.T) {
-	for _, args := range []string{`{"findings": []} {"findings": []}`, `{"findings": []} and more`} {
+	for _, args := range []string{`{"coverage": "complete", "findings": []} {"coverage": "complete", "findings": []}`, `{"coverage": "complete", "findings": []} and more`} {
 		s := testSubmit(t)
 		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", args)
 		wantErr(t, res, "unexpected data after the JSON object")
@@ -80,7 +80,7 @@ func TestSubmitRejectsTrailingData(t *testing.T) {
 		}
 	}
 	s := testSubmit(t)
-	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", " {\"findings\": []}\n "); !res.Stop {
+	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", " {\"coverage\": \"complete\", \"findings\": []}\n "); !res.Stop {
 		t.Errorf("surrounding whitespace rejected: %+v", res)
 	}
 }
@@ -90,7 +90,7 @@ func TestSubmitRejectsTrailingData(t *testing.T) {
 func TestSubmitMissingLineStillReportsFields(t *testing.T) {
 	s := testSubmit(t)
 	bad := strings.Replace(strings.Replace(validFinding, `"line": 3, `, ``, 1), `"P1"`, `"P7"`, 1)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [`+bad+`]}`)
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [`+bad+`]}`)
 	wantErr(t, res, "line is required")
 	wantErr(t, res, "severity must be")
 	if strings.Contains(res.Content, "has 5 lines") || strings.Contains(res.Content, "not changed") {
@@ -128,7 +128,7 @@ func TestSubmitRejects(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testSubmit(t)
-			res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [`+tt.finding+`]}`)
+			res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [`+tt.finding+`]}`)
 			wantErr(t, res, tt.want)
 			if res.Stop || s.result != nil {
 				t.Error("invalid submission was accepted")
@@ -152,13 +152,13 @@ func TestSubmitOnSymlink(t *testing.T) {
 	}
 	s := &submitTool{env: &toolEnv{ws: ws, diff: d}, inScope: func(string) bool { return true }}
 	for _, line := range []int{0, 1} {
-		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", fmt.Sprintf(`{"findings": [{"path": "link", "line": %d,
+		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", fmt.Sprintf(`{"coverage": "complete", "findings": [{"path": "link", "line": %d,
 		  "severity": "P1", "category": "security", "confidence": "high", "title": "t", "problem": "p", "fix": "f"}]}`, line))
 		if res.IsError {
 			t.Errorf("line %d rejected: %s", line, res.Content)
 		}
 	}
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "link", "line": 0,
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [{"path": "link", "line": 0,
 	  "severity": "P1", "category": "security", "confidence": "high", "title": "t", "problem": "p", "fix": "f",
 	  "class": "c", "instances": [{"path": "link/x", "line": 0}]}]}`)
 	wantErr(t, res, "symbolic link")
@@ -167,7 +167,7 @@ func TestSubmitOnSymlink(t *testing.T) {
 // A file-level finding about a deleted file is allowed (design §8).
 func TestSubmitFileLevelOnDeletedFile(t *testing.T) {
 	s := testSubmit(t)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "old.txt", "line": 0,
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [{"path": "old.txt", "line": 0,
 	  "severity": "P2", "category": "docs-drift", "confidence": "medium", "title": "t", "problem": "p", "fix": "f"}]}`)
 	if res.IsError {
 		t.Fatalf("rejected: %s", res.Content)
@@ -176,7 +176,7 @@ func TestSubmitFileLevelOnDeletedFile(t *testing.T) {
 
 func TestSubmitDeletedLineOnLeft(t *testing.T) {
 	s := testSubmit(t)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "old.txt", "line": 2, "side": "LEFT",
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [{"path": "old.txt", "line": 2, "side": "LEFT",
 	  "severity": "P2", "category": "docs-drift", "confidence": "medium", "title": "t", "problem": "p", "fix": "f"}]}`)
 	if res.IsError {
 		t.Fatalf("rejected: %s", res.Content)
@@ -188,7 +188,7 @@ func TestSubmitDeletedLineOnLeft(t *testing.T) {
 func TestSubmitReportsEveryProblem(t *testing.T) {
 	s := testSubmit(t)
 	bad := strings.Replace(strings.Replace(validFinding, `"P1"`, `"P9"`, 1), `"high"`, `"sure"`, 1)
-	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [`+validFinding+`, `+bad+`, `+
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": "complete", "findings": [`+validFinding+`, `+bad+`, `+
 		strings.Replace(validFinding, `"line": 3,`, `"line": 77,`, 1)+`]}`)
 	for _, want := range []string{"findings[1]", "severity must be", "confidence must be", "findings[2]", "line 77"} {
 		if !strings.Contains(res.Content, want) {
@@ -197,5 +197,23 @@ func TestSubmitReportsEveryProblem(t *testing.T) {
 	}
 	if strings.Contains(res.Content, "findings[0]") {
 		t.Errorf("valid finding reported:\n%s", res.Content)
+	}
+}
+
+func TestSubmitCoverage(t *testing.T) {
+	for args, want := range map[string]string{
+		`{"findings": []}`:                     `coverage must be "complete" or "partial", not ""`,
+		`{"coverage": "most", "findings": []}`: `not "most"`,
+	} {
+		s := testSubmit(t)
+		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", args)
+		wantErr(t, res, want)
+		if res.Stop {
+			t.Errorf("%s stopped the loop", args)
+		}
+	}
+	s := testSubmit(t)
+	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"coverage": " Partial ", "findings": []}`); !res.Stop || s.result.Coverage != CoveragePartial {
+		t.Errorf("coverage not normalized: %+v", s.result)
 	}
 }

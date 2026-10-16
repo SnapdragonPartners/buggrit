@@ -27,7 +27,7 @@ const (
 +func (c *Cache) Put(k string, v int) { c.entries[k] = v }
  // end
 `
-	finding = `{"findings": [{"path": "cache.go", "line": 2, "severity": "P1", "category": "correctness",
+	finding = `{"coverage": "complete", "findings": [{"path": "cache.go", "line": 2, "severity": "P1", "category": "correctness",
 	  "confidence": "high", "title": "Nil map write", "problem": "entries is nil.", "fix": "Initialize it."}]}`
 	cfgJSON = `{"version": 1, "models": {"default": {"provider": "openai-compatible", "base_url": "https://llm.example/v1", "model": "glm-5.3"}}}`
 )
@@ -148,7 +148,7 @@ func TestReviewNothingToDo(t *testing.T) {
 }
 
 func TestReviewConfigFlag(t *testing.T) {
-	e := setupReview(t, submit(`{"findings": []}`))
+	e := setupReview(t, submit(`{"coverage": "complete", "findings": []}`))
 	path := filepath.Join(t.TempDir(), "local.json")
 	if err := os.WriteFile(path, []byte(cfgJSON), 0o600); err != nil {
 		t.Fatal(err)

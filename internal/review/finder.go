@@ -67,7 +67,8 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 	}
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
 	submit := &submitTool{env: env, inScope: in.Scope.InScope}
-	tools := append(readOnlyTools(env), submit.tool())
+	clock := newPassClock(ctx, time.Now(), in.WrapUp)
+	tools := clock.timed(append(readOnlyTools(env), submit.tool()))
 
 	maxIter := in.MaxIterations
 	if maxIter <= 0 {
@@ -83,7 +84,7 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 		investigateCtx, cancel = context.WithDeadline(ctx, deadline.Add(-in.WrapUp))
 		defer cancel()
 	}
-	res, out, err := investigate(investigateCtx, in, tools, submit, maxIter)
+	res, out, err := investigate(investigateCtx, in, tools, submit, maxIter, clock.budget())
 	if err != nil || res.Complete {
 		return res, err
 	}
@@ -98,9 +99,9 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 // investigate is the finder's main loop: tools until submit_findings, with
 // one nudge if the model answers in text. On an incomplete run it returns
 // the last outcome, whose transcript the wrap-up continues.
-func investigate(ctx context.Context, in *FindInput, tools []toolloop.Tool, submit *submitTool, maxIter int) (*FindResult, *toolloop.Outcome, error) {
+func investigate(ctx context.Context, in *FindInput, tools []toolloop.Tool, submit *submitTool, maxIter int, budget string) (*FindResult, *toolloop.Outcome, error) {
 	res := &FindResult{}
-	messages := []llms.Message{llms.UserText(openingMessage(in))}
+	messages := []llms.Message{llms.UserText(openingMessage(in) + budget)}
 	for attempt := 0; ; attempt++ {
 		out := toolloop.Run(ctx, toolloop.Config{
 			Client: in.Client,
@@ -117,9 +118,14 @@ func investigate(ctx context.Context, in *FindInput, tools []toolloop.Tool, subm
 		res.Iterations += out.Iterations
 
 		if out.Kind == toolloop.OutcomeTerminalTool {
-			res.Complete = true
 			res.Findings = submit.result.Findings
 			res.Summary = submit.result.Summary
+			// The model's own account of coverage decides: a partial review
+			// leaves the pass incomplete, so the next run covers it (§9).
+			res.Complete = submit.result.Coverage == CoverageComplete
+			if !res.Complete {
+				res.Reason = "the model reported partial coverage"
+			}
 			return res, &out, nil
 		}
 		if out.Kind == toolloop.OutcomeFinalAnswer && attempt == 0 && res.Iterations < maxIter {

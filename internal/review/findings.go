@@ -53,9 +53,18 @@ func (f *Finding) Blocking() bool {
 	return f.Severity == config.SeverityP0 || f.Severity == config.SeverityP1
 }
 
-// Submission is submit_findings' argument object.
+// Coverage values: whether the model reviewed the whole change.
+const (
+	CoverageComplete = "complete"
+	CoveragePartial  = "partial"
+)
+
+// Submission is submit_findings' argument object. Coverage is the model's
+// own account of whether it reviewed the whole change; "partial" leaves the
+// pass incomplete, so the next run reviews it again (design §9).
 type Submission struct {
 	Summary  string    `json:"summary,omitempty"`
+	Coverage string    `json:"coverage"`
 	Findings []Finding `json:"findings"`
 }
 
@@ -71,7 +80,8 @@ func submitFindingsDef() llms.ToolDefinition {
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "summary": {"type": "string", "description": "One short paragraph on the change overall (optional)"},
+    "summary": {"type": "string", "description": "One short paragraph on the change overall; with partial coverage, say what you did not get to"},
+    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed the whole change; partial if you ran short of time or could not cover some of it"},
     "findings": {
       "type": "array",
       "items": {
@@ -106,7 +116,7 @@ func submitFindingsDef() llms.ToolDefinition {
       }
     }
   },
-  "required": ["findings"],
+  "required": ["coverage", "findings"],
   "additionalProperties": false
 }`),
 	}
@@ -133,6 +143,10 @@ func (s *submitTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	}
 	if sub.Findings == nil {
 		return toolError("findings is required; pass [] if there are none. Call submit_findings again.")
+	}
+	sub.Coverage = strings.ToLower(strings.TrimSpace(sub.Coverage))
+	if sub.Coverage != CoverageComplete && sub.Coverage != CoveragePartial {
+		return toolError("coverage must be %q or %q, not %q. Call submit_findings again.", CoverageComplete, CoveragePartial, sub.Coverage)
 	}
 	missing := missingLocationFields(call.Parameters)
 	var problems []string

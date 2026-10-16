@@ -36,7 +36,7 @@ func findInput(t *testing.T, client llms.ChatClient) *FindInput {
 	}
 }
 
-const submitOne = `{"findings": [` + validFinding + `]}`
+const submitOne = `{"coverage": "complete", "findings": [` + validFinding + `]}`
 
 func TestFindHappyPath(t *testing.T) {
 	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
@@ -191,7 +191,7 @@ func TestFindResubmitsAfterValidationError(t *testing.T) {
 func TestFindNudgesOnce(t *testing.T) {
 	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
 		testllm.TextResponse("Looks good to me!"),
-		testllm.ToolCallResponse("1", "submit_findings", `{"findings": []}`),
+		testllm.ToolCallResponse("1", "submit_findings", `{"coverage": "complete", "findings": []}`),
 	}}
 	res, err := Find(context.Background(), findInput(t, fake))
 	if err != nil || !res.Complete || len(res.Findings) != 0 {
@@ -234,7 +234,7 @@ func TestFindZeroIterationsIsUnlimited(t *testing.T) {
 	for i := range 12 {
 		responses = append(responses, testllm.ToolCallResponse(fmt.Sprint(i), "list_dir", `{}`))
 	}
-	responses = append(responses, testllm.ToolCallResponse("s", "submit_findings", `{"findings": []}`))
+	responses = append(responses, testllm.ToolCallResponse("s", "submit_findings", `{"coverage": "complete", "findings": []}`))
 	in := findInput(t, &testllm.FakeChatClient{Responses: responses})
 	in.MaxIterations = 0
 	res, err := Find(context.Background(), in)
@@ -295,7 +295,7 @@ func TestFindDeadlineDuringTool(t *testing.T) {
 func TestFindUsageSummed(t *testing.T) {
 	r1 := testllm.TextResponse("hm")
 	r1.Usage = llms.Usage{InputTokens: 10, OutputTokens: 2}
-	r2 := testllm.ToolCallResponse("1", "submit_findings", `{"findings": []}`)
+	r2 := testllm.ToolCallResponse("1", "submit_findings", `{"coverage": "complete", "findings": []}`)
 	r2.Usage = llms.Usage{InputTokens: 20, OutputTokens: 3}
 	res, err := Find(context.Background(), findInput(t, &testllm.FakeChatClient{Responses: []llms.ChatResponse{r1, r2}}))
 	if err != nil || res.Usage.InputTokens != 30 || res.Usage.OutputTokens != 5 {
@@ -394,7 +394,7 @@ func TestFindNudgeAfterEmptyTurn(t *testing.T) {
 	empty := llms.ChatResponse{Message: llms.Message{Role: llms.RoleAssistant}, StopReason: "length"}
 	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
 		empty,
-		testllm.ToolCallResponse("1", "submit_findings", `{"findings": []}`),
+		testllm.ToolCallResponse("1", "submit_findings", `{"coverage": "complete", "findings": []}`),
 	}}
 	res, err := Find(context.Background(), findInput(t, fake))
 	if err != nil || !res.Complete {
@@ -404,5 +404,65 @@ func TestFindNudgeAfterEmptyTurn(t *testing.T) {
 		if m.Role == llms.RoleAssistant && !hasContent(&m) {
 			t.Error("the empty assistant turn was sent back")
 		}
+	}
+}
+
+// A model that reports partial coverage keeps its findings, but the pass is
+// incomplete so the next run reviews it again.
+func TestFindPartialCoverage(t *testing.T) {
+	partial := strings.Replace(submitOne, `"coverage": "complete"`, `"coverage": "partial", "summary": "Did not get to docs."`, 1)
+	res, err := Find(context.Background(), findInput(t, &testllm.FakeChatClient{Responses: []llms.ChatResponse{
+		testllm.ToolCallResponse("1", "submit_findings", partial),
+	}}))
+	if err != nil || res.Complete || len(res.Findings) != 1 || res.Reason != "the model reported partial coverage" {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+}
+
+// With a deadline, the opening message states the budget and each tool
+// result ends with the time used.
+func TestFindTimeFooter(t *testing.T) {
+	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
+		testllm.ToolCallResponse("1", "list_dir", `{}`),
+		testllm.ToolCallResponse("2", "submit_findings", `{"coverage": "complete", "findings": []}`),
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	defer cancel()
+	in := findInput(t, fake)
+	in.WrapUp = 10 * time.Minute
+	if _, err := Find(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.Calls()
+	if open := calls[0].Messages[0].Content[0].Text; !strings.Contains(open, "You have about 40 min for this review. Submit by 30 min;") {
+		t.Errorf("opening message has no time budget:\n%s", open[len(open)-300:])
+	}
+	last := calls[1].Messages[len(calls[1].Messages)-1].Content[0].ToolResult.Content
+	if !strings.HasSuffix(last, "[time: 0 s of 40 min used; submit by 30 min]") {
+		t.Errorf("tool result has no time footer: %q", last)
+	}
+
+	// Without a deadline there is no clock.
+	fake = &testllm.FakeChatClient{Responses: []llms.ChatResponse{
+		testllm.ToolCallResponse("1", "list_dir", `{}`),
+		testllm.ToolCallResponse("2", "submit_findings", `{"coverage": "complete", "findings": []}`),
+	}}
+	if _, err := Find(context.Background(), findInput(t, fake)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fake.Calls()[1].Messages[len(fake.Calls()[1].Messages)-1].Content[0].ToolResult.Content, "[time:") {
+		t.Error("footer without a deadline")
+	}
+}
+
+func TestClockFooter(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := &passClock{start: start, deadline: start.Add(40 * time.Minute), wrapUpAt: start.Add(30 * time.Minute),
+		now: func() time.Time { return start.Add(14*time.Minute + 20*time.Second) }}
+	if got := c.footer(); got != "[time: 14 min of 40 min used; submit by 30 min]" {
+		t.Errorf("footer = %q", got)
+	}
+	if got := minutes(90 * time.Second); got != "90 s" {
+		t.Errorf("minutes(90s) = %q", got)
 	}
 }
