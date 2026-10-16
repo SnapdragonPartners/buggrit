@@ -207,13 +207,27 @@ passes secrets.
   the existing @buggrit account.)
   The built-in `GITHUB_TOKEN` also works as a fallback, with comments
   appearing as `github-actions[bot]`.
-  GitHub documents that `resolveReviewThread` can fail with "Resource not
-  accessible by integration" for the Actions `GITHUB_TOKEN`. That limitation
-  applies to the Actions integration token. Claude Code's personal `gh`
-  token, which resolves threads without trouble today, is a different kind
-  of token. Build step 2 tests both early. If resolving or unresolving
-  fails, buggrit keeps the state in markers, lists the affected threads in
-  the summary as "resolve manually", and carries on.
+  **Resolving threads needs write access to repository contents.** The
+  build-step-2 live check (`TestLive`, October 2026) measured each token
+  kind:
+
+  | Token | Post, reply, summary | Resolve / unresolve |
+  |---|---|---|
+  | Personal token (`repo` scope) | yes | yes |
+  | App, Contents: Read | yes | no: "Resource not accessible by integration" |
+  | App, Contents: Read and write | yes | yes |
+  | Actions `GITHUB_TOKEN`, `contents: read` | yes | no, same error |
+
+  So the App needs **Pull requests: Read and write**, **Contents: Read and
+  write**, and, for the gate check, **Checks: Read and write**. The Actions
+  `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
+  unresolving is refused, buggrit keeps the state in markers, lists the
+  affected threads in the summary as "resolve manually", and carries on.
+- **App credentials** are set once at the org level: the variable
+  `BUGGRIT_APP_ID` and the secret `BUGGRIT_APP_PRIVATE_KEY`, both visible to
+  the repos buggrit runs in. The App's installation needs those repos too.
+  Runs triggered by Dependabot see only Dependabot secrets, so reviewing
+  Dependabot PRs also needs the key added there.
 - **Own comments:** a comment is buggrit's only if it has the
   `buggrit:v1` marker **and** its author is buggrit's configured login.
   Other workflows share `github-actions[bot]`, so neither check works alone.
@@ -620,7 +634,10 @@ people who already have write access to the repo (§1).
 - **Config comes from the base branch**, so a PR can't redirect the model
   endpoint.
 - No PR code is run, and `pull_request_target` is never used.
-- Tokens get the minimum permissions listed in §3.
+- Tokens get the minimum permissions listed in §3. The App's Contents
+  write access, needed only to resolve threads, could push code; it's
+  acceptable because the token lives only in buggrit's process and the
+  model's tools can't reach it.
 
 Not in scope: telling an agent apart from the person whose credentials it
 uses, or stopping someone with write access from dismissing findings. The
