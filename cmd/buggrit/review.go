@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
+	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
 	"github.com/SnapdragonPartners/maestro-llms/llms/toolloop"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
@@ -25,23 +26,38 @@ import (
 )
 
 // reviewDeps are review's seams to the outside world, replaced in tests:
-// the checkout's HEAD and the finder's chat client.
+// the checkout's HEAD and the finder's chat client. findClient reports each
+// model attempt to obs.
 type reviewDeps struct {
 	head       func(dir string) (string, error)
-	findClient func(cfg *config.Config) (llms.ChatClient, error)
+	findClient func(cfg *config.Config, obs middleware.Observer) (llms.ChatClient, error)
 }
 
 func defaultReviewDeps() reviewDeps {
 	return reviewDeps{
 		head: gitHead,
-		findClient: func(cfg *config.Config) (llms.ChatClient, error) {
-			clients, err := llm.New(cfg)
+		findClient: func(cfg *config.Config, obs middleware.Observer) (llms.ChatClient, error) {
+			clients, err := llm.New(cfg, llm.WithObserver(obs))
 			if err != nil {
 				return nil, err //nolint:wrapcheck // already names the stage
 			}
 			return clients.Find, nil
 		},
 	}
+}
+
+// modelLog logs each model attempt, so a slow or failing endpoint shows in
+// the job log.
+type modelLog struct{ w io.Writer }
+
+//nolint:gocritic // hugeParam: the signature is fixed by middleware.Observer
+func (l modelLog) Observe(e middleware.Event) {
+	if e.Err != nil {
+		say(l.w, "buggrit: model %s failed after %s: %v\n", e.Model, e.Latency.Round(time.Millisecond), e.Err)
+		return
+	}
+	say(l.w, "buggrit: model %s %s: %d in, %d out (%d reasoning)\n",
+		e.Model, e.Latency.Round(time.Millisecond), e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.ReasoningTokens)
 }
 
 // reviewArgs are review's settings. Each flag defaults from the environment
@@ -148,7 +164,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if err != nil {
 		return r.fail(err)
 	}
-	client, err := r.deps.findClient(cfg)
+	client, err := r.deps.findClient(cfg, modelLog{r.stderr})
 	if err != nil {
 		return r.fail(err)
 	}
@@ -237,8 +253,11 @@ func (r *reviewer) loadConfig(ctx context.Context, pr *github.PullRequest) (*con
 func (r *reviewer) logTool(e toolloop.ToolCallEvent) {
 	args := truncate(strings.Join(strings.Fields(string(e.Call.Parameters)), " "), 160)
 	state := ""
-	if e.Err != nil || e.Result.IsError {
-		state = " (error)"
+	switch {
+	case e.Err != nil:
+		state = " (error: " + truncate(e.Err.Error(), 200) + ")"
+	case e.Result.IsError:
+		state = " (error: " + truncate(firstLine(e.Result.Content), 200) + ")"
 	}
 	say(r.stderr, "buggrit: [%d] %s %s%s %s\n", e.Iteration, e.Call.Name, args, state, e.Latency.Round(time.Millisecond))
 }
@@ -315,6 +334,11 @@ func short(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }
 
 func truncate(s string, n int) string {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
@@ -28,11 +30,16 @@ type FindInput struct {
 	Scope            glob.Filter
 	// MaxIterations caps tool-calling turns; 0 means no ceiling (§9).
 	MaxIterations int
+	// WrapUp is held back from ctx's deadline for a final turn that makes
+	// the model submit what it has found so far, so a pass that runs out of
+	// time still publishes its work (§9). 0 disables it.
+	WrapUp time.Duration
 }
 
 // FindResult is a finder run's outcome. A run that didn't finish still
 // returns a result, with Complete false and Reason saying why, so the pass
-// can publish "incomplete" instead of looking like "no findings" (§9).
+// can publish "incomplete" instead of looking like "no findings" (§9). An
+// incomplete run may still carry Findings: those submitted at wrap-up.
 type FindResult struct {
 	Usage      llms.Usage
 	Summary    string
@@ -41,6 +48,10 @@ type FindResult struct {
 	Iterations int
 	Complete   bool
 }
+
+// timeUp is the wrap-up turn's instruction.
+const timeUp = "Time is up for this review. Call submit_findings now with every finding you have confirmed so far " +
+	"(an empty list if none). Do not investigate further."
 
 // nudge is sent once if the model answers in text instead of submitting.
 const nudge = "You ended your turn without calling submit_findings. Call submit_findings now with every finding " +
@@ -65,6 +76,29 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 		maxIter = math.MaxInt
 	}
 
+	// Investigate until the deadline less the wrap-up reserve.
+	investigateCtx := ctx
+	if deadline, ok := ctx.Deadline(); ok && in.WrapUp > 0 {
+		var cancel context.CancelFunc
+		investigateCtx, cancel = context.WithDeadline(ctx, deadline.Add(-in.WrapUp))
+		defer cancel()
+	}
+	res, out, err := investigate(investigateCtx, in, tools, submit, maxIter)
+	if err != nil || res.Complete {
+		return res, err
+	}
+	// The investigation ran out of time while the pass still has some: make
+	// the model submit what it has. The pass stays incomplete.
+	if investigateCtx != ctx && errors.Is(investigateCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		wrapUp(ctx, in, submit, res, out)
+	}
+	return res, nil
+}
+
+// investigate is the finder's main loop: tools until submit_findings, with
+// one nudge if the model answers in text. On an incomplete run it returns
+// the last outcome, whose transcript the wrap-up continues.
+func investigate(ctx context.Context, in *FindInput, tools []toolloop.Tool, submit *submitTool, maxIter int) (*FindResult, *toolloop.Outcome, error) {
 	res := &FindResult{}
 	messages := []llms.Message{llms.UserText(openingMessage(in))}
 	for attempt := 0; ; attempt++ {
@@ -86,17 +120,87 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 			res.Complete = true
 			res.Findings = submit.result.Findings
 			res.Summary = submit.result.Summary
-			return res, nil
+			return res, &out, nil
 		}
 		if out.Kind == toolloop.OutcomeFinalAnswer && attempt == 0 && res.Iterations < maxIter {
-			messages = out.Messages
-			messages = append(messages, llms.UserText(nudge))
+			messages = append(wellFormed(out.Messages), llms.UserText(nudge))
 			continue
 		}
 		reason, err := incompleteReason(ctx, &out, in.MaxIterations)
 		res.Reason = reason
-		return res, err
+		return res, &out, err
 	}
+}
+
+// wrapUpTurns bounds the wrap-up: the forced submission plus resubmissions
+// after validation errors.
+const wrapUpTurns = 3
+
+// wrapUp continues out's transcript with one instruction to submit, forcing
+// submit_findings. Findings it gets are added to res, which stays
+// incomplete; if it gets none, res is unchanged apart from usage.
+func wrapUp(ctx context.Context, in *FindInput, submit *submitTool, res *FindResult, out *toolloop.Outcome) {
+	messages := append(wellFormed(out.Messages), llms.UserText(timeUp))
+	fin := toolloop.Run(ctx, toolloop.Config{
+		Client: in.Client,
+		Request: llms.ChatRequest{
+			System:   []llms.ContentPart{llms.Text(systemPrompt)},
+			Messages: messages,
+			Purpose:  "buggrit.find.wrapup",
+		},
+		Tools:         []toolloop.Tool{submit.tool()},
+		ToolChoice:    llms.ToolChoice{Type: llms.ToolChoiceTool, Name: submitFindingsDef().Name},
+		MaxIterations: wrapUpTurns,
+		OnToolCall:    in.OnToolCall,
+	})
+	addUsage(&res.Usage, &fin.TotalUsage)
+	res.Iterations += fin.Iterations
+	if fin.Kind != toolloop.OutcomeTerminalTool {
+		return
+	}
+	res.Findings = submit.result.Findings
+	res.Summary = submit.result.Summary
+	res.Reason += fmt.Sprintf("; submitted %d %s found before it", len(res.Findings), plural(len(res.Findings), "finding"))
+}
+
+// wellFormed drops a trailing assistant turn that can't be sent back: one
+// whose tool calls have no results (a run canceled mid-tool), or one with no
+// content at all (a reasoning model that spent its whole output budget
+// reasoning). maestro-llms rejects a transcript holding either.
+func wellFormed(messages []llms.Message) []llms.Message {
+	n := len(messages)
+	if n == 0 || messages[n-1].Role != llms.RoleAssistant {
+		return messages
+	}
+	if last := &messages[n-1]; hasToolCalls(last) || !hasContent(last) {
+		return messages[:n-1]
+	}
+	return messages
+}
+
+func hasToolCalls(m *llms.Message) bool {
+	for i := range m.Content {
+		if m.Content[i].ToolCall != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func hasContent(m *llms.Message) bool {
+	for i := range m.Content {
+		if m.Content[i].ToolCall != nil || strings.TrimSpace(m.Content[i].Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 // incompleteReason says why a run ended without a submission, or returns an

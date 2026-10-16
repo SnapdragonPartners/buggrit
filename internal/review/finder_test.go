@@ -284,3 +284,101 @@ func TestFindRequiresInputs(t *testing.T) {
 		t.Error("Find accepted an empty input")
 	}
 }
+
+// When the investigation runs out of time, a final forced turn submits what
+// the model has; the pass stays incomplete.
+func TestFindWrapUpSubmitsAtDeadline(t *testing.T) {
+	var wrapReq llms.ChatRequest
+	fake := &testllm.FakeChatClient{Func: func(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+		if req.Purpose == "buggrit.find.wrapup" {
+			wrapReq = req
+			return testllm.ToolCallResponse("w", "submit_findings", submitOne), nil
+		}
+		if len(req.Messages) == 1 {
+			return testllm.ToolCallResponse("1", "read_file", `{"path": "internal/cache/lru.go"}`), nil
+		}
+		<-ctx.Done() // the second investigation turn is slow
+		return llms.ChatResponse{}, ctx.Err()
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	in := findInput(t, fake)
+	in.WrapUp = 1900 * time.Millisecond
+	res, err := Find(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Complete || len(res.Findings) != 1 || res.Reason != "deadline reached; submitted 1 finding found before it" {
+		t.Fatalf("result = %+v", res)
+	}
+	if wrapReq.ToolChoice.Type != llms.ToolChoiceTool || wrapReq.ToolChoice.Name != "submit_findings" || len(wrapReq.Tools) != 1 {
+		t.Errorf("wrap-up request: choice %+v, %d tools", wrapReq.ToolChoice, len(wrapReq.Tools))
+	}
+	// The wrap-up continues the transcript: it still has the read_file
+	// result, then the time-up instruction.
+	msgs := wrapReq.Messages
+	if got := msgs[len(msgs)-1].Content[0].Text; got != timeUp {
+		t.Errorf("last message = %q", got)
+	}
+	if !strings.Contains(msgs[len(msgs)-2].Content[0].ToolResult.Content, "same map bug") {
+		t.Error("wrap-up lost the investigation's transcript")
+	}
+}
+
+// With no time left, or WrapUp unset, there's no wrap-up turn.
+func TestFindWrapUpNeedsTime(t *testing.T) {
+	calls := 0
+	fake := &testllm.FakeChatClient{Func: func(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+		calls++
+		if req.Purpose == "buggrit.find.wrapup" {
+			t.Error("wrap-up ran without a reserve")
+		}
+		<-ctx.Done()
+		return llms.ChatResponse{}, ctx.Err()
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	res, err := Find(ctx, findInput(t, fake))
+	if err != nil || res.Complete || res.Reason != "deadline reached" || calls != 1 {
+		t.Errorf("result = %+v, %v, %d calls", res, err, calls)
+	}
+}
+
+func TestWellFormedDropsDanglingToolCalls(t *testing.T) {
+	call := testllm.ToolCallResponse("1", "grep", `{"pattern": "x"}`).Message
+	msgs := []llms.Message{llms.UserText("hi"), call}
+	if got := wellFormed(msgs); len(got) != 1 {
+		t.Errorf("kept %d messages, want the dangling call dropped", len(got))
+	}
+	done := append(msgs, llms.ToolResultMessage(llms.ToolResult{ToolCallID: "1", Content: "ok"}))
+	if got := wellFormed(done); len(got) != 3 {
+		t.Errorf("dropped a complete turn: %d messages", len(got))
+	}
+	empty := append(done, llms.Message{Role: llms.RoleAssistant})
+	if got := wellFormed(empty); len(got) != 3 {
+		t.Errorf("kept an empty assistant turn: %d messages", len(got))
+	}
+	text := append(done, testllm.TextResponse("Looks fine.").Message)
+	if got := wellFormed(text); len(got) != 4 {
+		t.Errorf("dropped a text answer: %d messages", len(got))
+	}
+}
+
+// A turn that spent its whole budget reasoning comes back empty. The nudge
+// must not send that empty turn back (the provider layer rejects it).
+func TestFindNudgeAfterEmptyTurn(t *testing.T) {
+	empty := llms.ChatResponse{Message: llms.Message{Role: llms.RoleAssistant}, StopReason: "length"}
+	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
+		empty,
+		testllm.ToolCallResponse("1", "submit_findings", `{"findings": []}`),
+	}}
+	res, err := Find(context.Background(), findInput(t, fake))
+	if err != nil || !res.Complete {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	for _, m := range fake.Calls()[1].Messages {
+		if m.Role == llms.RoleAssistant && !hasContent(&m) {
+			t.Error("the empty assistant turn was sent back")
+		}
+	}
+}

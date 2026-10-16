@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
@@ -155,5 +156,17 @@ func TestReviewIncomplete(t *testing.T) {
 	}
 	if res.Complete || !strings.Contains(res.Reason, "upstream 503") || len(res.Findings) != 0 {
 		t.Errorf("result = %+v", res)
+	}
+}
+
+func TestWrapUpReserve(t *testing.T) {
+	for d, want := range map[time.Duration]time.Duration{
+		2 * time.Minute:  time.Minute,
+		30 * time.Minute: 7*time.Minute + 30*time.Second,
+		2 * time.Hour:    10 * time.Minute,
+	} {
+		if got := wrapUpReserve(d); got != want {
+			t.Errorf("wrapUpReserve(%s) = %s, want %s", d, got, want)
+		}
 	}
 }

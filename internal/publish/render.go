@@ -95,8 +95,11 @@ func ReviewBody(res *review.Result) (string, error) {
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "**Status:** %s.", Status(res))
-	if !res.Complete {
+	switch {
+	case !res.Complete && len(res.Findings) == 0:
 		b.WriteString(" Nothing from this pass was posted; the next run at this commit tries again.")
+	case !res.Complete:
+		b.WriteString(" The findings it reached are posted; the next run at this commit reviews it again.")
 	}
 	b.WriteString("\n")
 	var dropped []string

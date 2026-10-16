@@ -662,6 +662,13 @@ without posting looks the same as "no findings" to an agent, which we can't
 allow. An incomplete pass doesn't advance `completed_sha` (§6), so its
 unreviewed scope is covered next time.
 
+**Wrap-up.** The finder investigates until the deadline less a reserve (a
+quarter of `pass_deadline`, between one and ten minutes). If it hasn't
+submitted by then, one more turn tells the model time is up and forces
+`submit_findings` with what it has. Those findings are posted, and the pass
+is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
+for minutes on one turn) would lose a whole pass's work at the deadline.
+
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
 enforce lane limits (for example LunaRoute) or limits shared across runs,

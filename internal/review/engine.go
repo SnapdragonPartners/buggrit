@@ -108,8 +108,9 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	}
 	known, notes := readThreads(threads, cfg.Identity.BotLogin)
 
-	findCtx := ctx
+	findCtx, wrapUp := ctx, time.Duration(0)
 	if d := cfg.Limits.PassDeadline.Std(); d > 0 {
+		wrapUp = wrapUpReserve(d)
 		var cancel context.CancelFunc
 		findCtx, cancel = context.WithTimeout(ctx, d)
 		defer cancel()
@@ -126,6 +127,7 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 		OtherThreads:     notes,
 		Scope:            scope,
 		MaxIterations:    cfg.Limits.MaxToolIterations,
+		WrapUp:           wrapUp,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("review: %w", err)
@@ -135,6 +137,13 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	res.Findings, res.Duplicates, res.BelowThreshold = rec.kept, rec.duplicates, rec.belowThreshold
 	res.Elapsed = time.Since(start)
 	return res, nil
+}
+
+// wrapUpReserve is how much of the pass deadline the finder holds back to
+// make the model submit what it has (§9): a quarter of it, between one and
+// ten minutes. A reasoning model can spend minutes on one turn.
+func wrapUpReserve(deadline time.Duration) time.Duration {
+	return min(max(deadline/4, time.Minute), 10*time.Minute)
 }
 
 // readThreads splits the PR's threads into the fingerprints of buggrit's own

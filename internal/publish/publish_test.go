@@ -130,6 +130,8 @@ func TestReviewBodyGolden(t *testing.T) {
 			Findings: []review.Candidate{classFinding(), advisoryFileFinding()}, Duplicates: 1, BelowThreshold: 2},
 		"review-clean.md":      {HeadSHA: head, Pass: 1, Complete: true},
 		"review-incomplete.md": {HeadSHA: head, Pass: 3, Reason: "deadline reached"},
+		"review-partial.md": {HeadSHA: head, Pass: 4, Reason: "deadline reached; submitted 1 finding found before it",
+			Findings: []review.Candidate{classFinding()}},
 	}
 	for name, res := range cases {
 		body, err := ReviewBody(res)
