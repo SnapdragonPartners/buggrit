@@ -1,0 +1,56 @@
+name: GitHub live check
+
+# Build step 2's live check (docs/design.md §3, §12): can each token kind
+# post, reply, resolve and unresolve review threads? Runs when a PR is
+# labeled "buggrit-livecheck", or by hand. It posts to the PR and deletes
+# what it posted.
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to post to
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  live:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'buggrit-livecheck'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        token: [actions, app]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Mint App token
+        id: app
+        if: matrix.token == 'app' && vars.BUGGRIT_APP_ID != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+
+      - name: Run live check
+        if: matrix.token == 'actions' || steps.app.outputs.token != ''
+        env:
+          BUGGRIT_LIVE_REPO: ${{ github.repository }}
+          BUGGRIT_LIVE_PR: ${{ github.event.pull_request.number || inputs.pr }}
+          BUGGRIT_LIVE_TOKEN: ${{ matrix.token == 'app' && steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+          BUGGRIT_LIVE_LOGIN: ${{ matrix.token == 'app' && format('{0}[bot]', steps.app.outputs.app-slug) || 'github-actions[bot]' }}
+        run: go test ./internal/github -run '^TestLive$' -count=1 -v
+
+      - name: No App configured
+        if: matrix.token == 'app' && vars.BUGGRIT_APP_ID == ''
+        run: echo "::notice::Set vars.BUGGRIT_APP_ID and secrets.BUGGRIT_APP_PRIVATE_KEY to check the App token."

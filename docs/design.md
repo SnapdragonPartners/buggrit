@@ -215,6 +215,9 @@ passes secrets.
 - **Own comments:** a comment is buggrit's only if it has the
   `buggrit:v1` marker **and** its author is buggrit's configured login.
   Other workflows share `github-actions[bot]`, so neither check works alone.
+  Logins compare case-insensitively, in REST form (`buggrit[bot]`). GraphQL
+  reports a bot's login without the `[bot]` suffix, so the GitHub layer adds
+  it back for `Bot` authors before anything compares logins.
 
 ## 4. Configuration
 
@@ -553,6 +556,10 @@ Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same cl
 
 Findings that can't be anchored to a changed line are posted as file-level
 review comments (`subject_type: file`) so they still get their own thread.
+GitHub's create-review call can't carry file-level comments, so they're
+posted one by one right after the review. A range that crosses hunks is
+narrowed to its last line, and a line outside every hunk falls back to
+file level.
 
 ### Completion signal
 - The job's check run tells the agent the pass is finished
@@ -587,6 +594,13 @@ unreviewed scope is covered next time.
 enforce lane limits (for example LunaRoute) or limits shared across runs,
 reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
 and circuit-breaker policy come from the `maestro-llms` recommended chain.
+
+GitHub calls retry rate limits (429, or 403 with `Retry-After` or an
+exhausted quota) for every method, waiting up to 60 seconds. Longer waits
+fail the call, so the pass reports itself incomplete. Server errors and
+transport failures are retried only for reads, including GraphQL queries.
+A mutation that fails that way may still have landed, and the next pass's
+replay and repair (§6) finish the job without risking a duplicate.
 
 ## 10. Security (proportionate to the trust model)
 
@@ -636,7 +650,9 @@ merge gate is the control for those.
    `reviewThreads`, posting reviews and replies, resolve/unresolve, markers,
    head fencing. All tested against the fake. Includes an early **live
    check** that resolving and unresolving threads works with both the App
-   token and the Actions `GITHUB_TOKEN`.
+   token and the Actions `GITHUB_TOKEN`: `TestLive`, run by
+   `.github/workflows/livecheck.yml` when a PR is labeled
+   `buggrit-livecheck`.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
    Needs maestro-llms#53 (terminal tools).
@@ -645,6 +661,8 @@ merge gate is the control for those.
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
    summary ledger, gate check.
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
+   GitHub won't render very large diffs (`ErrDiffTooLarge`); for those the
+   diff comes from the checkout (`git diff <merge-base>..<head>`) instead.
 7. **Packaging:** release binaries, composite action, reusable workflow.
    Run in morris **alongside Copilot**, compare, then switch Copilot off.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal

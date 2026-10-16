@@ -1,0 +1,478 @@
+{
+  "anchors": [
+    {
+      "path": "modified.go",
+      "result": "line modified.go 2 RIGHT",
+      "start": 0,
+      "end": 2
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 4 RIGHT",
+      "start": 0,
+      "end": 4
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 5 RIGHT",
+      "start": 0,
+      "end": 5
+    },
+    {
+      "path": "modified.go",
+      "result": "lines modified.go 1-4 RIGHT",
+      "start": 1,
+      "end": 4
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 23 RIGHT",
+      "start": 4,
+      "end": 23
+    },
+    {
+      "path": "modified.go",
+      "result": "file modified.go",
+      "start": 0,
+      "end": 15
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 31 RIGHT",
+      "start": 0,
+      "end": 31
+    },
+    {
+      "path": "modified.go",
+      "result": "file modified.go",
+      "start": 0,
+      "end": 32
+    },
+    {
+      "path": "added.go",
+      "result": "line added.go 1 RIGHT",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "new_name.go",
+      "result": "line new_name.go 5 RIGHT",
+      "start": 0,
+      "end": 5
+    },
+    {
+      "path": "old_name.go",
+      "result": "error: old_name.go: file is not in the pull request diff",
+      "start": 0,
+      "end": 5
+    },
+    {
+      "path": "deleted.txt",
+      "result": "file deleted.txt",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "blob.bin",
+      "result": "file blob.bin",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "renamed_pure.txt",
+      "result": "file renamed_pure.txt",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "café.go",
+      "result": "line café.go 1 RIGHT",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "with space.go",
+      "result": "line with space.go 1 RIGHT",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "nonewline.txt",
+      "result": "lines nonewline.txt 1-2 RIGHT",
+      "start": 1,
+      "end": 2
+    },
+    {
+      "path": "not/in/diff.go",
+      "result": "error: not/in/diff.go: file is not in the pull request diff",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 3 RIGHT",
+      "start": 3,
+      "end": 3
+    },
+    {
+      "path": "modified.go",
+      "result": "file modified.go",
+      "start": 0,
+      "end": 0
+    },
+    {
+      "path": "script.sh",
+      "result": "file script.sh",
+      "start": 0,
+      "end": 1
+    },
+    {
+      "path": "modified.go",
+      "result": "line modified.go 23 RIGHT",
+      "start": 25,
+      "end": 23
+    },
+    {
+      "path": "nonewline.txt",
+      "result": "file nonewline.txt",
+      "start": 1,
+      "end": 99
+    }
+  ],
+  "diff": {
+    "files": [
+      {
+        "new_path": "added.go",
+        "status": "added",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "new",
+                "new": 1,
+                "kind": "+"
+              },
+              {
+                "text": "file",
+                "new": 2,
+                "kind": "+"
+              }
+            ],
+            "old_start": 0,
+            "old_lines": 0,
+            "new_start": 1,
+            "new_lines": 2
+          }
+        ]
+      },
+      {
+        "old_path": "blob.bin",
+        "new_path": "blob.bin",
+        "status": "modified",
+        "binary": true
+      },
+      {
+        "old_path": "café.go",
+        "new_path": "café.go",
+        "status": "modified",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "u",
+                "old": 1,
+                "kind": "-"
+              },
+              {
+                "text": "v",
+                "new": 1,
+                "kind": "+"
+              }
+            ],
+            "old_start": 1,
+            "old_lines": 1,
+            "new_start": 1,
+            "new_lines": 1
+          }
+        ]
+      },
+      {
+        "old_path": "deleted.txt",
+        "status": "deleted",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "keep me",
+                "old": 1,
+                "kind": "-"
+              },
+              {
+                "text": "bye",
+                "old": 2,
+                "kind": "-"
+              }
+            ],
+            "old_start": 1,
+            "old_lines": 2,
+            "new_start": 0,
+            "new_lines": 0
+          }
+        ]
+      },
+      {
+        "old_path": "modified.go",
+        "new_path": "modified.go",
+        "status": "modified",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "line 1",
+                "old": 1,
+                "new": 1,
+                "kind": " "
+              },
+              {
+                "text": "line 2",
+                "old": 2,
+                "kind": "-"
+              },
+              {
+                "text": "line 2 changed",
+                "new": 2,
+                "kind": "+"
+              },
+              {
+                "text": "line 3",
+                "old": 3,
+                "new": 3,
+                "kind": " "
+              },
+              {
+                "text": "inserted A",
+                "new": 4,
+                "kind": "+"
+              },
+              {
+                "text": "line 4",
+                "old": 4,
+                "new": 5,
+                "kind": " "
+              },
+              {
+                "text": "line 5",
+                "old": 5,
+                "new": 6,
+                "kind": " "
+              },
+              {
+                "text": "line 6",
+                "old": 6,
+                "new": 7,
+                "kind": " "
+              }
+            ],
+            "old_start": 1,
+            "old_lines": 6,
+            "new_start": 1,
+            "new_lines": 7
+          },
+          {
+            "lines": [
+              {
+                "text": "line 22",
+                "old": 22,
+                "new": 23,
+                "kind": " "
+              },
+              {
+                "text": "line 23",
+                "old": 23,
+                "new": 24,
+                "kind": " "
+              },
+              {
+                "text": "line 24",
+                "old": 24,
+                "new": 25,
+                "kind": " "
+              },
+              {
+                "text": "line 25",
+                "old": 25,
+                "kind": "-"
+              },
+              {
+                "text": "line 26",
+                "old": 26,
+                "new": 26,
+                "kind": " "
+              },
+              {
+                "text": "line 27",
+                "old": 27,
+                "new": 27,
+                "kind": " "
+              },
+              {
+                "text": "line 28",
+                "old": 28,
+                "new": 28,
+                "kind": " "
+              },
+              {
+                "text": "line 29",
+                "old": 29,
+                "new": 29,
+                "kind": " "
+              },
+              {
+                "text": "line 30",
+                "old": 30,
+                "new": 30,
+                "kind": " "
+              },
+              {
+                "text": "line 31",
+                "new": 31,
+                "kind": "+"
+              }
+            ],
+            "old_start": 22,
+            "old_lines": 9,
+            "new_start": 23,
+            "new_lines": 9
+          }
+        ]
+      },
+      {
+        "old_path": "old_name.go",
+        "new_path": "new_name.go",
+        "status": "renamed",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "r 2",
+                "old": 2,
+                "new": 2,
+                "kind": " "
+              },
+              {
+                "text": "r 3",
+                "old": 3,
+                "new": 3,
+                "kind": " "
+              },
+              {
+                "text": "r 4",
+                "old": 4,
+                "new": 4,
+                "kind": " "
+              },
+              {
+                "text": "r 5",
+                "old": 5,
+                "kind": "-"
+              },
+              {
+                "text": "r five",
+                "new": 5,
+                "kind": "+"
+              },
+              {
+                "text": "r 6",
+                "old": 6,
+                "new": 6,
+                "kind": " "
+              },
+              {
+                "text": "r 7",
+                "old": 7,
+                "new": 7,
+                "kind": " "
+              },
+              {
+                "text": "r 8",
+                "old": 8,
+                "new": 8,
+                "kind": " "
+              }
+            ],
+            "old_start": 2,
+            "old_lines": 7,
+            "new_start": 2,
+            "new_lines": 7
+          }
+        ]
+      },
+      {
+        "old_path": "nonewline.txt",
+        "new_path": "nonewline.txt",
+        "status": "modified",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "a",
+                "old": 1,
+                "new": 1,
+                "kind": " "
+              },
+              {
+                "text": "b",
+                "old": 2,
+                "kind": "-"
+              },
+              {
+                "text": "B",
+                "new": 2,
+                "kind": "+"
+              }
+            ],
+            "old_start": 1,
+            "old_lines": 2,
+            "new_start": 1,
+            "new_lines": 2
+          }
+        ]
+      },
+      {
+        "old_path": "pure_rename.txt",
+        "new_path": "renamed_pure.txt",
+        "status": "renamed"
+      },
+      {
+        "old_path": "script.sh",
+        "new_path": "script.sh",
+        "status": "modified"
+      },
+      {
+        "old_path": "with space.go",
+        "new_path": "with space.go",
+        "status": "modified",
+        "hunks": [
+          {
+            "lines": [
+              {
+                "text": "x",
+                "old": 1,
+                "kind": "-"
+              },
+              {
+                "text": "y",
+                "new": 1,
+                "kind": "+"
+              }
+            ],
+            "old_start": 1,
+            "old_lines": 1,
+            "new_start": 1,
+            "new_lines": 1
+          }
+        ]
+      }
+    ]
+  }
+}

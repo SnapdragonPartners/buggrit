@@ -1,0 +1,90 @@
+diff --git a/added.go b/added.go
+new file mode 100644
+index 0000000..07f33c4
+--- /dev/null
++++ b/added.go
+@@ -0,0 +1,2 @@
++new
++file
+diff --git a/blob.bin b/blob.bin
+index 88768ef..3e3315e 100644
+Binary files a/blob.bin and b/blob.bin differ
+diff --git "a/caf\303\251.go" "b/caf\303\251.go"
+index 4ae8ef0..110ed9b 100644
+--- "a/caf\303\251.go"
++++ "b/caf\303\251.go"
+@@ -1 +1 @@
+-u
++v
+diff --git a/deleted.txt b/deleted.txt
+deleted file mode 100644
+index b629d96..0000000
+--- a/deleted.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-keep me
+-bye
+diff --git a/modified.go b/modified.go
+index ac9837c..e2aaa25 100644
+--- a/modified.go
++++ b/modified.go
+@@ -1,6 +1,7 @@
+ line 1
+-line 2
++line 2 changed
+ line 3
++inserted A
+ line 4
+ line 5
+ line 6
+@@ -22,9 +23,9 @@ line 21
+ line 22
+ line 23
+ line 24
+-line 25
+ line 26
+ line 27
+ line 28
+ line 29
+ line 30
++line 31
+diff --git a/old_name.go b/new_name.go
+similarity index 84%
+rename from old_name.go
+rename to new_name.go
+index 572f3f5..07b95db 100644
+--- a/old_name.go
++++ b/new_name.go
+@@ -2,7 +2,7 @@ r 1
+ r 2
+ r 3
+ r 4
+-r 5
++r five
+ r 6
+ r 7
+ r 8
+diff --git a/nonewline.txt b/nonewline.txt
+index 0a207c0..33d5d3b 100644
+--- a/nonewline.txt
++++ b/nonewline.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\ No newline at end of file
++B
+\ No newline at end of file
+diff --git a/pure_rename.txt b/renamed_pure.txt
+similarity index 100%
+rename from pure_rename.txt
+rename to renamed_pure.txt
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+diff --git a/with space.go b/with space.go
+index 587be6b..975fbec 100644
+--- a/with space.go	
++++ b/with space.go	
+@@ -1 +1 @@
+-x
++y
