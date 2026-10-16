@@ -17,7 +17,9 @@ var version = "dev"
 const usage = `usage: buggrit <command> [arguments]
 
 commands:
-  review                   review the pull request in the current Action run (not yet implemented)
+  review [flags]           review a pull request and post the findings; in an
+                           Action, every flag defaults from the environment
+                           (run "buggrit review -h" for the flags)
   config validate [path]   validate a config file (default ` + config.Path + `)
                            and print it with defaults applied
   version                  print the version
@@ -40,8 +42,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
 	case "review":
-		say(stderr, "buggrit review: not implemented yet (build step 3, docs/design.md §12)\n")
-		return 1
+		ctx, stop := signalContext()
+		defer stop()
+		return runReview(ctx, args[1:], os.Getenv, stdout, stderr)
 	case "help", "-h", "--help":
 		say(stdout, "%s", usage)
 		return 0

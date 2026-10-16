@@ -61,8 +61,16 @@ type PR struct {
 	// Diffs holds the PR's diff at every head it has had. New comments may
 	// target any of them, as on GitHub.
 	Diffs   map[string]string
-	Reviews int
+	Reviews []*Review
 	Number  int
+}
+
+// Review is a stored review.
+type Review struct {
+	Author   string
+	Body     string
+	CommitID string
+	ID       int64
 }
 
 // Server is the fake. Set its exported fields only while no request is in
@@ -75,10 +83,12 @@ type Server struct {
 	OnRequest func(op string) (status int)
 	tokens    map[string]string
 	prs       map[int]*PR
-	owner     string
-	repo      string
-	mu        sync.Mutex
-	nextID    int64
+	// files maps a ref to the repository's files at that ref.
+	files  map[string]map[string]string
+	owner  string
+	repo   string
+	mu     sync.Mutex
+	nextID int64
 	// ThreadsPageSize and CommentsPageSize force GraphQL pagination.
 	ThreadsPageSize  int
 	CommentsPageSize int
@@ -100,6 +110,7 @@ func New(t testing.TB, repo string) *Server {
 		owner:            r.Owner,
 		repo:             r.Name,
 		prs:              map[int]*PR{},
+		files:            map[string]map[string]string{},
 		tokens:           map[string]string{DefaultToken: DefaultLogin},
 		nextID:           1000,
 		ThreadsPageSize:  50,
@@ -142,6 +153,16 @@ func (s *Server) Push(number int, headSHA, diff string) {
 	pr := s.prs[number]
 	pr.HeadSHA, pr.Diff = headSHA, diff
 	pr.Diffs[headSHA] = diff
+}
+
+// SetFile stores a file's content at ref, for FileContent.
+func (s *Server) SetFile(ref, path, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.files[ref] == nil {
+		s.files[ref] = map[string]string{}
+	}
+	s.files[ref][path] = content
 }
 
 // PR returns the stored PR itself, not a copy. Read it only while no request
@@ -220,7 +241,9 @@ func (s *Server) routes() http.Handler {
 		mux.HandleFunc(method+" "+prefix+path, s.wrap(op, h))
 	}
 	handle("GET /pulls/{number}", "GET pull", s.getPull)
+	handle("GET /pulls/{number}/reviews", "GET reviews", s.listReviews)
 	handle("POST /pulls/{number}/reviews", "POST review", s.postReview)
+	handle("GET /contents/{path...}", "GET contents", s.getContents)
 	handle("POST /pulls/{number}/comments", "POST file comment", s.postFileComment)
 	handle("POST /pulls/{number}/comments/{id}/replies", "POST reply", s.postReply)
 	handle("DELETE /pulls/comments/{id}", "DELETE review comment", s.deleteReviewComment)
@@ -361,8 +384,36 @@ func (s *Server) postReview(r *http.Request, login string) (int, any) {
 		})
 	}
 	pr.Threads = append(pr.Threads, threads...)
-	pr.Reviews++
+	s.nextID++
+	pr.Reviews = append(pr.Reviews, &Review{ID: s.nextID, Author: login, Body: in.Body, CommitID: in.CommitID})
 	return http.StatusOK, map[string]any{"id": s.nextID, "state": "COMMENTED"}
+}
+
+func (s *Server) listReviews(r *http.Request, _ string) (int, any) {
+	pr, ok := s.pr(r)
+	if !ok {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	out := make([]map[string]any, 0, len(pr.Reviews))
+	for _, rv := range pr.Reviews {
+		out = append(out, map[string]any{
+			"id": rv.ID, "body": rv.Body, "commit_id": rv.CommitID, "state": "COMMENTED",
+			"user": map[string]string{"login": rv.Author},
+		})
+	}
+	return http.StatusOK, out
+}
+
+// getContents serves a file's raw content at ?ref=.
+func (s *Server) getContents(r *http.Request, _ string) (int, any) {
+	if r.Header.Get("Accept") != "application/vnd.github.raw+json" {
+		return http.StatusNotAcceptable, msg("fake only serves raw contents")
+	}
+	content, ok := s.files[r.URL.Query().Get("ref")][r.PathValue("path")]
+	if !ok {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	return http.StatusOK, rawBody(content)
 }
 
 // diffAt parses the PR's diff at commit, which must be a head the PR has had.

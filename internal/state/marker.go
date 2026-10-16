@@ -43,9 +43,20 @@ func (s FindingState) Valid() bool {
 	return false
 }
 
+// PassStatus is how a pass ended. Each pass's review body carries a pass
+// marker with it (design §6, "Review baseline").
+type PassStatus string
+
+// Pass statuses. Only a complete pass advances completed_sha.
+const (
+	PassComplete   PassStatus = "complete"
+	PassIncomplete PassStatus = "incomplete"
+)
+
 // Marker is the payload of a buggrit marker. A thread's root comment carries
 // a finding marker (FP, Severity, Pass set); each buggrit reply carries a
-// transition marker (To set, plus Evidence for a fixed verdict).
+// transition marker (To set, plus Evidence for a fixed verdict); each pass's
+// review body carries a pass marker (Status, Pass and SHA set).
 //
 // Unknown fields are ignored when decoding, so a marker written by a newer
 // buggrit still reads.
@@ -55,12 +66,16 @@ type Marker struct {
 	Severity string       `json:"sev,omitempty"`
 	SHA      string       `json:"sha,omitempty"`
 	To       FindingState `json:"to,omitempty"`
+	Status   PassStatus   `json:"status,omitempty"`
 	Evidence []string     `json:"evidence_files,omitempty"`
 	Pass     int          `json:"pass,omitempty"`
 }
 
 // IsTransition reports whether m records a state transition.
 func (m *Marker) IsTransition() bool { return m.To != "" }
+
+// IsPass reports whether m is a pass marker.
+func (m *Marker) IsPass() bool { return m.Status != "" }
 
 func (m *Marker) validate() error {
 	switch {
@@ -71,6 +86,10 @@ func (m *Marker) validate() error {
 	case m.To == StateFixed && len(m.Evidence) == 0:
 		// §6: a fixed verdict must list the files it relied on.
 		return fmt.Errorf("marker %s: fixed transition has no evidence_files", m.ID)
+	case m.Status != "" && m.Status != PassComplete && m.Status != PassIncomplete:
+		return fmt.Errorf("marker %s: unknown pass status %q", m.ID, m.Status)
+	case m.Status != "" && (m.Pass < 1 || m.SHA == ""):
+		return fmt.Errorf("marker %s: pass marker needs pass and sha", m.ID)
 	}
 	return nil
 }
@@ -132,10 +151,14 @@ func SameLogin(a, b string) bool { return a != "" && strings.EqualFold(a, b) }
 // github-actions[bot], and anyone can paste marker text, so neither check is
 // enough alone (design §3). A marker anywhere else is ignored.
 func OwnMarker(c *github.Comment, botLogin string) (*Marker, bool) {
-	if !SameLogin(c.Author, botLogin) {
+	return ownMarker(c.Author, c.Body, botLogin)
+}
+
+func ownMarker(author, body, botLogin string) (*Marker, bool) {
+	if !SameLogin(author, botLogin) {
 		return nil, false
 	}
-	m, err := Parse(c.Body)
+	m, err := Parse(body)
 	if err != nil {
 		return nil, false
 	}

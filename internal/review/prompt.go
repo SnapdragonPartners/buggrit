@@ -63,8 +63,9 @@ type Context struct {
 	Number  int
 }
 
-// ThreadNote is an existing review thread from another reviewer, given to the
-// finder so it doesn't repeat it (design §6).
+// ThreadNote is an existing review thread, from another reviewer or from an
+// earlier buggrit pass, given to the finder so it doesn't repeat it (design
+// §6).
 type ThreadNote struct {
 	Path     string
 	Author   string
@@ -193,7 +194,7 @@ func writeOtherThreads(b *strings.Builder, threads []ThreadNote) {
 	if len(threads) == 0 {
 		return
 	}
-	b.WriteString("## Existing review threads from other reviewers\n\nDon't raise these again.\n\n")
+	b.WriteString("## Existing review threads\n\nThese are already raised, by other reviewers or by buggrit on an earlier pass. Don't raise them again.\n\n")
 	for i := range threads {
 		t := &threads[i]
 		if i >= maxOtherThreads {

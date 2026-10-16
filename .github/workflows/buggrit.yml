@@ -1,0 +1,100 @@
+name: buggrit
+
+# buggrit reviews its own pull requests (docs/design.md §11, build step 3).
+#
+# It runs the buggrit built from main, not from the PR, and reads
+# .github/buggrit.json from the base branch, so nothing the PR changes runs
+# with the App token or the LunaRoute key (design §4, §10). Until build
+# step 7 ships the composite action, it builds from source.
+#
+# Reply-triggered runs (pull_request_review_comment, design §3) arrive with
+# the verifier in build step 4.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to review
+        required: true
+
+concurrency:
+  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  # A push cancels the pass in flight; the new head gets its own.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    # Above limits.pass_deadline (30m), so buggrit always has time to publish.
+    timeout-minutes: 45
+    steps:
+      - name: Check out buggrit from main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: buggrit-src
+          persist-credentials: false
+
+      # Until main has a config (the PR that adds buggrit), there is nothing
+      # to run: buggrit reads its config from the base branch.
+      - name: Check for a config on main
+        id: configured
+        run: |
+          if [ -f buggrit-src/.github/buggrit.json ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main has no .github/buggrit.json yet; skipping the review."
+          fi
+
+      - name: Mint App token
+        id: app
+        if: steps.configured.outputs.ok == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+
+      # The PR's head now, not the event's (design §2).
+      - name: Look up the PR head
+        id: head
+        if: steps.configured.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          set -euo pipefail
+          sha=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the PR head
+        if: steps.configured.outputs.ok == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.head.outputs.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        if: steps.configured.outputs.ok == 'true'
+        with:
+          go-version-file: buggrit-src/go.mod
+          cache-dependency-path: buggrit-src/go.sum
+
+      - name: Build buggrit
+        if: steps.configured.outputs.ok == 'true'
+        run: go build -C buggrit-src -o "$RUNNER_TEMP/buggrit" ./cmd/buggrit
+
+      - name: Review
+        if: steps.configured.outputs.ok == 'true'
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          BUGGRIT_PR: ${{ github.event.pull_request.number || inputs.pr }}
+          LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
+        run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'

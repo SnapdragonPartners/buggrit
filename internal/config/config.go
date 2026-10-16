@@ -426,6 +426,20 @@ func SeverityRank(s string) (int, bool) {
 	return 0, false
 }
 
+// ConfidenceRank orders confidence levels from least (0, low) to most sure
+// (2, high).
+func ConfidenceRank(c string) (int, bool) {
+	switch c {
+	case ConfidenceLow:
+		return 0, true
+	case ConfidenceMedium:
+		return 1, true
+	case ConfidenceHigh:
+		return 2, true
+	}
+	return 0, false
+}
+
 // ValidationError lists every problem found in a config.
 type ValidationError struct {
 	Problems []error

@@ -105,14 +105,19 @@ internal/review/      engine: verify / find / reconcile, prompts, tools, output 
 internal/publish/     render comments, post review, replies, resolve/unresolve, summary
 ```
 
-The engine entry point looks roughly like:
+The engine entry point is
 
 ```go
-Review(ctx, PRRef, Workspace, GitHub, Config) (Result, error)
+review.Review(ctx, PRRef, Workspace, review.GitHub, *review.Options) (*review.Result, error)
+publish.Publish(ctx, publish.GitHub, PRRef, *review.Result) (*publish.Posted, error)
 ```
 
-`Workspace` is a read-only view of the checkout and `GitHub` is an interface,
-so the engine can be tested against fakes and reused by other front ends.
+`Review` does steps 0–4 and returns what to post; `Publish` does step 5.
+`Workspace` is a read-only view of the checkout, and each `GitHub` is an
+interface over the calls that step makes, so the engine can be tested
+against fakes and reused by other front ends. A local front end would call
+`Review` and print the result instead of publishing; `buggrit review
+--dry-run` does that today.
 
 ## 3. Trigger, packaging, permissions
 
@@ -194,6 +199,10 @@ passes secrets.
   lookup, it exits without doing anything. That's safe: the push that moved
   it queued a newer run in the same group, and whichever run ends up pending
   will look up the head again.
+- **Dogfooding:** this repo's own workflow (`.github/workflows/buggrit.yml`)
+  builds buggrit from `main`, never from the PR, and skips with a notice
+  until `main` has a config. Until build step 7 it builds from source, and
+  until build step 4 it runs only on `pull_request` and `workflow_dispatch`.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
   would still enter the PR's concurrency group and replace a pending run
@@ -505,6 +514,14 @@ Two SHAs are recorded in the summary marker and in each pass's review body:
 - `completed_sha`: the head of the most recent pass that covered its whole
   scope **and** finished publishing.
 
+Each pass's review body ends with a **pass marker**
+(`{"id":"pass-3","pass":3,"sha":"…","status":"complete"}`, or `"incomplete"`).
+The review is the last thing a pass posts, after every finding thread, so
+`complete` also means "finished publishing". A head with a complete pass
+gets no new full pass (§2, step 0). A pass that stops partway leaves no
+complete marker; the next run redoes it, and dedupe against the fingerprints
+of the threads that did land keeps it from posting them twice.
+
 Incremental scope (§7) starts from `completed_sha`. An interrupted pass
 (deadline, ceiling, cancellation, fence) doesn't advance it, so the next
 pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
@@ -595,9 +612,23 @@ Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same cl
 Findings that can't be anchored to a changed line are posted as file-level
 review comments (`subject_type: file`) so they still get their own thread.
 GitHub's create-review call can't carry file-level comments, so they're
-posted one by one right after the review. A range that crosses hunks is
-narrowed to its last line, and a line outside every hunk falls back to
-file level.
+posted one by one, before the review that carries the pass marker (§6). A
+range that crosses hunks is narrowed to its last line, and a line outside
+every hunk falls back to file level. A suggestion is posted only when the
+anchor still covers exactly the lines it replaces. If GitHub rejects a line
+anchor anyway, the review call posts nothing, and its findings are posted at
+file level instead.
+
+The footer above is the target. Until the verifier exists (build step 4) it
+reads "Fix it, or reply explaining why not.", because nothing yet checks the
+next push or reopens a resolved thread. A comment is capped below GitHub's
+65,536-character limit.
+
+**Fingerprint** (§7 rule 3): a hash of the path, the category, and the
+anchored lines with whitespace normalized (head lines from the checkout,
+deleted lines from the diff), so the same issue on a moved line still
+matches. A file-level finding has no anchored lines and uses its normalized
+title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 
 ### Completion signal
 - The job's check run tells the agent the pass is finished
@@ -608,6 +639,10 @@ file level.
   always `COMMENT`. The gate is off by default.
 - Job summary (`$GITHUB_STEP_SUMMARY`): per-stage model, tokens, tool
   iterations, wall time. Useful for tuning even when tokens are free.
+- `buggrit review` exits 0 for a complete pass, a skipped one (the head
+  already has a complete pass, the head moved, or there's no config on the
+  base branch), and 1 for an incomplete pass or an error, so an incomplete
+  pass shows on the PR's checks.
 
 ## 9. Limits: unlimited vs budget
 

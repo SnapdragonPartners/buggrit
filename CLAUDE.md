@@ -27,19 +27,18 @@ Prefer the standard library. If the needed behavior can be written clearly in ro
 ## Directory Layout
 
 ```
-cmd/buggrit/       # Entrypoint: review (Action), config validate, version
+cmd/buggrit/       # Entrypoint: review (Action; --dry-run for local runs), config validate, version
 internal/config/   # .github/buggrit.json: strict decoding, defaults, validation (design §4)
 internal/llm/      # Config → maestro-llms chat clients per stage, shared limiter (design §4, §9)
 internal/github/   # REST + GraphQL client, diff parsing, line → anchor mapping, head fence (design §2, §3, §8)
 internal/github/githubtest/  # httptest fake of the GitHub endpoints we use (design §11)
 internal/state/    # Comment markers and the own-comment check; later the ledger and state machine (design §6)
 internal/glob/     # include/exclude path globs with ** (design §4)
-internal/review/   # Engine: workspace, read-only tools, prompts, agentic finder with submit_findings (design §5)
+internal/review/   # Engine: Review() entry point, workspace, read-only tools, prompts, agentic finder, reconcile (design §2, §5, §7)
+internal/publish/  # Render finding comments and the pass review, post them behind the head fence (design §6, §8)
 docs/design.md     # The binding design
 hooks/             # Git hooks (pre-push: lint + test)
 ```
-
-Packages planned in the design (§2) but not yet created: `internal/publish`.
 
 `internal/github` uses only the standard library (no go-github). Tests drive the real client against `githubtest`; `TestLive` is skipped unless `BUGGRIT_LIVE_*` is set (see `internal/github/live_test.go`).
 

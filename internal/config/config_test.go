@@ -186,3 +186,22 @@ func TestDefaultsAreIndependentCopies(t *testing.T) {
 		t.Error("Defaults shares slice storage between calls")
 	}
 }
+
+func TestRanks(t *testing.T) {
+	for i, s := range []string{SeverityP0, SeverityP1, SeverityP2, SeverityP3} {
+		if r, ok := SeverityRank(s); !ok || r != i {
+			t.Errorf("SeverityRank(%s) = %d, %v", s, r, ok)
+		}
+	}
+	for i, c := range []string{ConfidenceLow, ConfidenceMedium, ConfidenceHigh} {
+		if r, ok := ConfidenceRank(c); !ok || r != i {
+			t.Errorf("ConfidenceRank(%s) = %d, %v", c, r, ok)
+		}
+	}
+	if _, ok := SeverityRank("P4"); ok {
+		t.Error("SeverityRank accepted P4")
+	}
+	if _, ok := ConfidenceRank("sure"); ok {
+		t.Error("ConfidenceRank accepted sure")
+	}
+}
