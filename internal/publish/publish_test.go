@@ -230,5 +230,8 @@ func TestPublishFallsBackToFileLevel(t *testing.T) {
 		if !th.FileLevel {
 			t.Errorf("thread %+v is not file level", th)
 		}
+		if strings.Contains(th.Comments[0].Body, "```suggestion") {
+			t.Error("a file-level fallback kept its suggestion, which has no lines to apply to")
+		}
 	}
 }

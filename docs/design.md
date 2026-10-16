@@ -665,7 +665,8 @@ allow. An incomplete pass doesn't advance `completed_sha` (§6), so its
 unreviewed scope is covered next time.
 
 **Wrap-up.** The finder investigates until the deadline less a reserve (a
-quarter of `pass_deadline`, between one and ten minutes). If it hasn't
+quarter of `pass_deadline`, between one and ten minutes, and never more
+than half of it). If it hasn't
 submitted by then, one more turn tells the model time is up and forces
 `submit_findings` with what it has. Those findings are posted, and the pass
 is still marked incomplete. Without this, a slow model (GLM-5.3 can reason

@@ -47,25 +47,20 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 	if err != nil {
 		return nil, err
 	}
-	comments := make([]github.ReviewComment, 0, len(res.Findings))
+	out := &Posted{}
+	var lineFindings []review.Candidate
+	var lines []github.ReviewComment
 	for i := range res.Findings {
 		c := &res.Findings[i]
-		text, rerr := FindingBody(c, res.Pass, res.HeadSHA)
+		rc, rerr := comment(c, res)
 		if rerr != nil {
-			return nil, fmt.Errorf("publish %s: %w", c.ID, rerr)
+			return out, rerr
 		}
-		comments = append(comments, github.ReviewComment{Body: text, Anchor: c.Anchor})
-	}
-
-	out := &Posted{}
-	var lines []github.ReviewComment
-	for i := range comments {
-		c := &comments[i]
 		if !c.Anchor.FileLevel() {
-			lines = append(lines, *c)
+			lineFindings, lines = append(lineFindings, *c), append(lines, rc)
 			continue
 		}
-		if perr := postFileLevel(ctx, gh, ref, res.HeadSHA, c); perr != nil {
+		if perr := postFileLevel(ctx, gh, ref, res.HeadSHA, &rc); perr != nil {
 			return out, perr
 		}
 		out.Threads++
@@ -74,10 +69,18 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 	if err != nil && rejectedAnchor(err) && len(lines) > 0 {
 		// The anchors come from the same diff GitHub serves, so this
 		// shouldn't happen. If it does, the failed call posted nothing, and
-		// file-level threads still reach the author.
+		// file-level threads still reach the author. They're re-rendered
+		// at file level, which drops any suggestion: with no lines to
+		// replace, it can't be applied (design §8).
 		out.FellBack = true
-		for i := range lines {
-			if perr := postFileLevel(ctx, gh, ref, res.HeadSHA, &lines[i]); perr != nil {
+		for i := range lineFindings {
+			c := lineFindings[i]
+			c.Anchor = github.Anchor{Path: c.Anchor.Path}
+			rc, rerr := comment(&c, res)
+			if rerr != nil {
+				return out, rerr
+			}
+			if perr := postFileLevel(ctx, gh, ref, res.HeadSHA, &rc); perr != nil {
 				return out, perr
 			}
 			out.Threads++
@@ -91,6 +94,15 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 	out.Threads += len(lines)
 	out.ReviewID = rv.ID
 	return out, nil
+}
+
+// comment renders c as a review comment at its anchor.
+func comment(c *review.Candidate, res *review.Result) (github.ReviewComment, error) {
+	text, err := FindingBody(c, res.Pass, res.HeadSHA)
+	if err != nil {
+		return github.ReviewComment{}, fmt.Errorf("publish %s: %w", c.ID, err)
+	}
+	return github.ReviewComment{Body: text, Anchor: c.Anchor}, nil
 }
 
 // postFileLevel starts a file-level thread for c.

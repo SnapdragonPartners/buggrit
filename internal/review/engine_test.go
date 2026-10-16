@@ -161,6 +161,7 @@ func TestReviewIncomplete(t *testing.T) {
 
 func TestWrapUpReserve(t *testing.T) {
 	for d, want := range map[time.Duration]time.Duration{
+		30 * time.Second: 15 * time.Second,
 		2 * time.Minute:  time.Minute,
 		30 * time.Minute: 7*time.Minute + 30*time.Second,
 		2 * time.Hour:    10 * time.Minute,

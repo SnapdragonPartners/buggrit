@@ -141,9 +141,11 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 
 // wrapUpReserve is how much of the pass deadline the finder holds back to
 // make the model submit what it has (§9): a quarter of it, between one and
-// ten minutes. A reasoning model can spend minutes on one turn.
+// ten minutes, since a reasoning model can spend minutes on one turn. It
+// never takes more than half the deadline, so a short deadline still leaves
+// time to investigate and complete.
 func wrapUpReserve(deadline time.Duration) time.Duration {
-	return min(max(deadline/4, time.Minute), 10*time.Minute)
+	return min(max(deadline/4, time.Minute), 10*time.Minute, deadline/2)
 }
 
 // readThreads splits the PR's threads into the fingerprints of buggrit's own
