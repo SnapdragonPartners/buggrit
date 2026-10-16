@@ -60,30 +60,17 @@ func TestLive(t *testing.T) {
 
 	nonce := fmt.Sprintf("live-%d", time.Now().UnixNano())
 	note := "buggrit live check (" + nonce + "); this comment deletes itself when the check finishes."
-	var cleanup []func() error
-	t.Cleanup(func() {
-		// Newest first, so replies go before the comments they reply to.
-		for i := len(cleanup) - 1; i >= 0; i-- {
-			if err := cleanup[i](); err != nil {
-				t.Errorf("cleanup: %v", err)
-			}
-		}
-	})
-	cleanupCtx := context.WithoutCancel(ctx)
+	// Registered before anything is posted, and found by nonce rather than
+	// by remembered IDs, so a failure at any step still cleans up.
+	t.Cleanup(func() { sweep(t, c, repo, number, nonce) })
 
-	posted, err := c.CreateReview(ctx, repo, number, &github.Review{
+	_, err = c.CreateReview(ctx, repo, number, &github.Review{
 		CommitID: pr.HeadSHA,
 		Comments: []github.ReviewComment{
 			{Body: note + " [line]", Anchor: anchor},
 			{Body: note + " [file]", Anchor: github.Anchor{Path: anchor.Path}},
 		},
 	})
-	if posted != nil {
-		for _, fc := range posted.FileComments {
-			id := fc.DatabaseID
-			cleanup = append(cleanup, func() error { return c.DeleteReviewComment(cleanupCtx, repo, id) })
-		}
-	}
 	if err != nil {
 		t.Fatalf("create review: %v", err)
 	}
@@ -107,7 +94,6 @@ func TestLive(t *testing.T) {
 		t.Fatalf("posted threads not found (line %v, file %v)", line != nil, file != nil)
 	}
 	lineRootID := line.Root().DatabaseID
-	cleanup = append(cleanup, func() error { return c.DeleteReviewComment(cleanupCtx, repo, lineRootID) })
 	if !file.FileLevel || line.FileLevel || line.Line != anchor.Line {
 		t.Errorf("thread shapes: line %+v, file level %v", line, file.FileLevel)
 	}
@@ -117,11 +103,9 @@ func TestLive(t *testing.T) {
 		t.Errorf("posted as %q, want %q", author, want)
 	}
 
-	reply, err := c.Reply(ctx, repo, number, lineRootID, note+" [reply]")
-	if err != nil {
+	if _, err := c.Reply(ctx, repo, number, lineRootID, note+" [reply]"); err != nil {
 		t.Fatalf("reply: %v", err)
 	}
-	cleanup = append(cleanup, func() error { return c.DeleteReviewComment(cleanupCtx, repo, reply.DatabaseID) })
 
 	checkResolve := func(resolve bool) {
 		t.Helper()
@@ -155,11 +139,43 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create conversation comment: %v", err)
 	}
-	cleanup = append(cleanup, func() error { return c.DeleteIssueComment(cleanupCtx, repo, summary.DatabaseID) })
 	if _, err := c.UpdateIssueComment(ctx, repo, summary.DatabaseID, note+" [summary, updated]"); err != nil {
 		t.Errorf("update conversation comment: %v", err)
 	}
 	t.Log("summary comment create and update: ok")
+}
+
+// sweep deletes every comment on the PR that carries nonce: review comments
+// (replies before roots, which removes the threads) and conversation
+// comments.
+func sweep(t *testing.T, c *github.Client, repo github.Repo, number int, nonce string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	threads, err := c.ReviewThreads(ctx, repo, number)
+	if err != nil {
+		t.Errorf("cleanup: read threads: %v; delete comments containing %q by hand", err, nonce)
+	}
+	for _, th := range threads {
+		for i := len(th.Comments) - 1; i >= 0; i-- {
+			if cm := th.Comments[i]; strings.Contains(cm.Body, nonce) {
+				if err := c.DeleteReviewComment(ctx, repo, cm.DatabaseID); err != nil {
+					t.Errorf("cleanup: %v", err)
+				}
+			}
+		}
+	}
+	comments, err := c.IssueComments(ctx, repo, number)
+	if err != nil {
+		t.Errorf("cleanup: list conversation comments: %v; delete comments containing %q by hand", err, nonce)
+	}
+	for _, cm := range comments {
+		if strings.Contains(cm.Body, nonce) {
+			if err := c.DeleteIssueComment(ctx, repo, cm.DatabaseID); err != nil {
+				t.Errorf("cleanup: %v", err)
+			}
+		}
+	}
 }
 
 // firstAddedLine returns the first added line in a text file.

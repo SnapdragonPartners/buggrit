@@ -236,6 +236,7 @@ type rawBody string
 
 func (s *Server) wrap(op string, h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		op := op
 		if op == "graphql" {
 			op = "graphql " + peekOperation(r)
 		}

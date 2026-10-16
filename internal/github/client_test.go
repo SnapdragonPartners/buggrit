@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -360,6 +361,28 @@ func TestFenceStopsMutationAfterHeadMoves(t *testing.T) {
 	postFindings(t, c)
 	if err := f.Check(ctx); !errors.Is(err, github.ErrHeadMoved) {
 		t.Fatalf("fence before resolve: %v, want ErrHeadMoved", err)
+	}
+}
+
+func TestFakeReportsEachGraphQLOperation(t *testing.T) {
+	fake, c := setup(t)
+	postFindings(t, c)
+	var ops []string
+	fake.OnRequest = func(op string) int {
+		if strings.HasPrefix(op, "graphql ") {
+			ops = append(ops, op)
+		}
+		return 0
+	}
+	threads, err := c.ReviewThreads(context.Background(), repo, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ResolveThread(context.Background(), threads[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"graphql ReviewThreads", "graphql ResolveThread"}; !slices.Equal(ops, want) {
+		t.Errorf("ops = %v, want %v", ops, want)
 	}
 }
 

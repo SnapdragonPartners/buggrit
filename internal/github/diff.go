@@ -398,6 +398,9 @@ func splitGitHeader(s string) (oldPath, newPath string, err error) {
 		i := len(s) / 2
 		if i > 2 && i+3 <= len(s) && s[i] == ' ' && s[2:i] == s[i+3:] {
 			oldPath, s = s[:i], s[i+1:]
+		} else if j := strings.LastIndex(s, ` "b/`); j >= 0 && closingQuote(s[j+1:]) == len(s)-j-2 {
+			// An unquoted source renamed to a path git had to quote.
+			oldPath, s = s[:j], s[j+1:]
 		} else if j := strings.Index(s, " b/"); j >= 0 {
 			oldPath, s = s[:j], s[j+1:]
 		} else {

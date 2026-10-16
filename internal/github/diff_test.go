@@ -211,6 +211,40 @@ func TestParseDiffEdgeCases(t *testing.T) {
 	})
 }
 
+// Renames between a plain path and one git must quote, in both directions,
+// from real git output.
+func TestParseDiffMixedQuoting(t *testing.T) {
+	text, err := os.ReadFile(filepath.Join("testdata", "mixed_quoting.diff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := ParseDiff(string(text))
+	if err != nil {
+		t.Fatalf("ParseDiff: %v", err)
+	}
+	want := []struct{ old, new string }{{"plain.txt", "café.txt"}, {"naïve.txt", "plain2.txt"}}
+	if len(d.Files) != len(want) {
+		t.Fatalf("got %d files", len(d.Files))
+	}
+	for i, w := range want {
+		if f := d.Files[i]; f.OldPath != w.old || f.NewPath != w.new || f.Status != StatusRenamed {
+			t.Errorf("file %d = %q -> %q (%s), want %q -> %q", i, f.OldPath, f.NewPath, f.Status, w.old, w.new)
+		}
+	}
+	if a, err := d.AnchorFor("café.txt", 0, 21); err != nil || a.Line != 21 {
+		t.Errorf("anchor = %+v, %v", a, err)
+	}
+	// The header alone, without rename lines, must split too.
+	for _, header := range []string{
+		"diff --git a/plain.txt \"b/caf\\303\\251.txt\"\n",
+		"diff --git \"a/na\\303\\257ve.txt\" b/plain2.txt\n",
+	} {
+		if _, err := ParseDiff(header); err != nil {
+			t.Errorf("header %q: %v", header, err)
+		}
+	}
+}
+
 func TestParseDiffRejects(t *testing.T) {
 	tests := []struct{ name, diff, want string }{
 		{"garbage", "hello\n", `expected "diff --git"`},

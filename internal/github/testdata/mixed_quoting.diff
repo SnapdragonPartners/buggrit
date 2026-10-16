@@ -1,0 +1,16 @@
+diff --git a/plain.txt "b/caf\303\251.txt"
+similarity index 89%
+rename from plain.txt
+rename to "caf\303\251.txt"
+index 0ff3bbb..6e28705 100644
+--- a/plain.txt
++++ "b/caf\303\251.txt"
+@@ -18,3 +18,4 @@
+ 18
+ 19
+ 20
++extra
+diff --git "a/na\303\257ve.txt" b/plain2.txt
+similarity index 100%
+rename from "na\303\257ve.txt"
+rename to plain2.txt
