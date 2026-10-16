@@ -53,9 +53,18 @@ func (f *Finding) Blocking() bool {
 	return f.Severity == config.SeverityP0 || f.Severity == config.SeverityP1
 }
 
-// Submission is submit_findings' argument object.
+// Coverage values: whether the model reviewed the whole change.
+const (
+	CoverageComplete = "complete"
+	CoveragePartial  = "partial"
+)
+
+// Submission is submit_findings' argument object. Coverage is the model's
+// own account of whether it reviewed the whole change; "partial" leaves the
+// pass incomplete, so the next run reviews it again (design §9).
 type Submission struct {
 	Summary  string    `json:"summary,omitempty"`
+	Coverage string    `json:"coverage"`
 	Findings []Finding `json:"findings"`
 }
 
@@ -71,7 +80,8 @@ func submitFindingsDef() llms.ToolDefinition {
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "summary": {"type": "string", "description": "One short paragraph on the change overall (optional)"},
+    "summary": {"type": "string", "description": "One short paragraph on the change overall; with partial coverage, say what you did not get to"},
+    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed the whole change; partial if you ran short of time or could not cover some of it"},
     "findings": {
       "type": "array",
       "items": {
@@ -106,7 +116,7 @@ func submitFindingsDef() llms.ToolDefinition {
       }
     }
   },
-  "required": ["findings"],
+  "required": ["coverage", "findings"],
   "additionalProperties": false
 }`),
 	}
@@ -134,15 +144,21 @@ func (s *submitTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	if sub.Findings == nil {
 		return toolError("findings is required; pass [] if there are none. Call submit_findings again.")
 	}
+	sub.Coverage = strings.ToLower(strings.TrimSpace(sub.Coverage))
+	if sub.Coverage != CoverageComplete && sub.Coverage != CoveragePartial {
+		return toolError("coverage must be %q or %q, not %q. Call submit_findings again.", CoverageComplete, CoveragePartial, sub.Coverage)
+	}
 	missing := missingLocationFields(call.Parameters)
 	var problems []string
 	for i := range sub.Findings {
 		f := &sub.Findings[i]
 		normalize(f)
-		ps := missing[i]
-		if len(ps) == 0 {
-			// Anchor checks on a defaulted line would be misleading.
-			ps = s.validate(f)
+		// Every field problem is reported at once (§5). Only the anchor
+		// checks are skipped for a missing location: on a defaulted line
+		// they would be misleading.
+		ps := append(missing[i], s.validateFields(f)...)
+		if len(missing[i]) == 0 {
+			ps = append(ps, s.validateLocations(f)...)
 		}
 		for _, p := range ps {
 			problems = append(problems, fmt.Sprintf("findings[%d] (%s): %s", i, f.Path, p))
@@ -220,8 +236,9 @@ func normalize(f *Finding) {
 	}
 }
 
-// validate returns every problem with one finding, phrased for the model.
-func (s *submitTool) validate(f *Finding) []string {
+// validateFields returns the problems with a finding's fields other than
+// its locations, phrased for the model.
+func (s *submitTool) validateFields(f *Finding) []string {
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
 
@@ -251,8 +268,13 @@ func (s *submitTool) validate(f *Finding) []string {
 	if len(f.Instances) > 0 && f.Class == "" {
 		add("instances need a class naming the shared pattern")
 	}
+	return out
+}
 
-	out = append(out, s.validateAnchor(f)...)
+// validateLocations checks the finding's anchor and its instances.
+func (s *submitTool) validateLocations(f *Finding) []string {
+	out := s.validateAnchor(f)
+	add := func(format string, args ...any) { out = append(out, fmt.Sprintf(format, args...)) }
 	for j, loc := range f.Instances {
 		if p := s.checkLine(loc.Path, loc.Line); p != "" {
 			add("instances[%d]: %s", j, p)

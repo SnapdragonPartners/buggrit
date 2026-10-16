@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "models": {
+    "default": {
+      "provider": "openai-compatible",
+      "base_url": "https://gw.lunaroute.com/v1",
+      "model": "deepseek-4.1-flash",
+      "api_key_env": "LUNAROUTE_API_KEY",
+      "max_output_tokens": 32768
+    }
+  },
+  "limits": {
+    "pass_deadline": "40m",
+    "max_concurrency": 2
+  },
+  "review": {
+    "instruction_files": ["CLAUDE.md", "docs/design.md"],
+    "instructions": "docs/design.md is the binding design, and each PR body lists what it intentionally does not do. A decision documented there is not a defect; drift between the code and the design is."
+  }
+}

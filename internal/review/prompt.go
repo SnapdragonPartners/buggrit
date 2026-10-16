@@ -2,6 +2,8 @@ package review
 
 import (
 	"fmt"
+	"io/fs"
+	"path"
 	"strings"
 )
 
@@ -31,6 +33,7 @@ const systemPrompt = `You are buggrit, a code reviewer for a pull request. You r
 How to work:
 - The opening message has the pull request description, the repository's instructions, and the diff with head-side line numbers. Start from it, then investigate with the tools: read_file, grep, list_dir, get_diff. Read callers, tests, docs and design files the change touches or relies on. All tools are read-only.
 - When you are done, call submit_findings exactly once with every finding. If there is nothing worth raising, submit an empty list. Do not answer in plain text.
+- You have a time budget, stated in the opening message, and every tool result ends with the time used. Plan to submit before the wrap-up time. Set coverage to "complete" only if you reviewed the whole change; otherwise set "partial" and say in summary what you did not cover. A partial review is reviewed again on the next run, so report honestly rather than rushing.
 
 What to report:
 - Concrete problems introduced or exposed by this change: bugs, unsafe concurrency, mishandled errors, security exposures, broken API contracts, missing tests for new behavior, and documentation drift. Documentation drift means docs, ADRs, help text, comments or config examples that this change made inaccurate; look for it actively, including in files the diff did not touch.
@@ -63,8 +66,9 @@ type Context struct {
 	Number  int
 }
 
-// ThreadNote is an existing review thread from another reviewer, given to the
-// finder so it doesn't repeat it (design §6).
+// ThreadNote is an existing review thread, from another reviewer or from an
+// earlier buggrit pass, given to the finder so it doesn't repeat it (design
+// §6).
 type ThreadNote struct {
 	Path     string
 	Author   string
@@ -135,11 +139,13 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 
 	files := make([]string, 0, len(in.InstructionFiles))
 	var omitted []string
+	seen := map[string]bool{}
 	for _, name := range in.InstructionFiles {
-		p, err := cleanPath(name)
-		if err != nil {
+		p, label, ok := instructionPath(in.Workspace, name)
+		if !ok || seen[p] {
 			continue
 		}
+		seen[p] = true
 		text, complete, err := readPrefix(in.Workspace, p, min(budget, maxInstructionBytes))
 		switch {
 		case err != nil:
@@ -151,7 +157,7 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 			text += "\n[truncated; read_file " + p + " for the rest]"
 		}
 		budget -= len(text)
-		files = append(files, fmt.Sprintf("### %s\n\n%s\n", p, strings.TrimSpace(text)))
+		files = append(files, fmt.Sprintf("### %s\n\n%s\n", label, strings.TrimSpace(text)))
 	}
 	if len(files) == 0 && len(omitted) == 0 && extra == "" {
 		return
@@ -169,6 +175,33 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 		b.WriteString(extra)
 		b.WriteString("\n\n")
 	}
+}
+
+// instructionPath resolves a configured instruction file to the path to
+// read and the label to show. A symlink is followed one hop, because
+// AGENTS.md -> CLAUDE.md is common; its target must pass cleanPath like any
+// other path (design §10). ok is false for a missing or refused file.
+func instructionPath(ws Workspace, name string) (p, label string, ok bool) {
+	p, err := cleanPath(name)
+	if err != nil {
+		return "", "", false
+	}
+	info, err := ws.Lstat(p)
+	if err != nil {
+		return "", "", false
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return p, p, true
+	}
+	target, err := ws.ReadLink(p)
+	if err != nil || path.IsAbs(target) {
+		return "", "", false
+	}
+	resolved, err := cleanPath(path.Join(path.Dir(p), target))
+	if err != nil {
+		return "", "", false
+	}
+	return resolved, p + " → " + resolved, true
 }
 
 // readPrefix returns as many whole lines of a file as fit in limit bytes,
@@ -193,7 +226,7 @@ func writeOtherThreads(b *strings.Builder, threads []ThreadNote) {
 	if len(threads) == 0 {
 		return
 	}
-	b.WriteString("## Existing review threads from other reviewers\n\nDon't raise these again.\n\n")
+	b.WriteString("## Existing review threads\n\nThese are already raised, by other reviewers or by buggrit on an earlier pass. Don't raise them again.\n\n")
 	for i := range threads {
 		t := &threads[i]
 		if i >= maxOtherThreads {

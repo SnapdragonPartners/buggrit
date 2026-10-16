@@ -105,7 +105,7 @@ func TestCreateReviewAndReadThreads(t *testing.T) {
 	if len(posted.FileComments) != 1 || posted.FileComments[0].DatabaseID == 0 {
 		t.Fatalf("file comments = %+v", posted.FileComments)
 	}
-	if got := fake.PR(7).Reviews; got != 1 {
+	if got := len(fake.PR(7).Reviews); got != 1 {
 		t.Errorf("reviews = %d, want 1 (line comments go in one review)", got)
 	}
 
@@ -163,8 +163,8 @@ func TestCreateReviewOnlyFileComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if posted.ID != 0 || len(posted.FileComments) != 1 || fake.PR(7).Reviews != 0 {
-		t.Errorf("posted = %+v, reviews = %d", posted, fake.PR(7).Reviews)
+	if posted.ID != 0 || len(posted.FileComments) != 1 || len(fake.PR(7).Reviews) != 0 {
+		t.Errorf("posted = %+v, reviews = %d", posted, len(fake.PR(7).Reviews))
 	}
 }
 

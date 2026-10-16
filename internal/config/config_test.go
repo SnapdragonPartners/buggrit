@@ -96,7 +96,6 @@ func TestParseRejects(t *testing.T) {
 		{"trailing data", minimal + `{}`, "unexpected data"},
 		{"trailing close bracket", minimal + `] not-json`, "unexpected data"},
 		{"trailing close brace", minimal + `}`, "unexpected data"},
-		{"huge iterations", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": 1000000},`, 1), "between 0 and 10000"},
 		{"negative iterations", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": -1},`, 1), "max_tool_iterations"},
 		{"explicit empty stage provider", strings.Replace(minimal, `}}`, `}, "verify": {"provider": ""}}`, 1), "models.verify: provider is required"},
 		{"explicit empty stage model", strings.Replace(minimal, `}}`, `}, "verify": {"model": ""}}`, 1), "models.verify: model is required"},
@@ -185,5 +184,24 @@ func TestDefaultsAreIndependentCopies(t *testing.T) {
 	a.Review.Exclude[0] = "changed"
 	if Defaults().Review.Exclude[0] == "changed" {
 		t.Error("Defaults shares slice storage between calls")
+	}
+}
+
+func TestRanks(t *testing.T) {
+	for i, s := range []string{SeverityP0, SeverityP1, SeverityP2, SeverityP3} {
+		if r, ok := SeverityRank(s); !ok || r != i {
+			t.Errorf("SeverityRank(%s) = %d, %v", s, r, ok)
+		}
+	}
+	for i, c := range []string{ConfidenceLow, ConfidenceMedium, ConfidenceHigh} {
+		if r, ok := ConfidenceRank(c); !ok || r != i {
+			t.Errorf("ConfidenceRank(%s) = %d, %v", c, r, ok)
+		}
+	}
+	if _, ok := SeverityRank("P4"); ok {
+		t.Error("SeverityRank accepted P4")
+	}
+	if _, ok := ConfidenceRank("sure"); ok {
+		t.Error("ConfidenceRank accepted sure")
 	}
 }

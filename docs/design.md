@@ -105,14 +105,19 @@ internal/review/      engine: verify / find / reconcile, prompts, tools, output 
 internal/publish/     render comments, post review, replies, resolve/unresolve, summary
 ```
 
-The engine entry point looks roughly like:
+The engine entry point is
 
 ```go
-Review(ctx, PRRef, Workspace, GitHub, Config) (Result, error)
+review.Review(ctx, PRRef, Workspace, review.GitHub, *review.Options) (*review.Result, error)
+publish.Publish(ctx, publish.GitHub, PRRef, *review.Result) (*publish.Posted, error)
 ```
 
-`Workspace` is a read-only view of the checkout and `GitHub` is an interface,
-so the engine can be tested against fakes and reused by other front ends.
+`Review` does steps 0–4 and returns what to post; `Publish` does step 5.
+`Workspace` is a read-only view of the checkout, and each `GitHub` is an
+interface over the calls that step makes, so the engine can be tested
+against fakes and reused by other front ends. A local front end would call
+`Review` and print the result instead of publishing; `buggrit review
+--dry-run` does that today.
 
 ## 3. Trigger, packaging, permissions
 
@@ -194,6 +199,10 @@ passes secrets.
   lookup, it exits without doing anything. That's safe: the push that moved
   it queued a newer run in the same group, and whichever run ends up pending
   will look up the head again.
+- **Dogfooding:** this repo's own workflow (`.github/workflows/buggrit.yml`)
+  builds buggrit from `main`, never from the PR, and skips with a notice
+  until `main` has a config. Until build step 7 it builds from source, and
+  until build step 4 it runs only on `pull_request` and `workflow_dispatch`.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
   would still enter the PR's concurrency group and replace a pending run
@@ -329,10 +338,12 @@ so a large file costs time, not memory.
 ### Every review uses tools
 Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
-- `read_file(path, start, end)`
-- `grep(pattern, path_glob)`
-- `list_dir`
-- `get_diff(path)`
+- `read_file(path, start_line, end_line)`
+- `grep(pattern, path_glob, ignore_case)`
+- `list_dir(path)`
+- `get_diff(path, offset)`: one file's diff with head-side line numbers, or,
+  with no path, the list of changed files. `offset` continues output that
+  was truncated.
 - `get_thread(id)`: earlier threads, during verification
 
 The model can follow callers, read the ADRs and docs the PR body links to, and
@@ -370,10 +381,17 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   one nudge. If it still doesn't submit, or the run hits a ceiling, the
   deadline or a model error, the pass is reported incomplete with that
   reason. It never comes back silently empty (§9).
-- **"No ceiling":** `max_tool_iterations: 0` is run as 10,000, which is also
-  the configurable maximum. toolloop would read 0 as its own default of 8,
-  and it preallocates its transcript in proportion to the limit
+- **"No ceiling":** `max_tool_iterations: 0` is passed to toolloop as
+  `math.MaxInt`, since toolloop reads 0 as its own default of 8. The deadline
+  bounds the run. This needs maestro-llms v0.9.0, which stopped sizing its
+  transcript by the limit
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
+
+`submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
+`coverage` is required: `complete` if the model reviewed the whole change,
+`partial` if it didn't (it says what it missed in `summary`). A partial
+submission's findings are posted, but the pass is incomplete, so the next
+run reviews that head again (§9).
 
 Finding schema:
 
@@ -504,6 +522,14 @@ Two SHAs are recorded in the summary marker and in each pass's review body:
 - `completed_sha`: the head of the most recent pass that covered its whole
   scope **and** finished publishing.
 
+Each pass's review body ends with a **pass marker**
+(`{"id":"pass-3","pass":3,"sha":"…","status":"complete"}`, or `"incomplete"`).
+The review is the last thing a pass posts, after every finding thread, so
+`complete` also means "finished publishing". A head with a complete pass
+gets no new full pass (§2, step 0). A pass that stops partway leaves no
+complete marker; the next run redoes it, and dedupe against the fingerprints
+of the threads that did land keeps it from posting them twice.
+
 Incremental scope (§7) starts from `completed_sha`. An interrupted pass
 (deadline, ceiling, cancellation, fence) doesn't advance it, so the next
 pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
@@ -594,9 +620,23 @@ Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same cl
 Findings that can't be anchored to a changed line are posted as file-level
 review comments (`subject_type: file`) so they still get their own thread.
 GitHub's create-review call can't carry file-level comments, so they're
-posted one by one right after the review. A range that crosses hunks is
-narrowed to its last line, and a line outside every hunk falls back to
-file level.
+posted one by one, before the review that carries the pass marker (§6). A
+range that crosses hunks is narrowed to its last line, and a line outside
+every hunk falls back to file level. A suggestion is posted only when the
+anchor still covers exactly the lines it replaces. If GitHub rejects a line
+anchor anyway, the review call posts nothing, and its findings are posted at
+file level instead.
+
+The footer above is the target. Until the verifier exists (build step 4) it
+reads "Fix it, or reply explaining why not.", because nothing yet checks the
+next push or reopens a resolved thread. A comment is capped below GitHub's
+65,536-character limit.
+
+**Fingerprint** (§7 rule 3): a hash of the path, the category, and the
+anchored lines with whitespace normalized (head lines from the checkout,
+deleted lines from the diff), so the same issue on a moved line still
+matches. A file-level finding has no anchored lines and uses its normalized
+title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 
 ### Completion signal
 - The job's check run tells the agent the pass is finished
@@ -607,6 +647,10 @@ file level.
   always `COMMENT`. The gate is off by default.
 - Job summary (`$GITHUB_STEP_SUMMARY`): per-stage model, tokens, tool
   iterations, wall time. Useful for tuning even when tokens are free.
+- `buggrit review` exits 0 for a complete pass, a skipped one (the head
+  already has a complete pass, the head moved, or there's no config on the
+  base branch), and 1 for an incomplete pass or an error, so an incomplete
+  pass shows on the PR's checks.
 
 ## 9. Limits: unlimited vs budget
 
@@ -625,6 +669,22 @@ always has time to publish partial results and say so. A pass that ends
 without posting looks the same as "no findings" to an agent, which we can't
 allow. An incomplete pass doesn't advance `completed_sha` (§6), so its
 unreviewed scope is covered next time.
+
+**Wrap-up.** The finder investigates until the deadline less a reserve (a
+quarter of the time that applies, which is `pass_deadline` or a caller's
+sooner deadline: between one and ten minutes, and never more than half). If it hasn't
+submitted by then, one more turn tells the model time is up and forces
+`submit_findings` with what it has. Those findings are posted, and the pass
+is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
+for minutes on one turn) would lose a whole pass's work at the deadline.
+
+**The model knows the clock.** The opening message states the time budget
+and when to submit, and every tool result ends with
+`[time: 14 min of 40 min used; submit by 30 min]`. Wall clock, not turns,
+is what bounds a pass, and one turn can take seconds or minutes. Because
+time pressure could make a model submit before it has covered everything,
+`submit_findings` asks for `coverage`, and a `partial` review leaves the
+pass incomplete instead of recording a complete pass over partial work.
 
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
@@ -650,7 +710,9 @@ people who already have write access to the repo (§1).
   `get_diff`). A path through a symlink is refused, and the refusal names
   the link's target so the model can ask for that path, where the same
   rules apply. That closes links that point into `.git/`, which `os.Root`
-  alone would allow. It has no network or GitHub access. Everything posted goes
+  alone would allow. The one exception is a configured instruction file in
+  the opening message: a link such as `AGENTS.md -> CLAUDE.md` is followed
+  one hop, and its target passes the same path rules. It has no network or GitHub access. Everything posted goes
   through the terminal tool and our renderer.
 - **No tokens on disk.** Checkout uses `persist-credentials: false`. The
   GitHub and LLM tokens exist only in buggrit's process environment, never
@@ -725,6 +787,15 @@ done.
 - buggrit reads other reviewers' threads and deduplicates against them (§6).
 - MVP models: **Qwen and GLM through LunaRoute**. Any `maestro-llms` changes
   needed to support them are tracked separately, in that repo.
+- **Dogfooding uses `deepseek-4.1-flash`** through LunaRoute. In October
+  2026 trials (dry runs of PR #4, a 126 KB diff, 30-minute deadline), it
+  submitted 4 real findings in 24 minutes, at 1–2 minutes per turn. GLM-5.3
+  and `glm-5.3-flash` sometimes reasoned for 5–12 minutes on one turn, often
+  spending their whole output budget, and never submitted. What matters is
+  wall clock to convergence: every extra pass also costs a repair cycle and
+  a CI run, so a slower pass that finds everything beats fast drip-feeding.
+  Reasoning control is
+  [maestro-llms#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86).
 - Every review uses tools. There's no tool-free mode.
 - Comments are the only store for now. A database may come later.
 - **LunaRoute** is OpenAI-compatible and is reached through
