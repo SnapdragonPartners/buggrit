@@ -383,8 +383,8 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   reason. It never comes back silently empty (§9).
 - **"No ceiling":** `max_tool_iterations: 0` is passed to toolloop as
   `math.MaxInt`, since toolloop reads 0 as its own default of 8. The deadline
-  bounds the run. This needs maestro-llms v0.9.0, which stopped sizing its
-  transcript by the limit
+  bounds the run. This relies on maestro-llms v0.9.0, which stopped sizing
+  its transcript by the limit
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
 `submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
@@ -763,7 +763,6 @@ merge gate is the control for those.
    `buggrit-livecheck`.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
-   Needs maestro-llms#53 (terminal tools).
 4. **Verifier and thread lifecycle:** the state machine in §6, rebuttal judging.
 5. **Convergence controls:** incremental scope, dedupe (including other
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
