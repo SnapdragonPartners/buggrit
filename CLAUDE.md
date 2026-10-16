@@ -16,7 +16,7 @@ buggrit is an automated pull-request reviewer that runs as a GitHub Action. It p
 - **Trust model** (design §1): buggrit runs on private, trusted repos. Anyone who can comment counts as a human, and agents never merge, which is the integrity control. Take the cheap precautions in design §10; don't build defenses against people who already have write access
 - **Convergence beats coverage.** Every feature is judged by whether it helps a PR reach a final state (design §7). A change that could make the loop longer needs a stated reason
 - Never bypass hooks with `--no-verify`; fix failures. The only exception, **push only**: a documentation-only push that Dan confirms for that specific push
-- Changes needed in `maestro-llms` go there as issues or PRs, not as workarounds here. Open today: [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86) (reasoning-effort control). [#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85) (empty reasoning turns) is merged but unreleased; buggrit's `wellFormed` guard stays until it ships
+- Changes needed in `maestro-llms` go there as issues or PRs, not as workarounds here. Open today: [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86) (reasoning-effort control). [#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85) (empty reasoning turns) is merged but unreleased. When it ships, the empty-turn check in buggrit's `wellFormed` can go. Its other check, dropping a dangling tool-call turn from a run canceled mid-tool before the wrap-up, is buggrit's own and stays
 
 ## Dependency Discipline
 

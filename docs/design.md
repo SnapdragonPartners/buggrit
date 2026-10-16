@@ -676,10 +676,12 @@ sooner deadline: between one and ten minutes, and never more than half). If it h
 submitted by then, one more turn tells the model time is up and forces
 `submit_findings` with what it has. Those findings are posted, and the pass
 is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
-for minutes on one turn) would lose a whole pass's work at the deadline. A
-turn that spends its whole output budget on reasoning comes back empty, and
-the finder drops it before continuing, since maestro-llms rejects an empty
-assistant message in a transcript.
+for minutes on one turn) would lose a whole pass's work at the deadline. Before
+continuing a transcript (the nudge, or the wrap-up), the finder drops a
+trailing assistant turn that maestro-llms would reject. That's either a
+turn that spent its whole output budget on reasoning and came back empty,
+or a turn whose tool calls have no results because the investigation was
+canceled mid-tool.
 
 **The model knows the clock.** The opening message states the time budget
 and when to submit, and every tool result ends with
@@ -787,7 +789,9 @@ v0.9.0). Still open upstream:
 [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86)
 (reasoning-effort control). The empty-turn fix
 ([#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85)) is
-merged but not yet released, so buggrit keeps its own guard (§9).
+merged but not yet released, so buggrit keeps its own empty-turn check
+(§9). The other half of that guard, dropping a canceled run's dangling
+tool-call turn before the wrap-up, isn't covered by #85 and stays.
 
 ## 13. Decisions
 
