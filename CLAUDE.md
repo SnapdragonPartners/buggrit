@@ -56,7 +56,7 @@ To develop against a local `../maestro-llms` checkout, use an uncommitted `go.wo
 
 ## Branch And Review Workflow
 
-**Roles:** Claude authors. Codex is the primary reviewer, before push, through Counterpoint. Dan orchestrates, resolves disagreements, approves pushes and merges. Post-push automated review (Copilot today, buggrit itself once it works) is a final proofread.
+**Roles:** Claude authors. Codex is the primary reviewer, before push, through Counterpoint. Dan orchestrates, resolves disagreements, approves pushes and merges. Post-push automated review is a final proofread: Copilot, and buggrit itself, which reviews every PR with the build from `main` (`.github/workflows/buggrit.yml`).
 
 1. Work on a branch off `main` (`feat/<slug>`, `fix/<slug>`, `docs/<slug>`, `chore/<slug>`). Never work directly on `main`.
 2. Make the scoped change and run `make check`.

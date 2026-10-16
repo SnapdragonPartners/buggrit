@@ -825,7 +825,7 @@ tool-call turn before the wrap-up, isn't covered by #85 and stays.
   cheap precautions (§10).
 - **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).
-- **Terminal tools** come from `toolloop`
+- **Terminal tools** use `toolloop`'s terminal-tool support
   ([maestro-llms#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
   shipped in v0.8.0). LunaRoute was verified in
   [maestro-llms#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54)
