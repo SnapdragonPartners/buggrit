@@ -367,12 +367,13 @@ func getDiffDef() llms.ToolDefinition {
 	return llms.ToolDefinition{
 		Name: "get_diff",
 		Description: "Show the pull request's diff for one file, with head-side line numbers. " +
-			"Without a path, list every changed file with its status and line counts.",
+			"Without a path, list every changed file with its status and line counts. Long output " +
+			"ends with the offset to pass to continue.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "path": {"type": "string", "description": "A changed file (head path; base path for a deleted file)"},
-    "offset": {"type": "integer", "minimum": 0, "description": "Skip this many diff lines, to continue a truncated diff"}
+    "offset": {"type": "integer", "minimum": 0, "description": "To continue truncated output: with a path, the number of diff lines to skip; without one, the number of files to skip"}
   },
   "additionalProperties": false
 }`),
@@ -393,7 +394,10 @@ func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 	}
 	p := strings.TrimPrefix(strings.TrimSpace(args.Path), "./")
 	if p == "" {
-		return ok(fileList(e.diff, nil, maxResultBytes))
+		if args.Offset > 0 && args.Offset >= len(e.diff.Files) {
+			return toolError("offset %d is past the end; the pull request changes %d files", args.Offset, len(e.diff.Files))
+		}
+		return ok(fileList(e.diff, nil, args.Offset, maxResultBytes))
 	}
 	f := e.diff.File(p)
 	if f == nil {
@@ -402,14 +406,15 @@ func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 	return ok(renderFileDiff(f, args.Offset, maxResultBytes))
 }
 
-// fileList renders the changed files, one per line. If inScope is non-nil,
-// files it rejects are marked as not reviewed.
-func fileList(d *github.Diff, inScope func(string) bool, maxBytes int) string {
+// fileList renders the changed files from offset on, one per line, up to
+// about maxBytes; a truncated list ends with the offset that continues it.
+// If inScope is non-nil, files it rejects are marked as not reviewed.
+func fileList(d *github.Diff, inScope func(string) bool, offset, maxBytes int) string {
 	var b strings.Builder
-	for i := range d.Files {
+	for i := offset; i < len(d.Files); i++ {
 		f := &d.Files[i]
 		if b.Len() > maxBytes {
-			fmt.Fprintf(&b, "[%d more files not listed]\n", len(d.Files)-i)
+			fmt.Fprintf(&b, "[%d more files; call get_diff with no path and offset=%d to continue the list]\n", len(d.Files)-i, i)
 			break
 		}
 		added, deleted := lineCounts(f)

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -118,6 +119,41 @@ func TestGetDiff(t *testing.T) {
 		"=== internal/cache/cache.go", "@@ -1,4 +1,5 @@", "     3 + func (c *Cache) Put", "       - type Cache struct{}")
 	wantOK(t, call(t, tools, "get_diff", `{"path": "old.txt"}`), "old.txt (deleted)")
 	wantErr(t, call(t, tools, "get_diff", `{"path": "README.md"}`), "not changed")
+}
+
+// A changed-file list too long for one result pages with offset, so every
+// path is reachable, including deleted files the workspace doesn't have.
+func TestGetDiffListPages(t *testing.T) {
+	d := &github.Diff{}
+	for i := range 20000 {
+		p := fmt.Sprintf("removed/dir/file%05d.txt", i)
+		d.Files = append(d.Files, github.FileDiff{OldPath: p, NewPath: p, Status: github.StatusDeleted})
+	}
+	tools := readOnlyTools(&toolEnv{ws: fstest.MapFS{}, diff: d})
+	seen := map[string]bool{}
+	next := regexp.MustCompile(`offset=(\d+) to continue the list`)
+	args, pages := `{}`, 0
+	for ; pages < 100; pages++ {
+		res := call(t, tools, "get_diff", args)
+		wantOK(t, res, "")
+		if len(res.Content) > maxResultBytes+1024 {
+			t.Fatalf("page %d is %d bytes", pages, len(res.Content))
+		}
+		for _, line := range strings.Split(res.Content, "\n") {
+			if p, _, found := strings.Cut(line, " (deleted"); found {
+				seen[p] = true
+			}
+		}
+		m := next.FindStringSubmatch(res.Content)
+		if m == nil {
+			break
+		}
+		args = `{"offset": ` + m[1] + `}`
+	}
+	if pages < 1 || len(seen) != len(d.Files) {
+		t.Errorf("listed %d of %d files in %d pages", len(seen), len(d.Files), pages+1)
+	}
+	wantErr(t, call(t, tools, "get_diff", `{"offset": 20000}`), "past the end")
 }
 
 // OpenDir confines reads to the directory: a symlink pointing outside is

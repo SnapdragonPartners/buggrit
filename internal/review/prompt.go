@@ -90,7 +90,7 @@ func openingMessage(in *FindInput) string {
 	writeOtherThreads(&b, in.OtherThreads)
 
 	b.WriteString("## Changed files\n\n")
-	b.WriteString(fileList(in.Diff, in.Scope.InScope, maxPromptFileList))
+	b.WriteString(fileList(in.Diff, in.Scope.InScope, 0, maxPromptFileList))
 	b.WriteString("\nFiles marked \"excluded from review\" may be read for context but must not be the subject of findings.\n\n")
 
 	b.WriteString("## Diff\n\nHead-side line numbers are on the left; deleted lines have none.\n\n")
@@ -112,7 +112,7 @@ func openingMessage(in *FindInput) string {
 		b.WriteString("The diff is too large to show in full. Call get_diff for each of these files:\n")
 		for i, p := range skipped {
 			if b.Len() > maxPromptDiffBytes-maxDeferredList {
-				fmt.Fprintf(&b, "(and %d more; call get_diff with no path to list every changed file)\n", len(skipped)-i)
+				fmt.Fprintf(&b, "(and %d more; page through the full list with get_diff and no path)\n", len(skipped)-i)
 				break
 			}
 			b.WriteString(p)

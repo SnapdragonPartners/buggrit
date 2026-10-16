@@ -139,8 +139,8 @@ func TestFindOpeningMessageBudgets(t *testing.T) {
 		"[truncated; read_file docs/rules2.md for the rest]",
 		"Not shown, for space; read them with read_file: docs/rules3.md, docs/rules4.md",
 		"### Review instructions",
-		"more files not listed]",
-		"more; call get_diff with no path to list every changed file)",
+		"more files; call get_diff with no path and offset=",
+		"more; page through the full list with get_diff and no path)",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("opening message missing %q", want)
