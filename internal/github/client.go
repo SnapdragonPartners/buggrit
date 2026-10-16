@@ -223,17 +223,20 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 // the next pass repair it instead (design §2).
 func retryAfter(resp *http.Response, err error, idempotent bool) (time.Duration, bool) {
 	const maxWait = 60 * time.Second
-	// A body cut off mid-read is a transport failure even though a status
-	// line arrived first.
-	if resp == nil || errors.Is(err, errBodyRead) {
-		return 2 * time.Second, idempotent && !errors.Is(err, context.Canceled) &&
-			!errors.Is(err, context.DeadlineExceeded)
-	}
-	limited := resp.StatusCode == http.StatusTooManyRequests ||
+	// Rate-limit headers decide first, even if the body was then cut off:
+	// the request was rejected, so retrying is safe for every method.
+	limited := resp != nil && (resp.StatusCode == http.StatusTooManyRequests ||
 		(resp.StatusCode == http.StatusForbidden &&
-			(resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0"))
-	if !limited && !(idempotent && resp.StatusCode >= 500) {
-		return 0, false
+			(resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0")))
+	if !limited {
+		// No response, or a body cut off mid-read, is a transport failure.
+		if resp == nil || errors.Is(err, errBodyRead) {
+			return 2 * time.Second, idempotent && !errors.Is(err, context.Canceled) &&
+				!errors.Is(err, context.DeadlineExceeded)
+		}
+		if !idempotent || resp.StatusCode < 500 {
+			return 0, false
+		}
 	}
 	wait := 2 * time.Second
 	if s, perr := strconv.Atoi(resp.Header.Get("Retry-After")); perr == nil && s >= 0 {

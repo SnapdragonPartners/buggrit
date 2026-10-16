@@ -117,6 +117,39 @@ func TestTruncatedBodyRetriedForReadsOnly(t *testing.T) {
 	}
 }
 
+// A rate-limited response whose body is cut off still follows the rate-limit
+// rule: Retry-After is honored, and mutations are retried too.
+func TestTruncatedRateLimitHonorsHeaders(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			var n atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if n.Add(1) == 1 {
+					w.Header().Set("Retry-After", "30")
+					w.Header().Set("Content-Length", "100")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"mess`))
+					return
+				}
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			t.Cleanup(srv.Close)
+			c := NewClient("t", WithBaseURL(srv.URL))
+			var waits []time.Duration
+			c.sleep = func(_ context.Context, d time.Duration) error {
+				waits = append(waits, d)
+				return nil
+			}
+			if _, _, err := c.do(context.Background(), &request{method: method, url: srv.URL}); err != nil {
+				t.Fatal(err)
+			}
+			if n.Load() != 2 || len(waits) != 1 || waits[0] != 30*time.Second {
+				t.Errorf("attempts = %d, waits = %v; want 2 attempts after one 30s wait", n.Load(), waits)
+			}
+		})
+	}
+}
+
 func TestDecodeFailureNotRetried(t *testing.T) {
 	var n atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
