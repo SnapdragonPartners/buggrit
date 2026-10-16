@@ -321,6 +321,11 @@ Notes:
 - Existing threads from other reviewers (Copilot, humans) so it doesn't
   repeat findings they've already raised (§6).
 
+The opening message is bounded (300 KiB). Each section before the diff has
+its own share, and the diff fills the rest. Whatever doesn't fit is named, so
+the model fetches it with `read_file` or `get_diff`. The tools stream files,
+so a large file costs time, not memory.
+
 ### Every review uses tools
 Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
@@ -367,7 +372,8 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   reason. It never comes back silently empty (§9).
 - **"No ceiling":** `max_tool_iterations: 0` is run as 10,000, which is also
   the configurable maximum. toolloop would read 0 as its own default of 8,
-  and it preallocates its transcript in proportion to the limit.
+  and it preallocates its transcript in proportion to the limit
+  ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
 Finding schema:
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"regexp"
 	"strings"
@@ -70,6 +71,10 @@ func decodeArgs(call *llms.ToolCall, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("invalid arguments for %s: %w", call.Name, err)
 	}
+	// Decode reads one JSON value; anything after it is malformed input.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("invalid arguments for %s: unexpected data after the JSON object", call.Name)
+	}
 	return nil
 }
 
@@ -106,53 +111,53 @@ func (e *toolEnv) readFile(_ context.Context, call llms.ToolCall) (toolloop.Tool
 	if err != nil {
 		return toolError("%v", err)
 	}
-	data, err := readFile(e.ws, name)
-	if err != nil {
-		return toolError("read %s: %v", name, describeFSError(err))
-	}
-	if isBinary(data) {
-		return toolError("%s is a binary file", name)
-	}
-	lines := splitLines(data)
 	start := max(args.StartLine, 1)
-	end := args.EndLine
-	if end <= 0 || end > len(lines) {
-		end = len(lines)
-	}
-	if len(lines) == 0 {
+	end := args.EndLine // 0: to the end of the file
+	body, last, total, err := readWindow(e.ws, name, start, end)
+	switch {
+	case errors.Is(err, errBinary):
+		return toolError("%s is a binary file", name)
+	case err != nil:
+		return toolError("read %s: %v", name, describeFSError(err))
+	case total == 0:
 		return ok(name + " is empty")
+	case start > total:
+		return toolError("%s has %d lines; start_line %d is past the end", name, total, start)
 	}
-	if start > len(lines) {
-		return toolError("%s has %d lines; start_line %d is past the end", name, len(lines), start)
+	if end <= 0 || end > total {
+		end = total
 	}
 	if start > end {
 		return toolError("start_line %d is after end_line %d", start, end)
 	}
-
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s (lines %d-%d of %d)\n", name, start, end, len(lines))
-	last := start - 1
-	for i := start; i <= end; i++ {
-		if i-start >= maxReadLines || b.Len() > maxResultBytes {
-			break
-		}
-		fmt.Fprintf(&b, "%6d| %s\n", i, clipLine(lines[i-1]))
-		last = i
-	}
+	fmt.Fprintf(&b, "%s (lines %d-%d of %d)\n", name, start, end, total)
+	b.WriteString(body)
 	if last < end {
 		fmt.Fprintf(&b, "[truncated at line %d; call read_file with start_line=%d to continue]\n", last, last+1)
 	}
 	return ok(b.String())
 }
 
-// splitLines splits file content into lines without their terminators. A
-// final newline doesn't start an extra empty line.
-func splitLines(data []byte) []string {
-	if len(data) == 0 {
-		return nil
-	}
-	s := strings.TrimSuffix(string(data), "\n")
-	return strings.Split(s, "\n")
+// readWindow returns lines start through end (0: the last line) of a file,
+// numbered, within read_file's caps; the last line it included; and the
+// file's line count. It reads to the end to count lines, but holds only the
+// window.
+func readWindow(ws Workspace, name string, start, end int) (body string, last, total int, err error) {
+	var b strings.Builder
+	last, truncated := start-1, false
+	total, err = scanLines(ws, name, func(n int, line []byte, size int) bool {
+		switch {
+		case n < start || (end > 0 && n > end) || truncated:
+		case n-start >= maxReadLines || b.Len() > maxResultBytes:
+			truncated = true
+		default:
+			fmt.Fprintf(&b, "%6d| %s\n", n, clipSized(string(line), size))
+			last = n
+		}
+		return true
+	})
+	return b.String(), last, total, err
 }
 
 // describeFSError turns an fs error into a short, model-readable reason
@@ -294,11 +299,15 @@ func (g *grepper) search(name string, data []byte) error {
 func clip(line string) string { return truncate(line, maxLineChars) }
 
 // clipLine bounds one line of file or diff output, saying how long it was.
-func clipLine(line string) string {
-	if len(line) <= maxReadLineBytes {
+func clipLine(line string) string { return clipSized(line, len(line)) }
+
+// clipSized is clipLine for a line that may already be cut short; size is
+// its full length.
+func clipSized(line string, size int) string {
+	if size <= maxReadLineBytes {
 		return line
 	}
-	return truncate(line, maxReadLineBytes) + fmt.Sprintf(" [line is %d bytes; clipped]", len(line))
+	return truncate(line, maxReadLineBytes) + fmt.Sprintf(" [line is %d bytes; clipped]", size)
 }
 
 func listDirDef() llms.ToolDefinition {
@@ -384,7 +393,7 @@ func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 	}
 	p := strings.TrimPrefix(strings.TrimSpace(args.Path), "./")
 	if p == "" {
-		return ok(fileList(e.diff, nil))
+		return ok(fileList(e.diff, nil, maxResultBytes))
 	}
 	f := e.diff.File(p)
 	if f == nil {
@@ -395,10 +404,14 @@ func (e *toolEnv) getDiff(_ context.Context, call llms.ToolCall) (toolloop.ToolR
 
 // fileList renders the changed files, one per line. If inScope is non-nil,
 // files it rejects are marked as not reviewed.
-func fileList(d *github.Diff, inScope func(string) bool) string {
+func fileList(d *github.Diff, inScope func(string) bool, maxBytes int) string {
 	var b strings.Builder
 	for i := range d.Files {
 		f := &d.Files[i]
+		if b.Len() > maxBytes {
+			fmt.Fprintf(&b, "[%d more files not listed]\n", len(d.Files)-i)
+			break
+		}
 		added, deleted := lineCounts(f)
 		name := f.Path()
 		if f.Status == github.StatusRenamed {

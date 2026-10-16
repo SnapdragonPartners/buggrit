@@ -134,11 +134,17 @@ func (s *submitTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	if sub.Findings == nil {
 		return toolError("findings is required; pass [] if there are none. Call submit_findings again.")
 	}
+	missing := missingLocationFields(call.Parameters)
 	var problems []string
 	for i := range sub.Findings {
 		f := &sub.Findings[i]
 		normalize(f)
-		for _, p := range s.validate(f) {
+		ps := missing[i]
+		if len(ps) == 0 {
+			// Anchor checks on a defaulted line would be misleading.
+			ps = s.validate(f)
+		}
+		for _, p := range ps {
 			problems = append(problems, fmt.Sprintf("findings[%d] (%s): %s", i, f.Path, p))
 		}
 	}
@@ -151,6 +157,46 @@ func (s *submitTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 		Content: fmt.Sprintf("accepted %d findings", len(sub.Findings)),
 		Stop:    true,
 	}, nil
+}
+
+// missingLocationFields reports, per finding, location fields that are
+// absent or null. Decoding turns those into "" and 0, and line 0 is a valid
+// file-level anchor, so presence has to be checked on the raw arguments; an
+// explicit "line": 0 stays allowed. params already decoded strictly, so this
+// second decode can't fail.
+func missingLocationFields(params json.RawMessage) map[int][]string {
+	var raw struct {
+		Findings []struct {
+			Path      json.RawMessage `json:"path"`
+			Line      json.RawMessage `json:"line"`
+			Instances []struct {
+				Path json.RawMessage `json:"path"`
+				Line json.RawMessage `json:"line"`
+			} `json:"instances"`
+		} `json:"findings"`
+	}
+	_ = json.Unmarshal(params, &raw)
+	absent := func(v json.RawMessage) bool { return len(v) == 0 || string(v) == "null" }
+	out := map[int][]string{}
+	for i := range raw.Findings {
+		f := &raw.Findings[i]
+		if absent(f.Path) {
+			out[i] = append(out[i], "path is required")
+		}
+		if absent(f.Line) {
+			out[i] = append(out[i], "line is required; use 0 only for a finding about the whole file")
+		}
+		for j := range f.Instances {
+			loc := &f.Instances[j]
+			if absent(loc.Path) {
+				out[i] = append(out[i], fmt.Sprintf("instances[%d]: path is required", j))
+			}
+			if absent(loc.Line) {
+				out[i] = append(out[i], fmt.Sprintf("instances[%d]: line is required; use 0 for the whole file", j))
+			}
+		}
+	}
+	return out
 }
 
 // normalize trims fields and fills defaults before validation.
@@ -300,14 +346,15 @@ func (s *submitTool) checkLine(p string, line int) string {
 		}
 		return ""
 	}
-	data, err := readFile(s.env.ws, name)
-	if err != nil {
-		return fmt.Sprintf("%s: %s", name, describeFSError(err))
-	}
 	if line < 0 {
 		return "line must not be negative"
 	}
-	if n := len(splitLines(data)); line > n {
+	// The scan stops at line; if it runs out first, n is the line count.
+	n, err := scanLines(s.env.ws, name, func(n int, _ []byte, _ int) bool { return n < line })
+	if err != nil {
+		return fmt.Sprintf("%s: %s", name, describeFSError(err))
+	}
+	if line > n {
 		return fmt.Sprintf("%s has %d lines; line %d does not exist", name, n, line)
 	}
 	return ""

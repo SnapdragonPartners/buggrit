@@ -7,8 +7,10 @@
 package review
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -66,12 +68,82 @@ func checkNoSymlink(ws Workspace, name string) error {
 	return nil
 }
 
-// readFile reads a clean path, refusing symlinks.
-func readFile(ws Workspace, name string) ([]byte, error) {
-	if err := checkNoSymlink(ws, name); err != nil {
-		return nil, err
+// errBinary reports a file that looks binary (see isBinary).
+var errBinary = errors.New("binary file")
+
+// errIsDir reports a directory where a file was expected.
+var errIsDir = errors.New("is a directory")
+
+// scanLines streams a clean path's lines to fn, refusing symlinks, binary
+// files and directories. Memory stays bounded whatever the file's size: fn
+// gets each line without its terminator, clipped to just past
+// maxReadLineBytes, and the line's full length. The slice is reused, so fn
+// must copy what it keeps. fn returns false to stop early; otherwise the scan
+// runs to the end, and total is the file's line count. A final newline
+// doesn't start an extra empty line.
+func scanLines(ws Workspace, name string, fn func(n int, line []byte, size int) bool) (total int, err error) {
+	f, r, err := openText(ws, name)
+	if err != nil {
+		return 0, err
 	}
-	return fs.ReadFile(ws, name) //nolint:wrapcheck // callers describe the error for the model
+	defer func() { _ = f.Close() }()
+	return eachLine(r, fn)
+}
+
+// openText opens a clean path for line scanning, refusing symlinks,
+// directories and binary files.
+func openText(ws Workspace, name string) (fs.File, *bufio.Reader, error) {
+	if err := checkNoSymlink(ws, name); err != nil {
+		return nil, nil, err
+	}
+	f, err := ws.Open(name)
+	if err != nil {
+		return nil, nil, err //nolint:wrapcheck // callers describe the error for the model
+	}
+	r := bufio.NewReaderSize(f, 64<<10)
+	var cause error
+	if info, serr := f.Stat(); serr == nil && info.IsDir() {
+		cause = errIsDir
+	} else if head, _ := r.Peek(8 << 10); isBinary(head) {
+		cause = errBinary
+	}
+	if cause != nil {
+		_ = f.Close()
+		return nil, nil, cause
+	}
+	return f, r, nil
+}
+
+// eachLine is scanLines' loop over an open reader.
+func eachLine(r *bufio.Reader, fn func(n int, line []byte, size int) bool) (total int, err error) {
+	var line []byte // the current line, clipped
+	size := 0       // the current line's full length
+	for {
+		chunk, rerr := r.ReadSlice('\n')
+		full := errors.Is(rerr, bufio.ErrBufferFull)
+		if rerr != nil && !full && !errors.Is(rerr, io.EOF) {
+			return total, rerr //nolint:wrapcheck // callers describe the error for the model
+		}
+		ended := rerr == nil // chunk ends with the line's newline
+		if ended {
+			chunk = chunk[:len(chunk)-1]
+		}
+		size += len(chunk)
+		if room := maxReadLineBytes + 1 - len(line); room > 0 {
+			line = append(line, chunk[:min(room, len(chunk))]...)
+		}
+		switch {
+		case full:
+			continue // more of a long line
+		case !ended && size == 0:
+			return total, nil // EOF with no unterminated last line
+		}
+		total++
+		if fn != nil && !fn(total, line, size) || !ended {
+			return total, nil
+		}
+		line, size = line[:0], 0
+	}
 }
 
 // readDir lists a clean path, refusing symlinks.

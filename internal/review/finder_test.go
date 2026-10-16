@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
@@ -106,6 +107,44 @@ func TestFindLargeDiffDefersToTools(t *testing.T) {
 	}
 	if len(msg) > maxPromptDiffBytes+64<<10 {
 		t.Errorf("opening message is %d bytes", len(msg))
+	}
+}
+
+// The sections before the diff have their own budgets, so a large
+// description, many instruction files and a huge file list can't push the
+// opening message past maxPromptDiffBytes.
+func TestFindOpeningMessageBudgets(t *testing.T) {
+	in := findInput(t, &testllm.FakeChatClient{})
+	ws := testWorkspace()
+	in.InstructionFiles = nil
+	for i := range 7 {
+		name := fmt.Sprintf("docs/rules%d.md", i)
+		ws[name] = &fstest.MapFile{Data: []byte(strings.Repeat("Always check errors.\n", maxInstructionBytes/25))}
+		in.InstructionFiles = append(in.InstructionFiles, name)
+	}
+	in.Workspace = ws
+	in.Instructions = strings.Repeat("Be thorough. ", 150)
+	in.PR.Body = strings.Repeat("A long description. ", 20<<10)
+	for i := range 5000 {
+		p := fmt.Sprintf("gen/file%04d.go", i)
+		in.Diff.Files = append(in.Diff.Files, github.FileDiff{OldPath: p, NewPath: p, Status: github.StatusModified})
+	}
+	msg := openingMessage(in)
+	if len(msg) > maxPromptDiffBytes {
+		t.Errorf("opening message is %d bytes, over the %d budget", len(msg), maxPromptDiffBytes)
+	}
+	for _, want := range []string{
+		"### docs/rules0.md",
+		"### docs/rules1.md",
+		"[truncated; read_file docs/rules2.md for the rest]",
+		"Not shown, for space; read them with read_file: docs/rules3.md, docs/rules4.md",
+		"### Review instructions",
+		"more files not listed]",
+		"more; call get_diff with no path to list every changed file)",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("opening message missing %q", want)
+		}
 	}
 }
 

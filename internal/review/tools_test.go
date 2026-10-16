@@ -2,8 +2,11 @@ package review
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -265,5 +268,70 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := truncate("short", 10); got != "short" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestScanLinesCounts(t *testing.T) {
+	for data, want := range map[string]int{"": 0, "\n": 1, "a": 1, "a\nb": 2, "a\nb\n": 2, "a\n\n": 2} {
+		n, err := scanLines(fstest.MapFS{"f": {Data: []byte(data)}}, "f", nil)
+		if err != nil || n != want {
+			t.Errorf("scanLines(%q) = %d, %v; want %d", data, n, err, want)
+		}
+	}
+}
+
+// syntheticFile is a large generated file: one huge first line, then short
+// numbered lines, produced on the fly so the test itself stays small.
+type syntheticFile struct {
+	pos, size int64
+	longLine  int64
+}
+
+func (f *syntheticFile) Stat() (fs.FileInfo, error) {
+	return fstest.MapFS{"big": {Data: nil}}.Stat("big") //nolint:wrapcheck // test helper
+}
+func (f *syntheticFile) Close() error { return nil }
+func (f *syntheticFile) Read(p []byte) (int, error) {
+	if f.pos >= f.size {
+		return 0, io.EOF
+	}
+	n := 0
+	for n < len(p) && f.pos < f.size {
+		switch {
+		case f.pos < f.longLine:
+			p[n] = 'x'
+		case f.pos == f.longLine || (f.pos-f.longLine)%64 == 0:
+			p[n] = '\n'
+		default:
+			p[n] = 'a'
+		}
+		n++
+		f.pos++
+	}
+	return n, nil
+}
+
+type bigFS struct{ fstest.MapFS }
+
+func (b bigFS) Open(name string) (fs.File, error) {
+	if name == "big.txt" {
+		return &syntheticFile{size: 48 << 20, longLine: 16 << 20}, nil
+	}
+	return b.MapFS.Open(name) //nolint:wrapcheck // test helper
+}
+
+// read_file streams: a small window of a large file, or one huge line,
+// doesn't hold the file in memory (the file is 48 MiB here).
+func TestReadFileBoundedMemory(t *testing.T) {
+	env := &toolEnv{ws: bigFS{fstest.MapFS{}}, diff: testDiffParsed(t)}
+	tools := readOnlyTools(env)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	res := call(t, tools, "read_file", `{"path": "big.txt", "start_line": 1, "end_line": 3}`)
+	runtime.ReadMemStats(&after)
+	wantOK(t, res, "(lines 1-3 of ", "[line is 16777216 bytes; clipped]")
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 8<<20 {
+		t.Errorf("read_file allocated %d bytes for a 3-line window", grown)
 	}
 }

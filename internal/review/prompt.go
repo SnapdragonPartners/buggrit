@@ -8,11 +8,21 @@ import (
 // Prompt budgets. Past these, the opening message lists what it left out and
 // the model reads the rest with tools. Splitting large PRs into sub-reviews
 // is build step 6 (design §12).
+//
+// maxPromptDiffBytes bounds the whole opening message: diffs are added only
+// while it fits. The sections before the diff have budgets of their own that
+// sum to well under it, so they can't crowd the message past it.
 const (
 	maxPromptDiffBytes    = 300 << 10
-	maxInstructionBytes   = 50 << 10
+	maxDescriptionBytes   = 32 << 10
+	maxInstructionBytes   = 50 << 10  // one instruction file
+	maxInstructionsTotal  = 100 << 10 // every instruction file, plus review.instructions
 	maxOtherThreads       = 50
 	maxOtherThreadExcerpt = 500
+	maxPromptFileList     = 48 << 10
+	// maxDeferredList is held back from the diff for the closing list of
+	// files deferred to get_diff and the final instruction.
+	maxDeferredList = 16 << 10
 )
 
 // systemPrompt is the finder's standing instructions (design §5, §7).
@@ -70,7 +80,7 @@ func openingMessage(in *FindInput) string {
 	fmt.Fprintf(&b, "Base branch: %s. Reviewed head commit: %s.\n\n", in.PR.BaseRef, in.PR.HeadSHA)
 	b.WriteString("## Description\n\n")
 	if body := strings.TrimSpace(in.PR.Body); body != "" {
-		b.WriteString(body)
+		b.WriteString(truncate(body, maxDescriptionBytes))
 	} else {
 		b.WriteString("(no description)")
 	}
@@ -80,7 +90,7 @@ func openingMessage(in *FindInput) string {
 	writeOtherThreads(&b, in.OtherThreads)
 
 	b.WriteString("## Changed files\n\n")
-	b.WriteString(fileList(in.Diff, in.Scope.InScope))
+	b.WriteString(fileList(in.Diff, in.Scope.InScope, maxPromptFileList))
 	b.WriteString("\nFiles marked \"excluded from review\" may be read for context but must not be the subject of findings.\n\n")
 
 	b.WriteString("## Diff\n\nHead-side line numbers are on the left; deleted lines have none.\n\n")
@@ -91,7 +101,7 @@ func openingMessage(in *FindInput) string {
 			continue
 		}
 		text := renderFileDiff(f, 0, maxResultBytes)
-		if b.Len()+len(text) > maxPromptDiffBytes {
+		if b.Len()+len(text) > maxPromptDiffBytes-maxDeferredList {
 			skipped = append(skipped, f.Path())
 			continue
 		}
@@ -99,31 +109,51 @@ func openingMessage(in *FindInput) string {
 		b.WriteByte('\n')
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(&b, "The diff is too large to show in full. Call get_diff for each of these files:\n%s\n\n",
-			strings.Join(skipped, "\n"))
+		b.WriteString("The diff is too large to show in full. Call get_diff for each of these files:\n")
+		for i, p := range skipped {
+			if b.Len() > maxPromptDiffBytes-maxDeferredList {
+				fmt.Fprintf(&b, "(and %d more; call get_diff with no path to list every changed file)\n", len(skipped)-i)
+				break
+			}
+			b.WriteString(p)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
 	}
 	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
 	return b.String()
 }
 
+// writeInstructions adds the repository's instruction files and
+// review.instructions, within maxInstructionsTotal. review.instructions comes
+// first, since the repository wrote it for buggrit. Files that don't fit are
+// named, so the model can read them with read_file.
 func writeInstructions(b *strings.Builder, in *FindInput) {
+	budget := maxInstructionsTotal
+	extra := truncate(strings.TrimSpace(in.Instructions), maxInstructionBytes)
+	budget -= len(extra)
+
 	files := make([]string, 0, len(in.InstructionFiles))
+	var omitted []string
 	for _, name := range in.InstructionFiles {
 		p, err := cleanPath(name)
 		if err != nil {
 			continue
 		}
-		data, err := readFile(in.Workspace, p)
-		if err != nil || isBinary(data) {
+		text, complete, err := readPrefix(in.Workspace, p, min(budget, maxInstructionBytes))
+		switch {
+		case err != nil:
+			continue // missing, binary or unreadable: not an instruction file
+		case text == "" && !complete:
+			omitted = append(omitted, p)
 			continue
+		case !complete:
+			text += "\n[truncated; read_file " + p + " for the rest]"
 		}
-		text := string(data)
-		if len(text) > maxInstructionBytes {
-			text = truncate(text, maxInstructionBytes) + "\n[truncated; read_file " + p + " for the rest]"
-		}
+		budget -= len(text)
 		files = append(files, fmt.Sprintf("### %s\n\n%s\n", p, strings.TrimSpace(text)))
 	}
-	if len(files) == 0 && strings.TrimSpace(in.Instructions) == "" {
+	if len(files) == 0 && len(omitted) == 0 && extra == "" {
 		return
 	}
 	b.WriteString("## Repository instructions\n\n")
@@ -131,11 +161,32 @@ func writeInstructions(b *strings.Builder, in *FindInput) {
 		b.WriteString(f)
 		b.WriteByte('\n')
 	}
-	if extra := strings.TrimSpace(in.Instructions); extra != "" {
+	if len(omitted) > 0 {
+		fmt.Fprintf(b, "Not shown, for space; read them with read_file: %s\n\n", strings.Join(omitted, ", "))
+	}
+	if extra != "" {
 		b.WriteString("### Review instructions\n\n")
 		b.WriteString(extra)
 		b.WriteString("\n\n")
 	}
+}
+
+// readPrefix returns as many whole lines of a file as fit in limit bytes,
+// and whether that was the whole file.
+func readPrefix(ws Workspace, name string, limit int) (text string, complete bool, err error) {
+	var sb strings.Builder
+	complete = true
+	_, err = scanLines(ws, name, func(_ int, raw []byte, size int) bool {
+		line := clipSized(string(raw), size)
+		if sb.Len()+len(line)+1 > limit {
+			complete = false
+			return false
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+		return true
+	})
+	return sb.String(), complete, err
 }
 
 func writeOtherThreads(b *strings.Builder, threads []ThreadNote) {

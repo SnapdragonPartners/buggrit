@@ -68,6 +68,23 @@ func TestSubmitEmpty(t *testing.T) {
 	}
 }
 
+// decodeArgs reads one JSON value; a second value or trailing text must not
+// slip through as an accepted (empty) submission.
+func TestSubmitRejectsTrailingData(t *testing.T) {
+	for _, args := range []string{`{"findings": []} {"findings": []}`, `{"findings": []} and more`} {
+		s := testSubmit(t)
+		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", args)
+		wantErr(t, res, "unexpected data after the JSON object")
+		if res.Stop || s.result != nil {
+			t.Errorf("%s was accepted", args)
+		}
+	}
+	s := testSubmit(t)
+	if res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", " {\"findings\": []}\n "); !res.Stop {
+		t.Errorf("surrounding whitespace rejected: %+v", res)
+	}
+}
+
 func TestSubmitRejects(t *testing.T) {
 	with := func(old, repl string) string { return strings.Replace(validFinding, old, repl, 1) }
 	tests := []struct{ name, finding, want string }{
@@ -88,6 +105,12 @@ func TestSubmitRejects(t *testing.T) {
 		{"bad side", with(`"line": 3,`, `"line": 3, "side": "UP",`), "side must be"},
 		{"suggestion on file level", with(`"line": 3,`, `"line": 0, "suggestion": "x",`), "suggestion needs a line"},
 		{"unknown field", with(`"fix":`, `"fixes": "x", "fix":`), "unknown field"},
+		{"missing line", with(`"line": 3, `, ``), "line is required"},
+		{"null line", with(`"line": 3,`, `"line": null,`), "line is required"},
+		{"missing path", with(`"path": "internal/cache/cache.go", `, ``), "path is required"},
+		{"empty instance", with(`{"path": "internal/cache/lru.go", "line": 3}`, `{}`), "instances[0]: path is required"},
+		{"instance without line", with(`{"path": "internal/cache/lru.go", "line": 3}`, `{"path": "internal/cache/lru.go"}`), "instances[0]: line is required"},
+		{"instance with null path", with(`{"path": "internal/cache/lru.go", "line": 3}`, `{"path": null, "line": 0}`), "instances[0]: path is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

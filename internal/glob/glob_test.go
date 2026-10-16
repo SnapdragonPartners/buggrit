@@ -46,12 +46,12 @@ func TestMatch(t *testing.T) {
 }
 
 func TestValidate(t *testing.T) {
-	for _, ok := range []string{"**", "vendor/**", "**/*.pb.go", "a/[bc]/d", `a\*b`} {
+	for _, ok := range []string{"**", "vendor/**", "**/*.pb.go", "a/[bc]/d", `a\*b`, "[a-z]", "[^0-9]x", `[\]-a]`, `\[z-a\]`} {
 		if err := glob.Validate(ok); err != nil {
 			t.Errorf("Validate(%q) = %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "/abs", "a**", "**b/c", "[", "a/[z-a"} {
+	for _, bad := range []string{"", "/abs", "a**", "**b/c", "[", "a/[z-a", "a/[z-a]", "x[^9-0]", `[\z-a]`, "[ab-c-a]"} {
 		if err := glob.Validate(bad); err == nil {
 			t.Errorf("Validate(%q) succeeded", bad)
 		}
