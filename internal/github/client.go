@@ -130,6 +130,9 @@ func IsNotFound(err error) bool {
 	return errors.As(err, &e) && (e.Status == http.StatusNotFound || e.Type == "NOT_FOUND")
 }
 
+// errBodyRead marks a response whose body failed to arrive in full.
+var errBodyRead = errors.New("read body")
+
 // request is one API call.
 type request struct {
 	body   any
@@ -200,7 +203,7 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return resp, nil, fmt.Errorf("%s %s: read body: %w", r.method, r.url, err)
+		return resp, nil, fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return resp, body, &APIError{Status: resp.StatusCode, Message: errorMessage(body)}
@@ -220,7 +223,9 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 // the next pass repair it instead (design §2).
 func retryAfter(resp *http.Response, err error, idempotent bool) (time.Duration, bool) {
 	const maxWait = 60 * time.Second
-	if resp == nil {
+	// A body cut off mid-read is a transport failure even though a status
+	// line arrived first.
+	if resp == nil || errors.Is(err, errBodyRead) {
 		return 2 * time.Second, idempotent && !errors.Is(err, context.Canceled) &&
 			!errors.Is(err, context.DeadlineExceeded)
 	}

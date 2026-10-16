@@ -72,6 +72,68 @@ func TestRetries(t *testing.T) {
 	}
 }
 
+// truncatingServer sends a 200 with a body shorter than its Content-Length
+// for the first fails requests, so the client's body read fails.
+func truncatingServer(t *testing.T, fails int) (*Client, *atomic.Int32) {
+	t.Helper()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if int(n.Add(1)) <= fails {
+			w.Header().Set("Content-Length", "100")
+			_, _ = w.Write([]byte(`{"id":`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient("t", WithBaseURL(srv.URL))
+	c.sleep = func(context.Context, time.Duration) error { return nil }
+	return c, &n
+}
+
+func TestTruncatedBodyRetriedForReadsOnly(t *testing.T) {
+	c, n := truncatingServer(t, 1)
+	if _, _, err := c.do(context.Background(), &request{method: http.MethodGet, url: c.restURL + "/x"}); err != nil {
+		t.Errorf("GET: %v", err)
+	}
+	if n.Load() != 2 {
+		t.Errorf("GET attempts = %d, want 2", n.Load())
+	}
+
+	c, n = truncatingServer(t, 1)
+	if err := c.graphQL(context.Background(), "Q", "query Q { x }", nil, nil); err != nil {
+		t.Errorf("query: %v", err)
+	}
+	if n.Load() != 2 {
+		t.Errorf("query attempts = %d, want 2", n.Load())
+	}
+
+	c, n = truncatingServer(t, 1)
+	if err := c.graphQL(context.Background(), "M", "mutation M { x }", nil, nil); err == nil {
+		t.Error("mutation succeeded through a truncated body")
+	}
+	if n.Load() != 1 {
+		t.Errorf("mutation attempts = %d, want 1", n.Load())
+	}
+}
+
+func TestDecodeFailureNotRetried(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n.Add(1)
+		_, _ = w.Write([]byte(`not json`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient("t", WithBaseURL(srv.URL))
+	var out struct{}
+	if _, _, err := c.do(context.Background(), &request{method: http.MethodGet, url: srv.URL, out: &out}); err == nil {
+		t.Error("decoded invalid JSON")
+	}
+	if n.Load() != 1 {
+		t.Errorf("attempts = %d, want 1", n.Load())
+	}
+}
+
 func TestRetryHonorsRetryAfter(t *testing.T) {
 	c, _, waits := retryServer(t, 1, 429, map[string]string{"Retry-After": "7"})
 	if _, _, err := c.do(context.Background(), &request{method: http.MethodPost, url: c.restURL + "/x"}); err != nil {
