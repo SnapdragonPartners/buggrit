@@ -370,9 +370,10 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   one nudge. If it still doesn't submit, or the run hits a ceiling, the
   deadline or a model error, the pass is reported incomplete with that
   reason. It never comes back silently empty (§9).
-- **"No ceiling":** `max_tool_iterations: 0` is run as 10,000, which is also
-  the configurable maximum. toolloop would read 0 as its own default of 8,
-  and it preallocates its transcript in proportion to the limit
+- **"No ceiling":** `max_tool_iterations: 0` is passed to toolloop as
+  `math.MaxInt`, since toolloop reads 0 as its own default of 8. The deadline
+  bounds the run. This needs maestro-llms v0.9.0, which stopped sizing its
+  transcript by the limit
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
 Finding schema:

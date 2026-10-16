@@ -144,11 +144,6 @@ type Gate struct {
 	FailOn string `json:"fail_on"`
 }
 
-// MaxToolIterationsLimit is the highest max_tool_iterations accepted. No pass
-// can use that many turns before its deadline, and maestro-llms' toolloop
-// preallocates its transcript in proportion to the limit.
-const MaxToolIterationsLimit = 10_000
-
 // Identity says which GitHub login is buggrit's own. A comment is buggrit's
 // only if it carries the marker and is authored by this login (§3).
 type Identity struct {
@@ -369,8 +364,8 @@ func (l *Limits) validate() []error {
 	if l.MaxConcurrency < 1 {
 		errs = append(errs, errors.New("limits.max_concurrency must be >= 1"))
 	}
-	if l.MaxToolIterations < 0 || l.MaxToolIterations > MaxToolIterationsLimit {
-		errs = append(errs, fmt.Errorf("limits.max_tool_iterations must be between 0 and %d (0 means no ceiling)", MaxToolIterationsLimit))
+	if l.MaxToolIterations < 0 {
+		errs = append(errs, errors.New("limits.max_tool_iterations must be >= 0 (0 means no ceiling)"))
 	}
 	if l.MaxTokensPerPass < 0 {
 		errs = append(errs, errors.New("limits.max_tokens_per_pass must be >= 0 (0 means no ceiling)"))

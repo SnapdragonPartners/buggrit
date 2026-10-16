@@ -96,7 +96,6 @@ func TestParseRejects(t *testing.T) {
 		{"trailing data", minimal + `{}`, "unexpected data"},
 		{"trailing close bracket", minimal + `] not-json`, "unexpected data"},
 		{"trailing close brace", minimal + `}`, "unexpected data"},
-		{"huge iterations", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": 1000000},`, 1), "between 0 and 10000"},
 		{"negative iterations", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_tool_iterations": -1},`, 1), "max_tool_iterations"},
 		{"explicit empty stage provider", strings.Replace(minimal, `}}`, `}, "verify": {"provider": ""}}`, 1), "models.verify: provider is required"},
 		{"explicit empty stage model", strings.Replace(minimal, `}}`, `}, "verify": {"model": ""}}`, 1), "models.verify: model is required"},

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"unicode/utf8"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/toolloop"
 
-	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/glob"
 )
@@ -42,10 +42,6 @@ type FindResult struct {
 	Complete   bool
 }
 
-// unlimitedIterations stands in for "no ceiling" (see
-// config.MaxToolIterationsLimit for why it is finite).
-const unlimitedIterations = config.MaxToolIterationsLimit
-
 // nudge is sent once if the model answers in text instead of submitting.
 const nudge = "You ended your turn without calling submit_findings. Call submit_findings now with every finding " +
 	"from your review (an empty list if there are none). Do not reply in text."
@@ -65,7 +61,8 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 	maxIter := in.MaxIterations
 	if maxIter <= 0 {
 		// toolloop reads <= 0 as its small default; buggrit's 0 means none.
-		maxIter = unlimitedIterations
+		// The deadline bounds the run (§9).
+		maxIter = math.MaxInt
 	}
 
 	res := &FindResult{}
