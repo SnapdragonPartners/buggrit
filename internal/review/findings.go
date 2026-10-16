@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 
@@ -268,6 +269,9 @@ func (s *submitTool) rightProblems(f *Finding, fd *github.FileDiff) []string {
 		// A file-level finding about the deletion itself.
 	case fd.Status == github.StatusDeleted:
 		out = append(out, fmt.Sprintf("%s is deleted; use side LEFT with a deleted line number, or line 0", f.Path))
+	case f.Line > 0 && fd.Commentable(f.Line, github.SideRight):
+		// The diff shows this head line, so it exists; no read needed. This
+		// also covers a changed symlink, whose content the tools won't read.
 	default:
 		if p := s.checkLine(f.Path, f.Line); p != "" {
 			out = append(out, p)
@@ -280,10 +284,21 @@ func (s *submitTool) rightProblems(f *Finding, fd *github.FileDiff) []string {
 }
 
 // checkLine reports why line can't be a head-side line of path, or "".
-func (s *submitTool) checkLine(path string, line int) string {
-	name, err := cleanPath(path)
+func (s *submitTool) checkLine(p string, line int) string {
+	name, err := cleanPath(p)
 	if err != nil {
 		return err.Error()
+	}
+	if line == 0 {
+		// File level: the entry must exist, but it may be a symlink, so
+		// check it without following it.
+		if lerr := checkNoSymlink(s.env.ws, path.Dir(name)); lerr != nil {
+			return lerr.Error()
+		}
+		if _, serr := s.env.ws.Lstat(name); serr != nil {
+			return fmt.Sprintf("%s: %s", name, describeFSError(serr))
+		}
+		return ""
 	}
 	data, err := readFile(s.env.ws, name)
 	if err != nil {

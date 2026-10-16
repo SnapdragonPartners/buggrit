@@ -1,12 +1,16 @@
 package review
 
 import (
+	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms/toolloop"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/glob"
 )
 
@@ -95,6 +99,33 @@ func TestSubmitRejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A PR that adds a symlink can still get findings about it: file level, or
+// on the diff's line (the link target), without the tools reading through
+// the link.
+func TestSubmitOnSymlink(t *testing.T) {
+	diff := "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+.git/config\n\\ No newline at end of file\n"
+	d, err := github.ParseDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := fstest.MapFS{
+		"link":        {Data: []byte(".git/config"), Mode: fs.ModeSymlink},
+		".git/config": {Data: []byte("SECRET")},
+	}
+	s := &submitTool{env: &toolEnv{ws: ws, diff: d}, inScope: func(string) bool { return true }}
+	for _, line := range []int{0, 1} {
+		res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", fmt.Sprintf(`{"findings": [{"path": "link", "line": %d,
+		  "severity": "P1", "category": "security", "confidence": "high", "title": "t", "problem": "p", "fix": "f"}]}`, line))
+		if res.IsError {
+			t.Errorf("line %d rejected: %s", line, res.Content)
+		}
+	}
+	res := call(t, []toolloop.Tool{s.tool()}, "submit_findings", `{"findings": [{"path": "link", "line": 0,
+	  "severity": "P1", "category": "security", "confidence": "high", "title": "t", "problem": "p", "fix": "f",
+	  "class": "c", "instances": [{"path": "link/x", "line": 0}]}]}`)
+	wantErr(t, res, "symbolic link")
 }
 
 // A file-level finding about a deleted file is allowed (design §8).
