@@ -32,9 +32,11 @@ type Incremental struct {
 //     scope if the PR's diff also deletes next to them. That's where a
 //     finding about the deletion is anchored, and requiring the PR-side
 //     deletion keeps a merge's deletions out.
-//   - A deletion that leaves no head-side lines at all (the file was emptied
-//     or deleted) puts the file in scope for file-level and deleted-line
-//     findings.
+//   - A change with no head-side lines to anchor on puts the file in scope
+//     for file-level and deleted-line findings: a deletion that leaves no
+//     lines (the file was emptied or deleted), or a change with no text
+//     hunks at all (a binary file, an empty file deleted, a mode change or a
+//     pure rename).
 func newIncremental(since string, pr, changes *github.Diff, inScope func(string) bool) *Incremental {
 	inc := &Incremental{Since: since, lines: map[string]map[int]bool{}, files: map[string]bool{}}
 	for i := range changes.Files {
@@ -44,11 +46,11 @@ func newIncremental(since string, pr, changes *github.Diff, inScope func(string)
 		if pf == nil || !inScope(p) {
 			continue
 		}
-		set, emptied := fileScope(ch, pf)
+		set, fileLevel := fileScope(ch, pf)
 		if len(set) > 0 {
 			inc.lines[p] = set
 		}
-		if len(set) > 0 || emptied {
+		if len(set) > 0 || fileLevel {
 			inc.files[p] = true
 		}
 	}
@@ -56,9 +58,9 @@ func newIncremental(since string, pr, changes *github.Diff, inScope func(string)
 }
 
 // fileScope applies newIncremental's rules to one file: ch is its change
-// since the completed pass and pf its PR diff. emptied reports a deletion
-// that left no head-side lines.
-func fileScope(ch, pf *github.FileDiff) (set map[int]bool, emptied bool) {
+// since the completed pass and pf its PR diff. fileLevel reports a change
+// that has no head-side lines to anchor on.
+func fileScope(ch, pf *github.FileDiff) (set map[int]bool, fileLevel bool) {
 	added, prDeletions := map[int]bool{}, map[int]bool{}
 	for _, n := range pf.AddedLines() {
 		added[n] = true
@@ -81,9 +83,9 @@ func fileScope(ch, pf *github.FileDiff) (set map[int]bool, emptied bool) {
 				set[n] = true
 			}
 		}
-		emptied = emptied || hunk.NewLines == 0 && len(hunk.Lines) > 0
+		fileLevel = fileLevel || hunk.NewLines == 0 && len(hunk.Lines) > 0
 	}
-	return set, emptied
+	return set, fileLevel || len(ch.Hunks) == 0
 }
 
 // deletionNeighbors returns the head-side lines next to each run of deleted
@@ -127,8 +129,26 @@ func (inc *Incremental) paths() []string {
 	return out
 }
 
+// pathList renders the files in scope, comma-separated, within about limit
+// bytes.
+func (inc *Incremental) pathList(limit int) string {
+	paths := inc.paths()
+	var b strings.Builder
+	for i, p := range paths {
+		if b.Len() > limit {
+			fmt.Fprintf(&b, ", and %d more files", len(paths)-i)
+			break
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
 // maxRanges bounds one file's rendered ranges, in the prompt and in a
-// submit_findings error.
+// submit_findings error, and the file list in that error.
 const maxRanges = 4 << 10
 
 // deletedOnly is the scope of a file with no head-side lines in scope.
@@ -181,7 +201,7 @@ func (inc *Incremental) check(f *Finding, a github.Anchor) string {
 	}
 	if !inc.files[f.Path] {
 		return fmt.Sprintf("%s has no changes since %s, the last completed review. This pass reports new findings only "+
-			"on lines changed since then, in: %s", f.Path, short(inc.Since), strings.Join(inc.paths(), ", "))
+			"on lines changed since then, in: %s", f.Path, short(inc.Since), inc.pathList(maxRanges))
 	}
 	if f.Line == 0 || a.Side == github.SideLeft {
 		return ""

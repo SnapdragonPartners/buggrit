@@ -170,10 +170,13 @@ func (s *Server) SetFile(ref, path, content string) {
 
 // Comparison is a stored result of the compare endpoint: Status is
 // "ahead", "behind", "diverged" or "identical", and Diff the unified diff
-// from the merge base to head.
+// from the merge base to head. DiffTooLarge makes the diff request fail as
+// GitHub does for a diff it won't render (406), while the status request
+// still succeeds.
 type Comparison struct {
-	Status string
-	Diff   string
+	Status       string
+	Diff         string
+	DiffTooLarge bool
 }
 
 // SetCompare stores what comparing base...head returns. An unknown pair is
@@ -441,10 +444,13 @@ func (s *Server) getCompare(r *http.Request, _ string) (int, any) {
 	if !ok {
 		return http.StatusNotFound, msg("Not Found")
 	}
-	if r.Header.Get("Accept") == "application/vnd.github.diff" {
-		return http.StatusOK, rawBody(c.Diff)
+	switch {
+	case r.Header.Get("Accept") != "application/vnd.github.diff":
+		return http.StatusOK, map[string]any{"status": c.Status}
+	case c.DiffTooLarge:
+		return http.StatusNotAcceptable, msg("Sorry, this diff is unavailable")
 	}
-	return http.StatusOK, map[string]any{"status": c.Status}
+	return http.StatusOK, rawBody(c.Diff)
 }
 
 // diffAt parses the PR's diff at commit, which must be a head the PR has had.

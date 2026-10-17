@@ -154,6 +154,42 @@ func TestNewIncrementalLines(t *testing.T) {
 	}
 }
 
+// A change with no text hunks has no lines to anchor on, but its file is
+// in scope for file-level findings rather than skipped.
+func TestNewIncrementalHunkless(t *testing.T) {
+	const hunkless = `diff --git a/py.typed b/py.typed
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/logo.png b/logo.png
+index 1111111..2222222 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+`
+	d := parseDiff(t, hunkless)
+	inc := newIncremental(engineCompleted, d, d, func(string) bool { return true })
+	if got := strings.Join(inc.paths(), " "); got != "logo.png py.typed run.sh" {
+		t.Fatalf("paths = %q, want every hunkless change", got)
+	}
+	for _, p := range inc.paths() {
+		if got := inc.ranges(p); got != deletedOnly {
+			t.Errorf("%s ranges = %q", p, got)
+		}
+	}
+}
+
+func TestIncrementalPathList(t *testing.T) {
+	inc := &Incremental{files: map[string]bool{}}
+	for n := range 5000 {
+		inc.files[fmt.Sprintf("pkg/file%04d.go", n)] = true
+	}
+	got := inc.pathList(maxRanges)
+	if len(got) > maxRanges+100 || !strings.HasPrefix(got, "pkg/file0000.go, pkg/file0001.go") || !strings.Contains(got, " more files") {
+		t.Errorf("path list: %d bytes, ends %q", len(got), got[max(0, len(got)-40):])
+	}
+}
+
 func TestIncrementalRanges(t *testing.T) {
 	inc := &Incremental{lines: map[string]map[int]bool{"a": {1: true, 2: true, 3: true, 7: true, 9: true, 10: true}, "big": {}}}
 	if got := inc.ranges("a"); got != "1-3, 7, 9-10" {
@@ -356,6 +392,8 @@ func TestReviewIncrementalFallsBack(t *testing.T) {
 	}{
 		"diverged": {&githubtest.Comparison{Status: github.CompareDiverged}, "the whole pull request, since ccccccc, the last completed review's head, is no longer in its history"},
 		"gone":     {nil, "the whole pull request, since GitHub no longer has ccccccc"},
+		"too large": {&githubtest.Comparison{Status: github.CompareAhead, DiffTooLarge: true},
+			"the whole pull request, since the changes after ccccccc are too large to diff"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake, gh, ref := incrementalSetup(t)

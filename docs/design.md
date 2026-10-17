@@ -534,8 +534,8 @@ of the threads that did land keeps it from posting them twice.
 Incremental scope (§7) starts from `completed_sha`. An interrupted pass
 (deadline, ceiling, cancellation, fence) doesn't advance it, so the next
 pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
-(force-push or rebase), or GitHub won't diff the changes since it, the pass
-falls back to the full PR diff.
+(force-push or rebase), GitHub no longer has it, or GitHub won't diff the
+changes since it, the pass falls back to the full PR diff.
 
 ## 7. Convergence (the critical requirement)
 
@@ -564,8 +564,10 @@ buggrit doesn't end. The rules, in order of importance:
    - A run of lines that is only deleted (not replaced) puts its head-side
      neighbors in scope, since that's where a finding about the deletion is
      anchored, but only where the PR's diff also deletes next to them. That
-     keeps a merge's deletions out. A file emptied or deleted since then is
-     in scope for file-level and deleted-line findings.
+     keeps a merge's deletions out.
+   - A change with no head-side lines to anchor on (a file emptied or
+     deleted, a binary file, a mode change, a pure rename) puts the file in
+     scope for file-level and deleted-line findings.
    - Only a finding's **anchor** must be in scope, checked as it will be
      published: a range GitHub would narrow to its last line is judged by
      that line, and a line that would fall back to a file-level comment is
