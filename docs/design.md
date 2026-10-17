@@ -201,7 +201,8 @@ passes secrets.
   will look up the head again.
 - **Dogfooding:** this repo's own workflow (`.github/workflows/buggrit.yml`)
   builds buggrit from `main`, never from the PR, and skips with a notice
-  until `main` has a config. Until build step 7 it builds from source, and
+  when `main` has no config (as it did until PR #5 added one). Until build
+  step 7 it builds from source, and
   until build step 4 it runs only on `pull_request` and `workflow_dispatch`.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
