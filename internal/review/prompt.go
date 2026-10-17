@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"path"
 	"strings"
+
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 )
 
 // Prompt budgets. Past these, the opening message lists what it left out and
@@ -97,13 +99,11 @@ func openingMessage(in *FindInput) string {
 	b.WriteString(fileList(in.Diff, in.Scope.InScope, 0, maxPromptFileList))
 	b.WriteString("\nFiles marked \"excluded from review\" may be read for context but must not be the subject of findings.\n\n")
 
+	writeIncremental(&b, in.Incremental)
+
 	b.WriteString("## Diff\n\nHead-side line numbers are on the left; deleted lines have none.\n\n")
 	var skipped []string
-	for i := range in.Diff.Files {
-		f := &in.Diff.Files[i]
-		if !in.Scope.InScope(f.Path()) {
-			continue
-		}
+	for _, f := range diffOrder(in) {
 		text := renderFileDiff(f, 0, maxResultBytes)
 		if b.Len()+len(text) > maxPromptDiffBytes-maxDeferredList {
 			skipped = append(skipped, f.Path())
@@ -126,6 +126,48 @@ func openingMessage(in *FindInput) string {
 	}
 	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
 	return b.String()
+}
+
+// diffOrder returns the in-scope files to show in the diff. On an
+// incremental pass, files with changes since the completed pass come first,
+// so they're the last to be deferred to get_diff.
+func diffOrder(in *FindInput) []*github.FileDiff {
+	var first, rest []*github.FileDiff
+	for i := range in.Diff.Files {
+		f := &in.Diff.Files[i]
+		switch {
+		case !in.Scope.InScope(f.Path()):
+		case in.Incremental != nil && in.Incremental.files[f.Path()]:
+			first = append(first, f)
+		default:
+			rest = append(rest, f)
+		}
+	}
+	return append(first, rest...)
+}
+
+// writeIncremental tells the finder where this pass looks for new findings
+// (design §7 rule 2). submit_findings enforces it, and its error names the
+// lines, so a list cut short for space is recoverable.
+func writeIncremental(b *strings.Builder, inc *Incremental) {
+	if inc == nil {
+		return
+	}
+	fmt.Fprintf(b, "## Scope of this pass\n\n"+
+		"An earlier pass reviewed this pull request through commit %s. Report new findings only on the lines changed since then, "+
+		"listed below (head-side line numbers). Use the rest of the pull request and the repository as context: a change here can "+
+		"break code elsewhere, and a finding about that is anchored on the changed line. A class finding is anchored on a changed "+
+		"line, but its other instances may be anywhere. Coverage refers to these lines.\n\n", short(inc.Since))
+	start := b.Len()
+	paths := inc.paths()
+	for i, p := range paths {
+		if b.Len()-start > maxPromptFileList {
+			fmt.Fprintf(b, "(and %d more files; submit_findings names the lines for a file it rejects)\n", len(paths)-i)
+			break
+		}
+		fmt.Fprintf(b, "- %s: %s\n", p, inc.ranges(p))
+	}
+	b.WriteByte('\n')
 }
 
 // writeInstructions adds the repository's instruction files and

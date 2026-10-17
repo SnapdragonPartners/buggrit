@@ -1,5 +1,7 @@
 **buggrit** pass 2
 
+**Scope:** lines changed since 0123456.
+
 Adds Put; one real bug.
 
 **Status:** complete at 1111111: 2 new findings (1 blocking, 1 advisory).

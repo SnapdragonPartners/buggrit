@@ -52,6 +52,17 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Incremental scope compares commits (design §7 rule 2). The base
+	// branch's tip may be ahead of the PR's merge base, so any status will do.
+	status, err := c.CompareStatus(ctx, repo, pr.BaseSHA, pr.HeadSHA)
+	if err != nil {
+		t.Fatalf("compare status: %v", err)
+	}
+	if _, err = c.CompareDiff(ctx, repo, pr.BaseSHA, pr.HeadSHA); err != nil {
+		t.Fatalf("compare diff: %v", err)
+	}
+	t.Logf("compare base...head: %s", status)
+
 	anchor, ok := firstAddedLine(d)
 	if !ok {
 		t.Fatal("the PR adds no lines to comment on")

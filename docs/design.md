@@ -534,7 +534,8 @@ of the threads that did land keeps it from posting them twice.
 Incremental scope (§7) starts from `completed_sha`. An interrupted pass
 (deadline, ceiling, cancellation, fence) doesn't advance it, so the next
 pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
-(force-push or rebase), the pass falls back to the full PR diff.
+(force-push or rebase), or GitHub won't diff the changes since it, the pass
+falls back to the full PR diff.
 
 ## 7. Convergence (the critical requirement)
 
@@ -554,6 +555,24 @@ buggrit doesn't end. The rules, in order of importance:
    correct, because fixes can introduce regressions. Code that was already
    reviewed isn't re-reviewed by a model that just happened to notice
    something different this time.
+
+   "Changed since `completed_sha`" comes from GitHub's compare API
+   (`completed_sha...HEAD`), read against the PR's own diff:
+   - A line is in scope if the changes since `completed_sha` add it **and**
+     the PR's diff adds it. A merge from the base branch therefore brings
+     nothing into scope.
+   - A run of lines that is only deleted (not replaced) puts its head-side
+     neighbors in scope, since that's where a finding about the deletion is
+     anchored. A file deleted since then is in scope as a whole.
+   - Only a finding's **anchor** must be in scope. A file-level finding, or
+     one on a deleted line, needs only its file to have changed. A class
+     finding's other instances may be anywhere (rule 1).
+
+   The opening message lists the lines in scope, and `submit_findings`
+   rejects an anchor outside them, naming the lines it would accept. If
+   nothing reviewable changed (say, only a merge from the base branch), the
+   pass completes without running the finder. Each pass's review body
+   states its scope.
 3. **Stable identity and deduplication.** Every candidate is compared to all
    earlier findings, including fixed and dismissed ones. A deterministic
    fingerprint (path, category, normalized snippet) does the first pass and a
@@ -767,7 +786,7 @@ merge gate is the control for those.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
 4. **Verifier and thread lifecycle:** the state machine in §6, rebuttal judging.
-5. **Convergence controls:** incremental scope, dedupe (including other
+5. **Convergence controls:** dedupe (including other
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
    summary ledger, gate check.
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
@@ -779,7 +798,9 @@ merge gate is the control for those.
    agents. Measures precision, recall and passes to convergence per model.
 
 **Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
-reviews its own PRs. The maestro-llms work step 3 needed has shipped:
+reviews its own PRs. Incremental scope (§7 rule 2) was pulled forward from
+step 5, because dogfooding showed full re-reviews drip-feeding new advisory
+findings into text earlier passes had already seen. The maestro-llms work step 3 needed has shipped:
 terminal tools
 ([#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
 v0.8.0), the LunaRoute path

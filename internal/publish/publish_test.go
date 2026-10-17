@@ -143,9 +143,9 @@ func TestOversizedSuggestionOmitted(t *testing.T) {
 
 func TestReviewBodyGolden(t *testing.T) {
 	cases := map[string]*review.Result{
-		"review-complete.md": {HeadSHA: head, Pass: 2, Complete: true, Summary: "Adds Put; one real bug.",
+		"review-complete.md": {HeadSHA: head, Pass: 2, Complete: true, Summary: "Adds Put; one real bug.", Scope: "lines changed since 0123456",
 			Findings: []review.Candidate{classFinding(), advisoryFileFinding()}, Duplicates: 1, BelowThreshold: 2},
-		"review-clean.md":      {HeadSHA: head, Pass: 1, Complete: true},
+		"review-clean.md":      {HeadSHA: head, Pass: 1, Complete: true, Scope: "the whole pull request"},
 		"review-incomplete.md": {HeadSHA: head, Pass: 3, Reason: "deadline reached"},
 		"review-partial.md": {HeadSHA: head, Pass: 4, Reason: "deadline reached; submitted 1 finding found before it",
 			Findings: []review.Candidate{classFinding()}},

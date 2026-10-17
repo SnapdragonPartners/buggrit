@@ -291,6 +291,9 @@ func (r *reviewer) print(res *review.Result) {
 func jobSummary(res *review.Result, cfg *config.Config) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## buggrit pass %d\n\n**%s**\n\n", res.Pass, publish.Status(res))
+	if res.Scope != "" {
+		fmt.Fprintf(&b, "Scope: %s.\n\n", res.Scope)
+	}
 	if res.Find == nil {
 		return b.String()
 	}

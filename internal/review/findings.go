@@ -128,7 +128,9 @@ func submitFindingsDef() llms.ToolDefinition {
 type submitTool struct {
 	env     *toolEnv
 	inScope func(string) bool
-	result  *Submission
+	// incremental, if set, is where this pass may anchor findings.
+	incremental *Incremental
+	result      *Submission
 }
 
 func (s *submitTool) tool() toolloop.Tool {
@@ -313,6 +315,13 @@ func (s *submitTool) validateAnchor(f *Finding) []string {
 		out = append(out, s.rightProblems(f, fd)...)
 	default:
 		add("side must be RIGHT or LEFT, not %q", f.Side)
+	}
+	if len(out) == 0 {
+		// The scope check reads the anchor, so on an invalid one it would
+		// only add a misleading second problem.
+		if p := s.incremental.check(f); p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }
