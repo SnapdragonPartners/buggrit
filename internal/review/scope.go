@@ -20,6 +20,9 @@ type Incremental struct {
 	// files holds every path with a change in scope, including a deletion
 	// that has no head-side lines.
 	files map[string]bool
+	// leftOK holds the files in scope whose PR diff deletes lines, so a
+	// finding may anchor on a deleted line (side LEFT).
+	leftOK map[string]bool
 	// Since is the completed pass's head the scope starts from.
 	Since string
 }
@@ -38,7 +41,7 @@ type Incremental struct {
 //     hunks at all (a binary file, an empty file deleted, a mode change or a
 //     pure rename) when the PR's diff makes the same kind of change.
 func newIncremental(since string, pr, changes *github.Diff, inScope func(string) bool) *Incremental {
-	inc := &Incremental{Since: since, lines: map[string]map[int]bool{}, files: map[string]bool{}}
+	inc := &Incremental{Since: since, lines: map[string]map[int]bool{}, files: map[string]bool{}, leftOK: map[string]bool{}}
 	for i := range changes.Files {
 		ch := &changes.Files[i]
 		p := ch.Path()
@@ -52,6 +55,7 @@ func newIncremental(since string, pr, changes *github.Diff, inScope func(string)
 		}
 		if len(set) > 0 || fileLevel {
 			inc.files[p] = true
+			inc.leftOK[p] = deletesLines(pf)
 		}
 	}
 	return inc
@@ -100,6 +104,18 @@ func samePRChange(ch, pf *github.FileDiff) bool {
 		ch.Binary && pf.Binary,
 		ch.ModeChanged && pf.ModeChanged:
 		return true
+	}
+	return false
+}
+
+// deletesLines reports whether a file's diff deletes any lines.
+func deletesLines(f *github.FileDiff) bool {
+	for h := range f.Hunks {
+		for li := range f.Hunks[h].Lines {
+			if f.Hunks[h].Lines[li].Kind == github.LineDeleted {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -167,14 +183,21 @@ func (inc *Incremental) pathList(limit int) string {
 // submit_findings error, and the file list in that error.
 const maxRanges = 4 << 10
 
-// deletedOnly is the scope of a file with no head-side lines in scope.
-const deletedOnly = "deleted lines only (anchor at line 0 or on side LEFT)"
+// The scope of a file with no head-side lines in scope. A deleted line is
+// offered only where the PR's diff has one, since side LEFT needs it.
+const (
+	fileLevelOnly = "no head-side lines; anchor at file level (line 0)"
+	fileOrDeleted = "no head-side lines; anchor at file level (line 0) or on a deleted line (side LEFT)"
+)
 
 // ranges renders a file's lines in scope as "12-20, 44", within maxRanges.
 func (inc *Incremental) ranges(p string) string {
 	set := inc.lines[p]
 	if len(set) == 0 {
-		return deletedOnly
+		if inc.leftOK[p] {
+			return fileOrDeleted
+		}
+		return fileLevelOnly
 	}
 	lines := make([]int, 0, len(set))
 	for n := range set {

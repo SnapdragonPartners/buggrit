@@ -75,7 +75,7 @@ func TestNewIncremental(t *testing.T) {
 	if got := inc.ranges("internal/cache/cache.go"); got != "3" {
 		t.Errorf("cache.go ranges = %q, want 3", got)
 	}
-	if got := inc.ranges("old.txt"); got != deletedOnly {
+	if got := inc.ranges("old.txt"); got != fileOrDeleted {
 		t.Errorf("old.txt ranges = %q", got)
 	}
 	if inc.Empty() {
@@ -134,7 +134,7 @@ func TestNewIncrementalLines(t *testing.T) {
 -// end
 `
 	inc = newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, emptied), defaultScope().InScope)
-	if inc.Empty() || inc.ranges("internal/cache/cache.go") != deletedOnly {
+	if inc.Empty() || inc.ranges("internal/cache/cache.go") != fileOrDeleted {
 		t.Errorf("emptied file: paths %v", inc.paths())
 	}
 
@@ -173,7 +173,9 @@ new mode 100755
 		t.Fatalf("paths = %q, want every hunkless change", got)
 	}
 	for _, p := range inc.paths() {
-		if got := inc.ranges(p); got != deletedOnly {
+		// None of these PR diffs has a deleted line, so side LEFT isn't
+		// offered.
+		if got := inc.ranges(p); got != fileLevelOnly {
 			t.Errorf("%s ranges = %q", p, got)
 		}
 	}
@@ -351,7 +353,7 @@ func TestReviewIncremental(t *testing.T) {
 	}
 	calls := model.Calls()
 	msg := calls[0].Messages[0].Content[0].Text
-	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", "- internal/cache/cache.go: 3\n", "- old.txt: " + deletedOnly + "\n"} {
+	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", "- internal/cache/cache.go: 3\n", "- old.txt: " + fileOrDeleted + "\n"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("opening message missing %q", want)
 		}

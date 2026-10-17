@@ -14,6 +14,7 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
+	"github.com/SnapdragonPartners/buggrit/internal/review"
 )
 
 const (
@@ -178,5 +179,17 @@ func TestReviewArgs(t *testing.T) {
 			t.Errorf("%s: exit %d", name, code)
 		}
 		e.env = saved
+	}
+}
+
+// The job summary states the pass's scope when it has one (design §7 rule 2).
+func TestJobSummaryScope(t *testing.T) {
+	cfg := config.Defaults()
+	with := jobSummary(&review.Result{HeadSHA: head, Pass: 2, Complete: true, Scope: "lines changed since ccccccc"}, &cfg)
+	if !strings.Contains(with, "\nScope: lines changed since ccccccc.\n") {
+		t.Errorf("summary with a scope:\n%s", with)
+	}
+	if without := jobSummary(&review.Result{HeadSHA: head, Pass: 1, Skipped: true, SkipReason: "done"}, &cfg); strings.Contains(without, "Scope:") {
+		t.Errorf("summary without a scope:\n%s", without)
 	}
 }

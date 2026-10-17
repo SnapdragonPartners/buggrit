@@ -720,6 +720,12 @@ time pressure could make a model submit before it has covered everything,
 `submit_findings` asks for `coverage`, and a `partial` review leaves the
 pass incomplete instead of recording a complete pass over partial work.
 
+**Batched tool calls.** The tools return in milliseconds; a pass's time is
+the model's reasoning between calls, which dogfooding measured at about a
+minute per turn late in a pass. The system prompt therefore tells the model
+to request everything it knows it needs in one turn, and why: fewer, fuller
+turns leave more of the budget for reasoning.
+
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
 enforce lane limits (for example LunaRoute) or limits shared across runs,

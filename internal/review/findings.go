@@ -87,7 +87,7 @@ func submitFindingsDef() llms.ToolDefinition {
       "items": {
         "type": "object",
         "properties": {
-          "path": {"type": "string", "description": "A file changed by this pull request"},
+          "path": {"type": "string", "description": "A file changed by this pull request; on a later pass, one changed since the last completed review (see the opening message's scope section)"},
           "line": {"type": "integer", "minimum": 0, "description": "Head-side line the finding anchors to (the last line of a range); 0 for the whole file"},
           "start_line": {"type": "integer", "minimum": 1, "description": "First line of a multi-line range (optional)"},
           "side": {"type": "string", "enum": ["RIGHT", "LEFT"], "description": "RIGHT (default) for head lines; LEFT only for a deleted line, numbered in the base file"},

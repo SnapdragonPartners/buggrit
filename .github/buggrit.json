@@ -10,7 +10,7 @@
     }
   },
   "limits": {
-    "pass_deadline": "40m",
+    "pass_deadline": "55m",
     "max_concurrency": 2
   },
   "review": {
