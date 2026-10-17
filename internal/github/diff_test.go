@@ -288,3 +288,34 @@ func TestUnquotePath(t *testing.T) {
 		}
 	}
 }
+
+// A mode change is recorded, with or without text hunks; incremental scope
+// matches it against the PR's diff (design §7 rule 2).
+func TestParseDiffModeChange(t *testing.T) {
+	d, err := ParseDiff(`diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/lib.sh b/lib.sh
+old mode 100644
+new mode 100755
+--- a/lib.sh
++++ b/lib.sh
+@@ -1 +1 @@
+-a
++b
+diff --git a/plain.sh b/plain.sh
+--- a/plain.sh
++++ b/plain.sh
+@@ -1 +1 @@
+-a
++b
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]bool{"run.sh": true, "lib.sh": true, "plain.sh": false} {
+		if f := d.File(path); f == nil || f.ModeChanged != want {
+			t.Errorf("%s: %+v, want ModeChanged %v", path, f, want)
+		}
+	}
+}

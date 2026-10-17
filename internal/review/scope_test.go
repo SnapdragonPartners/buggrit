@@ -177,6 +177,20 @@ new mode 100755
 			t.Errorf("%s ranges = %q", p, got)
 		}
 	}
+
+	// A merge from the base branch brings in a mode change on a file whose
+	// text the PR changed earlier: the PR's diff has no mode change, so the
+	// file stays out of scope.
+	pr := parseDiff(t, `diff --git a/run.sh b/run.sh
+--- a/run.sh
++++ b/run.sh
+@@ -1 +1,2 @@
+ echo hi
++echo bye
+`)
+	if merged := newIncremental(engineCompleted, pr, d, func(string) bool { return true }); !merged.Empty() {
+		t.Errorf("a merge's mode change put %v in scope", merged.paths())
+	}
 }
 
 func TestIncrementalPathList(t *testing.T) {

@@ -567,7 +567,9 @@ buggrit doesn't end. The rules, in order of importance:
      keeps a merge's deletions out.
    - A change with no head-side lines to anchor on (a file emptied or
      deleted, a binary file, a mode change, a pure rename) puts the file in
-     scope for file-level and deleted-line findings.
+     scope for file-level and deleted-line findings. A change with no text
+     hunks counts only if the PR's diff makes the same kind of change, again
+     to keep a merge's changes out.
    - Only a finding's **anchor** must be in scope, checked as it will be
      published: a range GitHub would narrow to its last line is judged by
      that line, and a line that would fall back to a file-level comment is

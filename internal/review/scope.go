@@ -36,7 +36,7 @@ type Incremental struct {
 //     for file-level and deleted-line findings: a deletion that leaves no
 //     lines (the file was emptied or deleted), or a change with no text
 //     hunks at all (a binary file, an empty file deleted, a mode change or a
-//     pure rename).
+//     pure rename) when the PR's diff makes the same kind of change.
 func newIncremental(since string, pr, changes *github.Diff, inScope func(string) bool) *Incremental {
 	inc := &Incremental{Since: since, lines: map[string]map[int]bool{}, files: map[string]bool{}}
 	for i := range changes.Files {
@@ -85,7 +85,23 @@ func fileScope(ch, pf *github.FileDiff) (set map[int]bool, fileLevel bool) {
 		}
 		fileLevel = fileLevel || hunk.NewLines == 0 && len(hunk.Lines) > 0
 	}
-	return set, fileLevel || len(ch.Hunks) == 0
+	return set, fileLevel || len(ch.Hunks) == 0 && samePRChange(ch, pf)
+}
+
+// samePRChange reports whether the PR's diff makes the same kind of
+// hunkless change as ch: a deletion, an added empty file, a rename, a binary
+// change or a mode change. A merge from the base branch can bring in such a
+// change on a file the PR touched for other reasons; this keeps it out.
+func samePRChange(ch, pf *github.FileDiff) bool {
+	switch {
+	case ch.Status == github.StatusDeleted && pf.Status == github.StatusDeleted,
+		ch.Status == github.StatusAdded && pf.Status == github.StatusAdded,
+		ch.Status == github.StatusRenamed && pf.Status == github.StatusRenamed,
+		ch.Binary && pf.Binary,
+		ch.ModeChanged && pf.ModeChanged:
+		return true
+	}
+	return false
 }
 
 // deletionNeighbors returns the head-side lines next to each run of deleted
