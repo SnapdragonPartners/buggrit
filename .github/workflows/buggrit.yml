@@ -40,8 +40,8 @@ jobs:
           path: buggrit-src
           persist-credentials: false
 
-      # Until main has a config (the PR that adds buggrit), there is nothing
-      # to run: buggrit reads its config from the base branch.
+      # buggrit reads its config from the base branch, so without one on main
+      # (as before the PR that added it) there is nothing to run.
       - name: Check for a config on main
         id: configured
         run: |
