@@ -2,8 +2,10 @@ package review
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
@@ -73,7 +75,7 @@ func TestNewIncremental(t *testing.T) {
 	if got := inc.ranges("internal/cache/cache.go"); got != "3" {
 		t.Errorf("cache.go ranges = %q, want 3", got)
 	}
-	if got := inc.ranges("old.txt"); got != "the deletion" {
+	if got := inc.ranges("old.txt"); got != deletedOnly {
 		t.Errorf("old.txt ranges = %q", got)
 	}
 	if inc.Empty() {
@@ -81,10 +83,11 @@ func TestNewIncremental(t *testing.T) {
 	}
 }
 
-// A line the changes add that the PR's diff doesn't (base-branch content
-// from a merge) is out of scope; a deletion puts its neighbors in scope.
+// Lines a merge from the base branch adds or deletes are out of scope: an
+// added line must be added by the PR too, and a deletion's neighbors count
+// only where the PR's diff also deletes.
 func TestNewIncrementalLines(t *testing.T) {
-	const since = `diff --git a/internal/cache/cache.go b/internal/cache/cache.go
+	const merged = `diff --git a/internal/cache/cache.go b/internal/cache/cache.go
 --- a/internal/cache/cache.go
 +++ b/internal/cache/cache.go
 @@ -1,6 +1,5 @@
@@ -96,11 +99,43 @@ func TestNewIncrementalLines(t *testing.T) {
 -// gone
 +// end
 `
-	inc := newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, since), defaultScope().InScope)
-	// Line 5 replaces a line since the completed pass but is context in
-	// the PR, so neither it nor the replaced line's neighbors are in scope.
-	if got := inc.ranges("internal/cache/cache.go"); got != "3-4" {
-		t.Errorf("ranges = %q, want 3-4 (the neighbors of the deleted line)", got)
+	if inc := newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, merged), defaultScope().InScope); !inc.Empty() {
+		t.Errorf("a merge's lines put %v in scope: %s", inc.paths(), inc.ranges("internal/cache/cache.go"))
+	}
+
+	// The PR's diff deletes between lines 1 and 2, and so do the changes
+	// since the completed pass: both neighbors are in scope.
+	const deleted = `diff --git a/internal/cache/cache.go b/internal/cache/cache.go
+--- a/internal/cache/cache.go
++++ b/internal/cache/cache.go
+@@ -1,6 +1,5 @@
+ package cache
+-type Cache struct{}
+ type Cache struct{ entries map[string]int }
+ func (c *Cache) Put(k string, v int) { c.entries[k] = v }
+ func New() *Cache { return &Cache{} }
+ // end
+`
+	inc := newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, deleted), defaultScope().InScope)
+	if got := inc.ranges("internal/cache/cache.go"); got != "1-2" {
+		t.Errorf("ranges = %q, want 1-2 (the neighbors of the deleted line)", got)
+	}
+
+	// A file emptied without being deleted keeps file-level and
+	// deleted-line findings possible.
+	const emptied = `diff --git a/internal/cache/cache.go b/internal/cache/cache.go
+--- a/internal/cache/cache.go
++++ b/internal/cache/cache.go
+@@ -1,5 +0,0 @@
+-package cache
+-type Cache struct{ entries map[string]int }
+-func (c *Cache) Put(k string, v int) { c.entries[k] = v }
+-func New() *Cache { return &Cache{} }
+-// end
+`
+	inc = newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, emptied), defaultScope().InScope)
+	if inc.Empty() || inc.ranges("internal/cache/cache.go") != deletedOnly {
+		t.Errorf("emptied file: paths %v", inc.paths())
 	}
 
 	onlyMerge := newIncremental(engineCompleted, testDiffParsed(t), parseDiff(t, `diff --git a/main.go b/main.go
@@ -120,10 +155,61 @@ func TestNewIncrementalLines(t *testing.T) {
 }
 
 func TestIncrementalRanges(t *testing.T) {
-	inc := &Incremental{lines: map[string]map[int]bool{"a": {1: true, 2: true, 3: true, 7: true, 9: true, 10: true}}}
+	inc := &Incremental{lines: map[string]map[int]bool{"a": {1: true, 2: true, 3: true, 7: true, 9: true, 10: true}, "big": {}}}
 	if got := inc.ranges("a"); got != "1-3, 7, 9-10" {
 		t.Errorf("ranges = %q", got)
 	}
+	// One file's ranges are bounded, so a huge change can't crowd out the
+	// rest of the opening message.
+	for n := 1; n <= 100000; n += 2 {
+		inc.lines["big"][n] = true
+	}
+	got := inc.ranges("big")
+	if len(got) > maxRanges+100 || !strings.Contains(got, " more lines from ") {
+		t.Errorf("ranges for 50000 lines: %d bytes, ends %q", len(got), got[max(0, len(got)-60):])
+	}
+}
+
+// A range is checked as it will be published. Here the PR's diff has two
+// hunks, and only line 2 changed since the completed pass.
+func TestSubmitIncrementalPublishedAnchor(t *testing.T) {
+	const prDiff = `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,2 +1,3 @@
+ l1
++l2
+ l3
+@@ -7,3 +8,3 @@
+ l8
+-old
++l9
+ l10
+`
+	var content strings.Builder
+	for n := 1; n <= 10; n++ {
+		fmt.Fprintf(&content, "l%d\n", n)
+	}
+	d := parseDiff(t, prDiff)
+	s := &submitTool{env: &toolEnv{ws: fstest.MapFS{"a.go": {Data: []byte(content.String())}}, diff: d}, inScope: func(string) bool { return true }}
+	s.incremental = newIncremental(engineCompleted, d, parseDiff(t, `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,2 +1,3 @@
+ l1
++l2
+ l3
+`), s.inScope)
+	tools := []toolloop.Tool{s.tool()}
+	submit := func(loc string) toolloop.ToolResult {
+		return call(t, tools, "submit_findings", `{"coverage": "complete", "findings": [{"path": "a.go", `+loc+`,
+		  "severity": "P1", "category": "correctness", "confidence": "high", "title": "t", "problem": "p", "fix": "f"}]}`)
+	}
+	wantOK(t, submit(`"start_line": 1, "line": 3`))
+	// Spans both hunks, so GitHub gets line 9 alone, which isn't in scope.
+	wantErr(t, submit(`"start_line": 2, "line": 9`), "line 9 of a.go hasn't changed since ccccccc")
+	// Line 6 is outside every hunk and would fall back to file level.
+	wantErr(t, submit(`"line": 6`), "line 6 of a.go hasn't changed")
 }
 
 func TestSubmitIncremental(t *testing.T) {
@@ -145,7 +231,9 @@ func TestSubmitIncremental(t *testing.T) {
 	  "confidence": "high", "title": "t", "problem": "p", "fix": "f"}`))
 
 	wantErr(t, submit(strings.Replace(validFinding, `"line": 3`, `"line": 2`, 1)),
-		"line 2 of internal/cache/cache.go hasn't changed since ccccccc, the last completed review. This pass reports new findings only on lines changed since then; in internal/cache/cache.go those are 3")
+		"line 2 of internal/cache/cache.go hasn't changed since ccccccc")
+	wantErr(t, submit(strings.Replace(validFinding, `"line": 3`, `"line": 2`, 1)),
+		"This pass reports new findings only on lines changed since then; in internal/cache/cache.go those are 3")
 
 	// An invalid anchor gets only its own problem, not the scope's too.
 	res := submit(strings.Replace(validFinding, `"line": 3`, `"line": 99`, 1))
@@ -213,7 +301,7 @@ func TestReviewIncremental(t *testing.T) {
 	}
 	calls := model.Calls()
 	msg := calls[0].Messages[0].Content[0].Text
-	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", "- internal/cache/cache.go: 3\n", "- old.txt: the deletion\n"} {
+	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", "- internal/cache/cache.go: 3\n", "- old.txt: " + deletedOnly + "\n"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("opening message missing %q", want)
 		}

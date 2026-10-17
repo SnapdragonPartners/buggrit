@@ -319,7 +319,7 @@ func (s *submitTool) validateAnchor(f *Finding) []string {
 	if len(out) == 0 {
 		// The scope check reads the anchor, so on an invalid one it would
 		// only add a misleading second problem.
-		if p := s.incremental.check(f); p != "" {
+		if p := s.incremental.check(f, anchor(f, s.env.diff)); p != "" {
 			out = append(out, p)
 		}
 	}

@@ -563,10 +563,15 @@ buggrit doesn't end. The rules, in order of importance:
      nothing into scope.
    - A run of lines that is only deleted (not replaced) puts its head-side
      neighbors in scope, since that's where a finding about the deletion is
-     anchored. A file deleted since then is in scope as a whole.
-   - Only a finding's **anchor** must be in scope. A file-level finding, or
-     one on a deleted line, needs only its file to have changed. A class
-     finding's other instances may be anywhere (rule 1).
+     anchored, but only where the PR's diff also deletes next to them. That
+     keeps a merge's deletions out. A file emptied or deleted since then is
+     in scope for file-level and deleted-line findings.
+   - Only a finding's **anchor** must be in scope, checked as it will be
+     published: a range GitHub would narrow to its last line is judged by
+     that line, and a line that would fall back to a file-level comment is
+     out of scope. A file-level finding, or one on a deleted line, needs
+     only its file to have changed. A class finding's other instances may
+     be anywhere (rule 1).
 
    The opening message lists the lines in scope, and `submit_findings`
    rejects an anchor outside them, naming the lines it would accept. If

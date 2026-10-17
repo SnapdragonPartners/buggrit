@@ -25,11 +25,16 @@ type Incremental struct {
 }
 
 // newIncremental works out the scope from the PR's diff and the diff of the
-// changes since the completed pass. A line is in scope if the changes since
-// then add it and the PR's diff adds it too, so a merge from the base branch
-// brings nothing into scope. A deletion since then puts its neighboring
-// head-side lines in scope when the PR's diff shows them, since that's where
-// a finding about the deletion is anchored.
+// changes since the completed pass (design §7 rule 2):
+//   - A line is in scope if the changes since then add it and the PR's diff
+//     adds it too, so a merge from the base branch brings nothing into scope.
+//   - A run of lines only deleted since then puts its head-side neighbors in
+//     scope if the PR's diff also deletes next to them. That's where a
+//     finding about the deletion is anchored, and requiring the PR-side
+//     deletion keeps a merge's deletions out.
+//   - A deletion that leaves no head-side lines at all (the file was emptied
+//     or deleted) puts the file in scope for file-level and deleted-line
+//     findings.
 func newIncremental(since string, pr, changes *github.Diff, inScope func(string) bool) *Incremental {
 	inc := &Incremental{Since: since, lines: map[string]map[int]bool{}, files: map[string]bool{}}
 	for i := range changes.Files {
@@ -39,42 +44,53 @@ func newIncremental(since string, pr, changes *github.Diff, inScope func(string)
 		if pf == nil || !inScope(p) {
 			continue
 		}
-		if ch.Status == github.StatusDeleted {
-			if pf.Status == github.StatusDeleted {
-				inc.files[p] = true
-			}
-			continue
-		}
-		added := map[int]bool{}
-		for _, n := range pf.AddedLines() {
-			added[n] = true
-		}
-		set := map[int]bool{}
-		for h := range ch.Hunks {
-			adds, neighbors := changedLines(&ch.Hunks[h])
-			for _, n := range adds {
-				if added[n] {
-					set[n] = true
-				}
-			}
-			for _, n := range neighbors {
-				if pf.Commentable(n, github.SideRight) {
-					set[n] = true
-				}
-			}
-		}
+		set, emptied := fileScope(ch, pf)
 		if len(set) > 0 {
 			inc.lines[p] = set
+		}
+		if len(set) > 0 || emptied {
 			inc.files[p] = true
 		}
 	}
 	return inc
 }
 
-// changedLines returns the head-side lines a hunk adds, and the head-side
-// neighbors of each run of lines it only deletes. A deletion next to added
-// lines is a replacement, which the added lines already cover.
-func changedLines(h *github.Hunk) (adds, neighbors []int) {
+// fileScope applies newIncremental's rules to one file: ch is its change
+// since the completed pass and pf its PR diff. emptied reports a deletion
+// that left no head-side lines.
+func fileScope(ch, pf *github.FileDiff) (set map[int]bool, emptied bool) {
+	added, prDeletions := map[int]bool{}, map[int]bool{}
+	for _, n := range pf.AddedLines() {
+		added[n] = true
+	}
+	for h := range pf.Hunks {
+		for _, n := range deletionNeighbors(&pf.Hunks[h], false) {
+			prDeletions[n] = true
+		}
+	}
+	set = map[int]bool{}
+	for h := range ch.Hunks {
+		hunk := &ch.Hunks[h]
+		for li := range hunk.Lines {
+			if l := &hunk.Lines[li]; l.Kind == github.LineAdded && added[l.New] {
+				set[l.New] = true
+			}
+		}
+		for _, n := range deletionNeighbors(hunk, true) {
+			if prDeletions[n] {
+				set[n] = true
+			}
+		}
+		emptied = emptied || hunk.NewLines == 0 && len(hunk.Lines) > 0
+	}
+	return set, emptied
+}
+
+// deletionNeighbors returns the head-side lines next to each run of deleted
+// lines in a hunk. With pureOnly, a run next to an added line is skipped: it
+// is a replacement, which the added lines already cover.
+func deletionNeighbors(h *github.Hunk, pureOnly bool) []int {
+	var out []int
 	prev, prevAdded, pending := 0, false, false
 	for i := range h.Lines {
 		l := &h.Lines[i]
@@ -83,22 +99,19 @@ func changedLines(h *github.Hunk) (adds, neighbors []int) {
 			continue
 		}
 		added := l.Kind == github.LineAdded
-		if added {
-			adds = append(adds, l.New)
-		}
-		if pending && !added && !prevAdded {
+		if pending && (!pureOnly || !added && !prevAdded) {
 			if prev > 0 {
-				neighbors = append(neighbors, prev)
+				out = append(out, prev)
 			}
-			neighbors = append(neighbors, l.New)
+			out = append(out, l.New)
 		}
 		pending = false
 		prev, prevAdded = l.New, added
 	}
-	if pending && !prevAdded && prev > 0 {
-		neighbors = append(neighbors, prev)
+	if pending && (!pureOnly || !prevAdded) && prev > 0 {
+		out = append(out, prev)
 	}
-	return adds, neighbors
+	return out
 }
 
 // Empty reports whether nothing reviewable changed since the completed pass.
@@ -114,39 +127,55 @@ func (inc *Incremental) paths() []string {
 	return out
 }
 
-// ranges renders a file's lines in scope as "12-20, 44", or "the deletion"
-// for a file deleted since the completed pass.
+// maxRanges bounds one file's rendered ranges, in the prompt and in a
+// submit_findings error.
+const maxRanges = 4 << 10
+
+// deletedOnly is the scope of a file with no head-side lines in scope.
+const deletedOnly = "deleted lines only (anchor at line 0 or on side LEFT)"
+
+// ranges renders a file's lines in scope as "12-20, 44", within maxRanges.
 func (inc *Incremental) ranges(p string) string {
 	set := inc.lines[p]
 	if len(set) == 0 {
-		return "the deletion"
+		return deletedOnly
 	}
 	lines := make([]int, 0, len(set))
 	for n := range set {
 		lines = append(lines, n)
 	}
 	slices.Sort(lines)
-	var parts []string
+	var b strings.Builder
 	for i := 0; i < len(lines); {
 		j := i
 		for j+1 < len(lines) && lines[j+1] == lines[j]+1 {
 			j++
 		}
+		if b.Len() > maxRanges {
+			fmt.Fprintf(&b, ", and %d more lines from %d on", len(lines)-i, lines[i])
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteString(", ")
+		}
 		if i == j {
-			parts = append(parts, strconv.Itoa(lines[i]))
+			b.WriteString(strconv.Itoa(lines[i]))
 		} else {
-			parts = append(parts, fmt.Sprintf("%d-%d", lines[i], lines[j]))
+			fmt.Fprintf(&b, "%d-%d", lines[i], lines[j])
 		}
 		i = j + 1
 	}
-	return strings.Join(parts, ", ")
+	return b.String()
 }
 
-// check reports why f's anchor is outside the scope, or "". Only the anchor
-// is checked: a class finding's other instances may be anywhere (§7 rule 1).
-// A file-level finding, or one on a deleted line, needs only its file to
-// have changed.
-func (inc *Incremental) check(f *Finding) string {
+// check reports why f's published anchor (a) is outside the scope, or "".
+// Only the anchor is checked: a class finding's other instances may be
+// anywhere (§7 rule 1). A file-level finding, or one on a deleted line,
+// needs only its file to have changed. A finding on head lines must be
+// published on a line in scope: a range is checked as GitHub will get it,
+// after AnchorFor narrows it, and a line that would fall back to file level
+// is out of scope.
+func (inc *Incremental) check(f *Finding, a github.Anchor) string {
 	if inc == nil {
 		return ""
 	}
@@ -154,20 +183,21 @@ func (inc *Incremental) check(f *Finding) string {
 		return fmt.Sprintf("%s has no changes since %s, the last completed review. This pass reports new findings only "+
 			"on lines changed since then, in: %s", f.Path, short(inc.Since), strings.Join(inc.paths(), ", "))
 	}
-	if f.Line == 0 || github.Side(f.Side) == github.SideLeft {
+	if f.Line == 0 || a.Side == github.SideLeft {
 		return ""
 	}
-	start := f.StartLine
+	start := a.StartLine
 	if start == 0 {
-		start = f.Line
+		start = a.Line
 	}
-	for n := start; n <= f.Line; n++ {
+	for n := start; n <= a.Line && !a.FileLevel(); n++ {
 		if inc.lines[f.Path][n] {
 			return ""
 		}
 	}
-	return fmt.Sprintf("line %d of %s hasn't changed since %s, the last completed review. This pass reports new findings "+
-		"only on lines changed since then; in %s those are %s", f.Line, f.Path, short(inc.Since), f.Path, inc.ranges(f.Path))
+	return fmt.Sprintf("line %d of %s hasn't changed since %s, the last completed review (a range is anchored on its "+
+		"last line unless it lies within one diff hunk). This pass reports new findings only on lines changed since then; "+
+		"in %s those are %s", f.Line, f.Path, short(inc.Since), f.Path, inc.ranges(f.Path))
 }
 
 // passScope picks the pass's scope (design §6 "Review baseline", §7 rule 2):
