@@ -129,8 +129,8 @@ type Limits struct {
 	PassDeadline   Duration `json:"pass_deadline"`
 	MaxConcurrency int      `json:"max_concurrency"`
 	// MaxToolIterations and MaxTokensPerPass of 0 mean no ceiling. Whatever
-	// calls toolloop must translate 0 itself: toolloop treats MaxIterations
-	// <= 0 as its own small default, not as unlimited.
+	// calls toolloop must translate 0 to toolloop.NoIterationLimit: toolloop
+	// reads 0 as its own small default, not as unlimited.
 	MaxToolIterations int `json:"max_tool_iterations"`
 	MaxTokensPerPass  int `json:"max_tokens_per_pass"`
 }
