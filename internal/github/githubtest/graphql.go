@@ -70,6 +70,12 @@ func (s *Server) graphql(r *http.Request, _ string) (int, any) {
 		return data(map[string]any{"node": map[string]any{
 			"comments": s.commentPage(t, cursorStart(vars["after"])),
 		}})
+	case "ThreadResolved":
+		t := s.findThread(vars["id"])
+		if t == nil {
+			return data(map[string]any{"node": nil})
+		}
+		return data(map[string]any{"node": map[string]any{"isResolved": t.Resolved}})
 	case "ResolveThread", "UnresolveThread":
 		if s.ForbidResolve {
 			return gqlError("FORBIDDEN", "Resource not accessible by integration")

@@ -251,6 +251,28 @@ func (c *Client) thread(ctx context.Context, g *gqlThread) (Thread, error) {
 	}
 }
 
+const threadResolvedQuery = `query ThreadResolved($id: ID!) {
+  node(id: $id) { ... on PullRequestReviewThread { isResolved } }
+}`
+
+// ThreadResolved reads whether one review thread is resolved now. Publishing
+// uses it when GitHub refuses to change a thread, to learn whether the
+// change was needed at all.
+func (c *Client) ThreadResolved(ctx context.Context, threadID string) (bool, error) {
+	var data struct {
+		Node *struct {
+			IsResolved bool `json:"isResolved"`
+		} `json:"node"`
+	}
+	if err := c.graphQL(ctx, "ThreadResolved", threadResolvedQuery, map[string]any{"id": threadID}, &data); err != nil {
+		return false, fmt.Errorf("read thread %s: %w", threadID, err)
+	}
+	if data.Node == nil {
+		return false, fmt.Errorf("read thread %s: %w", threadID, &APIError{Type: "NOT_FOUND", Message: "thread not found"})
+	}
+	return data.Node.IsResolved, nil
+}
+
 const resolveMutation = `mutation ResolveThread($id: ID!) {
   resolveReviewThread(input: {threadId: $id}) { thread { id isResolved } }
 }`

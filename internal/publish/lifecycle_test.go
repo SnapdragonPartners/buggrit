@@ -558,3 +558,27 @@ func TestLifecycleReconcileOnlyReportsRefusal(t *testing.T) {
 		t.Fatalf("retried repair: %+v, %v; %d reviews", p.posted, p.err, len(w.fake.PR(7).Reviews))
 	}
 }
+
+// A token that can't unresolve refuses even an open thread. The refusal
+// changed nothing there, so the marker doesn't say left_resolved, nobody is
+// asked to reopen an open thread, and a later resolution settles the
+// finding.
+func TestLifecycleNeedsHumanRefusedOnOpenThread(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Convergence.MaxRebuttals = 0
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Disagree.")
+	w.fake.ForbidResolve = true
+	p := w.pass("", verdict(id, "open", "Still wrong."))
+	m := lastTransition(t, th)
+	if p.err != nil || m.Kind != state.KindNeedsHuman || m.LeftResolved || len(p.posted.Manual) != 0 {
+		t.Fatalf("refused on an open thread: %+v, %+v, %v", m, p.posted, p.err)
+	}
+	if len(w.fake.PR(7).Reviews) != 1 {
+		t.Error("a notice asked someone to reopen an open thread")
+	}
+	w.fake.SetResolved(7, th.ID, true)
+	if p = w.pass("", ""); lastTransition(t, th).Kind != state.KindSettled {
+		t.Fatalf("resolution didn't settle it: %+v", p.posted)
+	}
+}

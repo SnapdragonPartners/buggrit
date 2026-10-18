@@ -557,8 +557,11 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   while the verifier ran. A run killed between the two then leaves no
   marker, and the next run decides again. Every other transition
   posts its reply first and leaves the resolution to repair. If GitHub
-  refuses the unresolve (§3), the marker records `"left_resolved":true`,
-  and only a reply settles that finding.
+  refuses the unresolve (§3) and the thread is still resolved, the marker
+  records `"left_resolved":true`, and only a reply settles that finding.
+  GitHub refuses by token, not by thread, so after any refusal buggrit
+  reads the thread's current resolution. A thread already as wanted counts
+  as neither refused nor needing manual action.
 - **Never say the same thing twice.** If buggrit's latest transition already
   says a finding is open (`reopened`, `regressed` or `rebutted`) and no
   human has commented since, a resolved thread is just unresolved, with no

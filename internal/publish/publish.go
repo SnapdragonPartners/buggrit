@@ -20,6 +20,7 @@ type GitHub interface {
 	Reply(ctx context.Context, repo github.Repo, number int, commentID int64, body string) (*github.Comment, error)
 	ResolveThread(ctx context.Context, threadID string) error
 	UnresolveThread(ctx context.Context, threadID string) error
+	ThreadResolved(ctx context.Context, threadID string) (bool, error)
 }
 
 // Posted reports what Publish created.
@@ -211,7 +212,9 @@ func postReply(ctx context.Context, gh GitHub, fence *github.Fence, ref review.P
 
 // setResolution resolves or unresolves tr's thread if it wasn't already as
 // wanted when read, or always if always is set. refused reports that GitHub
-// wouldn't let buggrit change it.
+// wouldn't let buggrit change a thread that needed changing. GitHub refuses
+// by token, not by thread, so a refusal is checked against the thread as it
+// is now: one already as wanted was refused nothing (§3).
 func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, always bool, out *Posted) (refused bool, err error) {
 	if tr.Want == state.Keep || !always && !tr.Repair() {
 		return false, nil
@@ -228,6 +231,10 @@ func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *revi
 	}
 	switch {
 	case github.IsForbidden(err):
+		if cur, rerr := gh.ThreadResolved(ctx, t.Thread.ID); rerr == nil && cur == resolve {
+			return false, nil
+		}
+		// Still not as wanted, or unknown: a person has to do it.
 		out.Manual = append(out.Manual, Manual{ID: t.ID, URL: t.Root.URL, Resolve: resolve, New: tr.Kind != ""})
 		return true, nil
 	case err != nil:
