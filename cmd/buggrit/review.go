@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -23,25 +24,22 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/publish"
 	"github.com/SnapdragonPartners/buggrit/internal/review"
+	"github.com/SnapdragonPartners/buggrit/internal/state"
 )
 
 // reviewDeps are review's seams to the outside world, replaced in tests:
-// the checkout's HEAD and the finder's chat client. findClient reports each
+// the checkout's HEAD and the stages' chat clients. clients reports each
 // model attempt to obs.
 type reviewDeps struct {
-	head       func(dir string) (string, error)
-	findClient func(cfg *config.Config, obs middleware.Observer) (llms.ChatClient, error)
+	head    func(dir string) (string, error)
+	clients func(cfg *config.Config, obs middleware.Observer) (*llm.Clients, error)
 }
 
 func defaultReviewDeps() reviewDeps {
 	return reviewDeps{
 		head: gitHead,
-		findClient: func(cfg *config.Config, obs middleware.Observer) (llms.ChatClient, error) {
-			clients, err := llm.New(cfg, llm.WithObserver(obs))
-			if err != nil {
-				return nil, err //nolint:wrapcheck // already names the stage
-			}
-			return clients.Find, nil
+		clients: func(cfg *config.Config, obs middleware.Observer) (*llm.Clients, error) {
+			return llm.New(cfg, llm.WithObserver(obs)) //nolint:wrapcheck // already names the stage
 		},
 	}
 }
@@ -104,7 +102,8 @@ func orDefault(v, def string) string {
 
 // runReview runs one pass and publishes it. Exit codes: 0 for a complete
 // pass, a skipped one, or one that stopped because the head moved; 1 for an
-// incomplete pass or an error, so it shows on the PR's checks.
+// incomplete pass (including earlier findings left unverified) or an
+// error, so it shows on the PR's checks.
 func runReview(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	return runReviewWith(ctx, defaultReviewDeps(), args, getenv, stdout, stderr)
 }
@@ -121,6 +120,8 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 		return 2
 	}
 	gh := github.NewClient(a.token, github.WithBaseURL(a.apiURL))
+	// The verifier and the finder run at once and both log.
+	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
 	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
 	if a.stepSummary != "" && summary != "" {
@@ -164,7 +165,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if err != nil {
 		return r.fail(err)
 	}
-	client, err := r.deps.findClient(cfg, modelLog{r.stderr})
+	clients, err := r.deps.clients(cfg, modelLog{r.stderr})
 	if err != nil {
 		return r.fail(err)
 	}
@@ -176,7 +177,8 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: head}
 	say(r.stderr, "buggrit: reviewing %s#%d at %s with %s\n", r.repo, pr.Number, short(head), cfg.Stage(config.StageFind).Model)
-	res, err := review.Review(ctx, ref, ws, r.gh, &review.Options{Config: cfg, Find: client, OnToolCall: r.logTool})
+	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool}
+	res, err := review.Review(ctx, ref, ws, r.gh, opts)
 	if errors.Is(err, github.ErrHeadMoved) {
 		return r.stop(err.Error())
 	}
@@ -201,10 +203,14 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 		case posted.FellBack:
 			say(r.stderr, "buggrit: GitHub rejected a line anchor; findings were posted at file level\n")
 		}
+		for i := range posted.Manual {
+			m := &posted.Manual[i]
+			say(r.stderr, "buggrit: GitHub refused to change the resolution of %s; do it by hand: %s\n", m.ID, m.URL)
+		}
 	}
 	say(r.stdout, "buggrit: %s\n", publish.Status(res))
 	code := 0
-	if !res.Skipped && !res.Complete {
+	if !res.Done() {
 		code = 1
 	}
 	return code, jobSummary(res, cfg)
@@ -250,7 +256,7 @@ func (r *reviewer) loadConfig(ctx context.Context, pr *github.PullRequest) (*con
 }
 
 //nolint:gocritic // hugeParam: the signature is fixed by toolloop's OnToolCall
-func (r *reviewer) logTool(e toolloop.ToolCallEvent) {
+func (r *reviewer) logTool(stage config.Stage, e toolloop.ToolCallEvent) {
 	args := truncate(strings.Join(strings.Fields(string(e.Call.Parameters)), " "), 160)
 	state := ""
 	switch {
@@ -259,7 +265,7 @@ func (r *reviewer) logTool(e toolloop.ToolCallEvent) {
 	case e.Result.IsError:
 		state = " (error: " + truncate(firstLine(e.Result.Content), 200) + ")"
 	}
-	say(r.stderr, "buggrit: [%d] %s %s%s %s\n", e.Iteration, e.Call.Name, args, state, e.Latency.Round(time.Millisecond))
+	say(r.stderr, "buggrit: [%s %d] %s %s%s %s\n", stage, e.Iteration, e.Call.Name, args, state, e.Latency.Round(time.Millisecond))
 }
 
 // print shows what a dry run would post.
@@ -267,7 +273,30 @@ func (r *reviewer) print(res *review.Result) {
 	if res.Skipped {
 		return
 	}
-	body, err := publish.ReviewBody(res)
+	for i := range res.Transitions {
+		tr := &res.Transitions[i]
+		var lines []string
+		if tr.Kind != "" {
+			text, err := publish.TransitionBody(tr, res.HeadSHA)
+			if err != nil {
+				say(r.stderr, "buggrit: %v\n", err)
+				continue
+			}
+			lines = append(lines, text)
+		}
+		if tr.Repair() {
+			action := "unresolve"
+			if tr.Want == state.Resolve {
+				action = "resolve"
+			}
+			lines = append(lines, "(then "+action+" the thread)")
+		}
+		say(r.stdout, "=== reply on %s (%s)\n%s\n\n", tr.Tracked.ID, tr.Tracked.Thread.Path, strings.Join(lines, "\n"))
+	}
+	if res.ReconcileOnly {
+		return
+	}
+	body, err := publish.ReviewBody(res, nil)
 	if err != nil {
 		say(r.stderr, "buggrit: %v\n", err)
 	}
@@ -290,21 +319,46 @@ func (r *reviewer) print(res *review.Result) {
 // jobSummary renders the pass for $GITHUB_STEP_SUMMARY (design §8).
 func jobSummary(res *review.Result, cfg *config.Config) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "## buggrit pass %d\n\n**%s**\n\n", res.Pass, publish.Status(res))
+	if res.ReconcileOnly {
+		fmt.Fprintf(&b, "## buggrit\n\n**%s**\n\n%s already had a complete pass; this run only reconciled earlier findings.\n\n",
+			publish.Status(res), short(res.HeadSHA))
+	} else {
+		fmt.Fprintf(&b, "## buggrit pass %d\n\n**%s**\n\n", res.Pass, publish.Status(res))
+	}
 	if res.Scope != "" {
 		fmt.Fprintf(&b, "Scope: %s.\n\n", res.Scope)
 	}
-	if res.Find == nil {
+	if res.Find == nil && res.Verify == nil {
 		return b.String()
 	}
-	u := res.Find.Usage
-	b.WriteString("| Stage | Model | Tool iterations | Input tokens | Output tokens | Reasoning tokens | Wall time |\n|---|---|---|---|---|---|---|\n")
-	fmt.Fprintf(&b, "| find | %s | %d | %d | %d | %d | %s |\n",
-		cfg.Stage(config.StageFind).Model, res.Find.Iterations, u.InputTokens, u.OutputTokens, u.ReasoningTokens, res.Elapsed.Round(time.Second))
+	b.WriteString("| Stage | Model | Tool iterations | Input tokens | Output tokens | Reasoning tokens |\n|---|---|---|---|---|---|\n")
+	row := func(stage config.Stage, iterations int, u *llms.Usage) {
+		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d |\n",
+			stage, cfg.Stage(stage).Model, iterations, u.InputTokens, u.OutputTokens, u.ReasoningTokens)
+	}
+	if res.Verify != nil {
+		row(config.StageVerify, res.Verify.Iterations, &res.Verify.Usage)
+	}
+	if res.Find != nil {
+		row(config.StageFind, res.Find.Iterations, &res.Find.Usage)
+	}
+	fmt.Fprintf(&b, "\nWall time: %s.\n", res.Elapsed.Round(time.Second))
 	if res.Duplicates+res.BelowThreshold > 0 {
 		fmt.Fprintf(&b, "\nNot posted: %d already raised, %d below thresholds.\n", res.Duplicates, res.BelowThreshold)
 	}
 	return b.String()
+}
+
+// lockedWriter serializes writes from concurrent stages.
+type lockedWriter struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p) //nolint:wrapcheck // a transparent wrapper
 }
 
 // gitHead returns the commit checked out in dir.

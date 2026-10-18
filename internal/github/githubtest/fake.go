@@ -29,11 +29,14 @@ const (
 
 // Comment is a stored review comment.
 type Comment struct {
-	CreatedAt  time.Time
-	Author     string
-	Body       string
-	CommitSHA  string
-	NodeID     string
+	CreatedAt time.Time
+	Author    string
+	Body      string
+	CommitSHA string
+	NodeID    string
+	// DiffHunk is what GraphQL reports as the comment's diffHunk. The fake
+	// doesn't compute it; tests set it where it matters.
+	DiffHunk   string
 	DatabaseID int64
 }
 

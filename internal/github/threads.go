@@ -19,6 +19,10 @@ type Comment struct {
 	// CommitSHA is the commit a review comment was made on (empty for
 	// conversation comments and for replies read over REST).
 	CommitSHA string
+	// DiffHunk is the diff excerpt a review comment was made on, read from
+	// GraphQL. For a thread's root it is the original snippet, which the
+	// verifier needs once the anchor is outdated (design §6).
+	DiffHunk string
 	// DatabaseID is the REST ID, used to reply and to edit.
 	DatabaseID int64
 }
@@ -92,6 +96,7 @@ const commentFragment = `fragment threadComment on PullRequestReviewComment {
   databaseId
   body
   url
+  diffHunk
   createdAt
   author { __typename login }
   commit { oid }
@@ -115,6 +120,7 @@ type gqlComment struct {
 	ID         string `json:"id"`
 	Body       string `json:"body"`
 	URL        string `json:"url"`
+	DiffHunk   string `json:"diffHunk"`
 	DatabaseID int64  `json:"databaseId"`
 }
 
@@ -142,6 +148,7 @@ func (g *gqlComment) comment() Comment {
 		DatabaseID: g.DatabaseID,
 		Body:       g.Body,
 		URL:        g.URL,
+		DiffHunk:   g.DiffHunk,
 		CreatedAt:  g.CreatedAt,
 	}
 	if g.Author != nil { // nil for deleted ("ghost") users

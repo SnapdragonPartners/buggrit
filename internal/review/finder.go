@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -70,139 +68,41 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 	}
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
 	submit := &submitTool{env: env, inScope: in.Scope.InScope, incremental: in.Incremental}
-	clock := newPassClock(ctx, time.Now(), in.WrapUp)
-	tools := clock.timed(append(readOnlyTools(env), submit.tool()))
-
-	maxIter := in.MaxIterations
-	if maxIter <= 0 {
-		// toolloop reads <= 0 as its small default; buggrit's 0 means none.
-		// The deadline bounds the run (§9).
-		maxIter = math.MaxInt
+	st := &stage{
+		client:        in.Client,
+		onToolCall:    in.OnToolCall,
+		submitted:     func() bool { return submit.result != nil },
+		purpose:       "buggrit.find",
+		system:        systemPrompt,
+		opening:       openingMessage(in),
+		nudge:         nudge,
+		timeUp:        timeUp,
+		tools:         readOnlyTools(env),
+		terminal:      submit.tool(),
+		maxIterations: in.MaxIterations,
+		wrapUp:        in.WrapUp,
 	}
-
-	// Investigate until the deadline less the wrap-up reserve.
-	investigateCtx := ctx
-	if deadline, ok := ctx.Deadline(); ok && in.WrapUp > 0 {
-		var cancel context.CancelFunc
-		investigateCtx, cancel = context.WithDeadline(ctx, deadline.Add(-in.WrapUp))
-		defer cancel()
+	run, err := st.run(ctx)
+	if err != nil {
+		return nil, err
 	}
-	res, out, err := investigate(investigateCtx, in, tools, submit, maxIter, clock.budget())
-	if err != nil || res.Complete {
-		return res, err
+	res := &FindResult{Usage: run.usage, Iterations: run.iterations, Reason: run.reason}
+	if !run.submitted {
+		return res, nil
 	}
-	// The investigation ran out of time while the pass still has some: make
-	// the model submit what it has. The pass stays incomplete.
-	if investigateCtx != ctx && errors.Is(investigateCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-		wrapUp(ctx, in, submit, res, out)
+	res.Findings, res.Summary = submit.result.Findings, submit.result.Summary
+	switch {
+	case run.wrappedUp:
+		// Submitted only when told time was up: the pass stays incomplete.
+		res.Reason += fmt.Sprintf("; submitted %d %s found before it", len(res.Findings), plural(len(res.Findings), "finding"))
+	case submit.result.Coverage == CoverageComplete:
+		res.Complete = true
+	default:
+		// The model's own account of coverage decides: a partial review
+		// leaves the pass incomplete, so the next run covers it (§9).
+		res.Reason = "the model reported partial coverage"
 	}
 	return res, nil
-}
-
-// investigate is the finder's main loop: tools until submit_findings, with
-// one nudge if the model answers in text. On an incomplete run it returns
-// the last outcome, whose transcript the wrap-up continues.
-func investigate(ctx context.Context, in *FindInput, tools []toolloop.Tool, submit *submitTool, maxIter int, budget string) (*FindResult, *toolloop.Outcome, error) {
-	res := &FindResult{}
-	messages := []llms.Message{llms.UserText(openingMessage(in) + budget)}
-	for attempt := 0; ; attempt++ {
-		out := toolloop.Run(ctx, toolloop.Config{
-			Client: in.Client,
-			Request: llms.ChatRequest{
-				System:   []llms.ContentPart{llms.Text(systemPrompt)},
-				Messages: messages,
-				Purpose:  "buggrit.find",
-			},
-			Tools:         tools,
-			MaxIterations: maxIter - res.Iterations,
-			OnToolCall:    in.OnToolCall,
-		})
-		addUsage(&res.Usage, &out.TotalUsage)
-		res.Iterations += out.Iterations
-
-		if out.Kind == toolloop.OutcomeTerminalTool {
-			res.Findings = submit.result.Findings
-			res.Summary = submit.result.Summary
-			// The model's own account of coverage decides: a partial review
-			// leaves the pass incomplete, so the next run covers it (§9).
-			res.Complete = submit.result.Coverage == CoverageComplete
-			if !res.Complete {
-				res.Reason = "the model reported partial coverage"
-			}
-			return res, &out, nil
-		}
-		if out.Kind == toolloop.OutcomeFinalAnswer && attempt == 0 && res.Iterations < maxIter {
-			messages = append(wellFormed(out.Messages), llms.UserText(nudge))
-			continue
-		}
-		reason, err := incompleteReason(ctx, &out, in.MaxIterations)
-		res.Reason = reason
-		return res, &out, err
-	}
-}
-
-// wrapUpTurns bounds the wrap-up: the forced submission plus resubmissions
-// after validation errors.
-const wrapUpTurns = 3
-
-// wrapUp continues out's transcript with one instruction to submit, forcing
-// submit_findings. Findings it gets are added to res, which stays
-// incomplete; if it gets none, res is unchanged apart from usage.
-func wrapUp(ctx context.Context, in *FindInput, submit *submitTool, res *FindResult, out *toolloop.Outcome) {
-	messages := append(wellFormed(out.Messages), llms.UserText(timeUp))
-	fin := toolloop.Run(ctx, toolloop.Config{
-		Client: in.Client,
-		Request: llms.ChatRequest{
-			System:   []llms.ContentPart{llms.Text(systemPrompt)},
-			Messages: messages,
-			Purpose:  "buggrit.find.wrapup",
-		},
-		Tools:         []toolloop.Tool{submit.tool()},
-		ToolChoice:    llms.ToolChoice{Type: llms.ToolChoiceTool, Name: submitFindingsDef().Name},
-		MaxIterations: wrapUpTurns,
-		OnToolCall:    in.OnToolCall,
-	})
-	addUsage(&res.Usage, &fin.TotalUsage)
-	res.Iterations += fin.Iterations
-	if fin.Kind != toolloop.OutcomeTerminalTool {
-		return
-	}
-	res.Findings = submit.result.Findings
-	res.Summary = submit.result.Summary
-	res.Reason += fmt.Sprintf("; submitted %d %s found before it", len(res.Findings), plural(len(res.Findings), "finding"))
-}
-
-// wellFormed drops a trailing assistant turn that can't be sent back: one
-// whose tool calls have no results (a run canceled mid-tool), or one with no
-// content at all (a reasoning model that spent its whole output budget
-// reasoning). maestro-llms rejects a transcript holding either.
-func wellFormed(messages []llms.Message) []llms.Message {
-	n := len(messages)
-	if n == 0 || messages[n-1].Role != llms.RoleAssistant {
-		return messages
-	}
-	if last := &messages[n-1]; hasToolCalls(last) || !hasContent(last) {
-		return messages[:n-1]
-	}
-	return messages
-}
-
-func hasToolCalls(m *llms.Message) bool {
-	for i := range m.Content {
-		if m.Content[i].ToolCall != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func hasContent(m *llms.Message) bool {
-	for i := range m.Content {
-		if m.Content[i].ToolCall != nil || strings.TrimSpace(m.Content[i].Text) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func plural(n int, word string) string {
@@ -214,11 +114,11 @@ func plural(n int, word string) string {
 
 // incompleteReason says why a run ended without a submission, or returns an
 // error for outcomes that mean a bug rather than a model or deadline problem.
-func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations int) (string, error) {
+func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations int, terminal string) (string, error) {
 	deadline := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	switch out.Kind {
 	case toolloop.OutcomeFinalAnswer:
-		return "the model stopped without submitting findings", nil
+		return "the model stopped without calling " + terminal, nil
 	case toolloop.OutcomeMaxIterations:
 		return fmt.Sprintf("tool iteration ceiling reached (%d)", maxIterations), nil
 	case toolloop.OutcomeCanceled, toolloop.OutcomeLLMError:
@@ -238,10 +138,10 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 		case ctx.Err() != nil:
 			return "canceled", nil //nolint:nilerr // cancellation is an incomplete pass, not a fault
 		}
-		return "", fmt.Errorf("find: %w", out.Err)
+		return "", fmt.Errorf("%s: %w", terminal, out.Err)
 	case toolloop.OutcomeTerminalTool:
 	}
-	return "", fmt.Errorf("find: unexpected tool loop outcome %q", out.Kind)
+	return "", fmt.Errorf("%s: unexpected tool loop outcome %q", terminal, out.Kind)
 }
 
 func addUsage(total, u *llms.Usage) {

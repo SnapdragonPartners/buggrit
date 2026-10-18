@@ -65,6 +65,7 @@ GitHub event
             2. Verify     open findings, findings with new replies, fixed findings whose
                           files changed, stale transitions (§6)
             3. Find       new findings (full pass only; scope from the completed baseline, §7)
+                          Steps 2 and 3 run at once, sharing the pass deadline (§9).
             4. Reconcile  dedupe against history, group into classes, apply thresholds
             5. Publish    head-fenced: one review (N threads), replies, resolve/unresolve,
                           repairs, summary
@@ -77,7 +78,11 @@ one. Every run therefore:
 - looks up the PR's **current** head from the API before checking out, never
   the head in the event payload;
 - picks its mode from state: a full pass if that head has no completed pass,
-  otherwise reconcile only (step 2 plus publish, no finder).
+  otherwise reconcile only (step 2 plus publish, no finder and no review).
+  A reconcile-only run verifies only findings someone has acted on since
+  (a reply or a resolution), plus any the last pass at that head didn't
+  reach (§6). The code is the same as when that pass judged the rest, so
+  judging them again could only add noise.
 
 This keeps an invariant: the last run to start in a PR's group saw the
 latest head, so replacing a pending run never loses work.
@@ -113,6 +118,9 @@ publish.Publish(ctx, publish.GitHub, PRRef, *review.Result) (*publish.Posted, er
 ```
 
 `Review` does steps 0–4 and returns what to post; `Publish` does step 5.
+The thread state machine itself (§6) is pure: `internal/state` replays a
+thread into a finding's state and decides each step from that state and the
+verifier's verdict, so it's tested without models or GitHub.
 `Workspace` is a read-only view of the checkout, and each `GitHub` is an
 interface over the calls that step makes, so the engine can be tested
 against fakes and reused by other front ends. A local front end would call
@@ -375,7 +383,11 @@ its ADR-0017). buggrit calls `toolloop` from one function in
 - **Validation:** `submit_findings` checks every finding: enums, required
   fields, that the path is a changed, in-scope file, and that every line
   exists at the head. It reports all problems at once, so one resubmission
-  can fix them.
+  can fix them. `submit_verdicts` checks that every listed finding has
+  exactly one verdict, that a `fixed` verdict's `evidence_files` include the
+  anchor file, and that `dismissed` is used only on a finding with a new
+  reply. At wrap-up it accepts verdicts for only some findings; the rest are
+  verified on a later run.
 - **Files outside the diff:** a finding about a file the diff doesn't touch,
   such as a stale doc, is anchored at the changed line that made it wrong.
 - **No submission:** a model that answers in text instead of submitting gets
@@ -436,9 +448,22 @@ Every buggrit comment ends with a hidden marker:
 ```
 
 Each buggrit reply in a thread carries a transition marker
-(`{"id":"f-7f3a2c","to":"fixed","sha":"def456"}`). The state of a finding is
-the result of replaying its thread. Replay only counts markers that pass the
-own-comment check in §3; marker text in anyone else's comment is ignored.
+(`{"id":"f-7f3a2c","to":"fixed","kind":"fixed","sha":"def456","seen":1234,"evidence_files":[…]}`).
+The state of a finding is the result of replaying its thread. Replay only
+counts markers that pass the own-comment check in §3; marker text in anyone
+else's comment is ignored, and the comment counts as a human's.
+
+- `kind` says why the transition happened, since several lead to the same
+  state: `fixed`, `regressed`, `reopened` (resolved without a fix),
+  `rebutted` (a reply judged invalid), `needs_human`, `dismissed` (a reply
+  judged valid, or any reply to an advisory finding), and `settled` (a
+  human's reply or resolution after `needs_human`). Rebuttals are counted
+  by kind.
+- `seen` is the database ID of the newest human comment in the thread when
+  the transition was decided. A human comment is **handled** once a
+  transition's `seen` covers it. A reply that lands while buggrit is still
+  deciding, even before buggrit's reply is posted, stays unhandled for the
+  next run.
 The **summary comment** (one per PR, updated in place) is a *derived view*
 that buggrit regenerates every pass. It's never read back as authoritative,
 so it can't drift from the threads.
@@ -480,8 +505,14 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
     actually lives, such as a caller that now initializes the state). The
     list is stored in the transition marker. So undoing a fix in another
     file still triggers re-verification;
-  - every transition whose recorded `sha` isn't in the current head's history
-    (force-push).
+  - every `fixed` finding whose fix commit isn't in the current head's
+    history (force-push or rebase), or whose changes since can't be read.
+    Re-verifying is always safe. `dismissed` doesn't depend on the code,
+    and `open` and `needs_human` findings are verified anyway.
+
+  A `needs_human` finding that a human has replied to or resolved is
+  settled as `dismissed` without a model. A `dismissed` finding is never
+  verified again.
 
   **Why a late transition from an older head is safe.** Suppose run A passes
   the publish fence, then head B is pushed before A's mutation lands. Each
@@ -511,12 +542,27 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   with the thread's actual `isResolved`, including terminal findings. If they
   disagree, it does the missing resolve or unresolve without reposting the
   transition reply. This repairs runs killed between "post marker" and
-  "resolve".
+  "resolve". `fixed` and `dismissed` threads should be resolved, and
+  `needs_human` ones left open. An open thread someone resolved goes to
+  the verifier first, since that's the "resolved without fixing" case.
+- **Never say the same thing twice.** If buggrit's latest transition already
+  says a finding is open (`reopened`, `regressed` or `rebutted`) and no
+  human has commented since, a resolved thread is just unresolved, with no
+  new reply. That covers both a run killed before its unresolve and someone
+  resolving the thread again without a word. A still-fixed finding gets no
+  reply unless someone replied to it. If someone did, a fresh `fixed`
+  transition answers, and it moves the evidence baseline to the current
+  head.
 - **Outdated anchors** (the code moved) are handled by giving the verifier the
-  original snippet plus the current file, not by trusting line numbers.
+  original snippet (the root comment's `diffHunk`, read with the thread) plus
+  the current file, not by trusting line numbers.
 - **Verdicts carry evidence.** `submit_verdicts` returns, for each finding:
-  the state, a short reason, and for `fixed`, a required non-empty
-  `evidence_files` list that includes the anchor file.
+  the state (`fixed`, `open`, or `dismissed` for a reply that holds up), a
+  short reason that's posted as buggrit's reply, and for `fixed`, a required
+  non-empty `evidence_files` list that includes the anchor file. The
+  verifier runs as its own agentic stage (§5) with `get_thread` added to
+  the read-only tools. It's given every selected finding with its anchor,
+  its text, the original snippet and its unhandled replies.
 
 ### Review baseline
 Two SHAs are recorded in the summary marker and in each pass's review body:
@@ -526,6 +572,14 @@ Two SHAs are recorded in the summary marker and in each pass's review body:
 
 Each pass's review body ends with a **pass marker**
 (`{"id":"pass-3","pass":3,"sha":"…","status":"complete"}`, or `"incomplete"`).
+The status follows the finder: `complete` means the pass searched its whole
+scope for new findings. Verification doesn't affect it, because re-running
+the finder over a scope it already searched is the drip-feed that
+incremental scope (§7 rule 2) exists to stop. Findings the verifier didn't
+reach are listed in the marker (`"unverified":["f-…"]`). Nothing was posted
+on their threads, so a reconcile-only run at the same head checks them. In
+the meantime, the pass's status line says `incomplete` and the run exits 1
+(§7 rule 6, §8).
 The review is the last thing a pass posts, after every finding thread, so
 `complete` also means "finished publishing". A head with a complete pass
 gets no new full pass (§2, step 0). A pass that stops partway leaves no
@@ -657,10 +711,21 @@ anchor still covers exactly the lines it replaces. If GitHub rejects a line
 anchor anyway, the review call posts nothing, and its findings are posted at
 file level instead.
 
-The footer above is the target. Until the verifier exists (build step 4) it
-reads "Fix it, or reply explaining why not.", because nothing yet checks the
-next push or reopens a resolved thread. A comment is capped below GitHub's
-65,536-character limit.
+An advisory finding's footer instead offers dismissal: "Fix it and reply
+with the commit, or reply with a reason, such as deferred or intentional, to
+dismiss it." (§7 rule 4). A comment is capped below GitHub's 65,536-character
+limit.
+
+### Transition replies
+
+Each transition is a reply in the finding's thread, carrying its marker
+(§6). The reply opens with the outcome in bold and the reviewed head:
+"**Fixed** at `def4567`.", "**Still present** at `def4567`, so this thread is
+reopened.", "**Regressed** at …", "**Still open** at …" (a rebuttal),
+"**Needs a human.**", "**Dismissed.**". The verifier's reason follows. A
+`fixed` reply also names the evidence files buggrit will watch. When GitHub
+refuses a resolve or unresolve (§3), the pass's review body lists the
+threads to change by hand.
 
 **Fingerprint** (§7 rule 3): a hash of the path, the category, and the
 anchored lines with whitespace normalized (head lines from the checkout,
@@ -678,9 +743,10 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 - Job summary (`$GITHUB_STEP_SUMMARY`): per-stage model, tokens, tool
   iterations, wall time. Useful for tuning even when tokens are free.
 - `buggrit review` exits 0 for a complete pass, a skipped one (the head
-  already has a complete pass, the head moved, or there's no config on the
-  base branch), and 1 for an incomplete pass or an error, so an incomplete
-  pass shows on the PR's checks.
+  already has a complete pass and no earlier finding needs attention, the
+  head moved, or there's no config on the base branch), and 1 for an
+  incomplete pass, earlier findings left unverified, or an error, so an
+  incomplete pass shows on the PR's checks.
 
 ## 9. Limits: unlimited vs budget
 
@@ -700,18 +766,28 @@ without posting looks the same as "no findings" to an agent, which we can't
 allow. An incomplete pass doesn't advance `completed_sha` (§6), so its
 unreviewed scope is covered next time.
 
-**Wrap-up.** The finder investigates until the deadline less a reserve (a
+**Both stages share the deadline.** In a full pass the verifier and the
+finder run at once, each with the whole pass deadline and the same wrap-up
+reserve. Running them together is an optimization, not a requirement. Every
+model call goes through the limiter, so with one free lane (another buggrit
+process may hold the rest) the stages take turns and each gets less done.
+Whichever stage runs out of time reports itself incomplete under the usual
+rules: the finder's unsearched scope is searched again (§6), and unverified
+findings are checked again.
+
+**Wrap-up.** Each stage investigates until the deadline less a reserve (a
 quarter of the time that applies, which is `pass_deadline` or a caller's
-sooner deadline: between one and ten minutes, and never more than half). If it hasn't
-submitted by then, one more turn tells the model time is up and forces
-`submit_findings` with what it has. Those findings are posted, and the pass
-is still marked incomplete. Without this, a slow model (GLM-5.3 can reason
-for minutes on one turn) would lose a whole pass's work at the deadline. Before
-continuing a transcript (the nudge, or the wrap-up), the finder drops a
-trailing assistant turn that maestro-llms would reject. That's either a
-turn that spent its whole output budget on reasoning and came back empty,
-or a turn whose tool calls have no results because the investigation was
-canceled mid-tool.
+sooner deadline: between one and ten minutes, and never more than half). If
+it hasn't submitted by then, one more turn tells the model time is up and
+forces its terminal tool with what it has. The finder's findings are
+posted, and the pass is still marked incomplete. The verifier's verdicts
+are applied, and the findings it left out stay unverified. Without this, a
+slow model (GLM-5.3 can reason for minutes on one turn) would lose a whole
+pass's work at the deadline. Before continuing a transcript (the nudge, or
+the wrap-up), the stage drops a trailing assistant turn that maestro-llms
+would reject. That's either a turn that spent its whole output budget on
+reasoning and came back empty, or a turn whose tool calls have no results
+because the investigation was canceled mid-tool.
 
 **The model knows the clock.** The opening message states the time budget
 and when to submit, and every tool result ends with
@@ -814,7 +890,14 @@ merge gate is the control for those.
    agents. Measures precision, recall and passes to convergence per model.
 
 **Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
-reviews its own PRs. Incremental scope (§7 rule 2) was pulled forward from
+reviews its own PRs. Step 4 is in two PRs. The first adds the verifier, the
+§6 state machine, transitions, and resolve, unresolve and repair. The
+second adds the reply-triggered runs and the bot-event concurrency group
+(§3) to the dogfood workflow. Until the second lands, the workflow runs only
+on pushes and manual dispatch. Reopening a fixed finding that comes back as
+a fingerprint match (§7 rule 3) stays with dedupe in step 5. Until then such
+a candidate is dropped as already raised. The verifier still reopens a
+regression whose evidence files changed. Incremental scope (§7 rule 2) was pulled forward from
 step 5, because dogfooding showed full re-reviews drip-feeding new advisory
 findings into text earlier passes had already seen. The maestro-llms work step 3 needed has shipped:
 terminal tools

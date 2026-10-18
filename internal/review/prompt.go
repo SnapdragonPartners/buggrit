@@ -93,7 +93,7 @@ func openingMessage(in *FindInput) string {
 	}
 	b.WriteString("\n\n")
 
-	writeInstructions(&b, in)
+	writeInstructions(&b, in.Workspace, in.Instructions, in.InstructionFiles)
 	writeOtherThreads(&b, in.OtherThreads)
 
 	b.WriteString("## Changed files\n\n")
@@ -174,21 +174,21 @@ func writeIncremental(b *strings.Builder, inc *Incremental) {
 // review.instructions, within maxInstructionsTotal. review.instructions comes
 // first, since the repository wrote it for buggrit. Files that don't fit are
 // named, so the model can read them with read_file.
-func writeInstructions(b *strings.Builder, in *FindInput) {
+func writeInstructions(b *strings.Builder, ws Workspace, instructions string, instructionFiles []string) {
 	budget := maxInstructionsTotal
-	extra := truncate(strings.TrimSpace(in.Instructions), maxInstructionBytes)
+	extra := truncate(strings.TrimSpace(instructions), maxInstructionBytes)
 	budget -= len(extra)
 
-	files := make([]string, 0, len(in.InstructionFiles))
+	files := make([]string, 0, len(instructionFiles))
 	var omitted []string
 	seen := map[string]bool{}
-	for _, name := range in.InstructionFiles {
-		p, label, ok := instructionPath(in.Workspace, name)
+	for _, name := range instructionFiles {
+		p, label, ok := instructionPath(ws, name)
 		if !ok || seen[p] {
 			continue
 		}
 		seen[p] = true
-		text, complete, err := readPrefix(in.Workspace, p, min(budget, maxInstructionBytes))
+		text, complete, err := readPrefix(ws, p, min(budget, maxInstructionBytes))
 		switch {
 		case err != nil:
 			continue // missing, binary or unreadable: not an instruction file

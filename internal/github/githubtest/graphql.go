@@ -160,7 +160,7 @@ func gqlComment(c *Comment) map[string]any {
 		commit = map[string]any{"oid": c.CommitSHA}
 	}
 	return map[string]any{
-		"id": c.NodeID, "databaseId": c.DatabaseID, "body": c.Body,
+		"id": c.NodeID, "databaseId": c.DatabaseID, "body": c.Body, "diffHunk": c.DiffHunk,
 		"url":       "https://github.example/comment/" + strconv.FormatInt(c.DatabaseID, 10),
 		"createdAt": c.CreatedAt.Format(time.RFC3339),
 		"author":    author, "commit": commit,

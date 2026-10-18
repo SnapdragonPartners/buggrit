@@ -48,7 +48,7 @@ type reconciled struct {
 // reconcile applies the thresholds, anchors each finding, and drops exact
 // duplicates of earlier findings and of each other (design §7 rule 3).
 // Near-duplicate detection by model, and reopening a fixed finding that
-// comes back, arrive with build steps 4 and 5.
+// comes back as a fingerprint match, arrive with build step 5.
 func reconcile(findings []Finding, in *reconcileInput) reconciled {
 	var out reconciled
 	seen := map[string]bool{}

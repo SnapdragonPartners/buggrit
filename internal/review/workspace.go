@@ -1,5 +1,5 @@
-// Package review is buggrit's review engine: the agentic finder today, and
-// later the verifier and reconcile stages (docs/design.md §2, §5).
+// Package review is buggrit's review engine: the agentic verifier and
+// finder, and reconcile (docs/design.md §2, §5, §6).
 //
 // The engine sees the checkout only through a Workspace, a read-only fs.FS,
 // and reaches models only through llms.ChatClient, so it carries nothing

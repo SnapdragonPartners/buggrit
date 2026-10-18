@@ -14,7 +14,9 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
+	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/review"
+	"github.com/SnapdragonPartners/buggrit/internal/state"
 )
 
 const (
@@ -34,11 +36,13 @@ const (
 )
 
 type reviewEnv struct {
-	deps    reviewDeps
-	fake    *githubtest.Server
-	env     map[string]string
-	model   *testllm.FakeChatClient
-	summary string
+	deps  reviewDeps
+	fake  *githubtest.Server
+	env   map[string]string
+	model *testllm.FakeChatClient
+	// verifier is the verify stage's client; nil until a test needs one.
+	verifier *testllm.FakeChatClient
+	summary  string
 }
 
 // setupReview runs review against the fake GitHub with a fake model, a
@@ -62,11 +66,11 @@ func setupReview(t *testing.T, model *testllm.FakeChatClient) *reviewEnv {
 
 	e.deps = reviewDeps{
 		head: func(string) (string, error) { return head, nil },
-		findClient: func(cfg *config.Config, _ middleware.Observer) (llms.ChatClient, error) {
+		clients: func(cfg *config.Config, _ middleware.Observer) (*llm.Clients, error) {
 			if cfg.Stage(config.StageFind).Model != "glm-5.3" {
 				t.Errorf("config not read from the base branch: %+v", cfg.Models)
 			}
-			return model, nil
+			return &llm.Clients{Find: model, Verify: e.verifier}, nil
 		},
 	}
 	return e
@@ -113,6 +117,56 @@ func TestReviewDryRunPostsNothing(t *testing.T) {
 	}
 	if pr := e.fake.PR(7); len(pr.Threads) != 0 || len(pr.Reviews) != 0 {
 		t.Error("dry run posted")
+	}
+}
+
+// A reply to a finding brings a reconcile-only run at the same head: the
+// verifier judges it, and the dry run shows the reply it would post.
+func TestReviewReconcilesAReply(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, out, errOut := e.run(t); code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	th := e.fake.PR(7).Threads[0]
+	m, err := state.Parse(th.Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake.Reply(7, th.ID, "dan", "This is intentional.")
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
+
+	code, out, errOut := e.run(t, "--dry-run")
+	if code != 0 || !strings.Contains(out, "=== reply on "+m.ID+" (cache.go)\n**Still open** at `1111111`. Nothing documents it.") ||
+		strings.Contains(out, "=== review body") || len(th.Comments) != 2 {
+		t.Fatalf("dry run: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
+	code, out, _ = e.run(t)
+	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 rebutted") || len(th.Comments) != 3 {
+		t.Fatalf("publish: exit %d, %s", code, out)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "| verify | glm-5.3 | 1 |") || !strings.Contains(string(summary), "only reconciled earlier findings") {
+		t.Errorf("job summary = %s, %v", summary, err)
+	}
+}
+
+// Earlier findings left unverified make the run fail, though the finder
+// completed.
+func TestReviewUnverifiedExitsNonZero(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, _, _ := e.run(t); code != 0 {
+		t.Fatal("first run failed")
+	}
+	th := e.fake.PR(7).Threads[0]
+	e.fake.Reply(7, th.ID, "dan", "Disagree.")
+	e.verifier = &testllm.FakeChatClient{Text: "just chatting"}
+	code, out, _ := e.run(t)
+	if code != 1 || !strings.Contains(out, "incomplete at 1111111: verification: the model stopped without calling submit_verdicts; 1 of 1 earlier finding not verified") {
+		t.Fatalf("exit %d, %s", code, out)
 	}
 }
 

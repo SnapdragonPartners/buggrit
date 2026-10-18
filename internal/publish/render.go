@@ -51,12 +51,66 @@ func findingText(c *review.Candidate, suggestion bool) string {
 		}
 		fmt.Fprintf(&b, "Also applies to: %s (same class: *%s*).\n\n", strings.Join(locs, ", "), c.Class)
 	}
-	weight := "advisory, non-blocking"
+	weight, note := "advisory, non-blocking", advisoryNote
 	if c.Blocking() {
-		weight = "blocking"
+		weight, note = "blocking", actNote
 	}
-	fmt.Fprintf(&b, "<sub>buggrit %s · %s · Fix it, or reply explaining why not.</sub>", c.ID, weight)
+	fmt.Fprintf(&b, "<sub>buggrit %s · %s · %s</sub>", c.ID, weight, note)
 	return b.String()
+}
+
+// actNote tells the reader of a finding how buggrit treats what they do
+// next (design §8).
+const actNote = "Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push; " +
+	"resolving the thread without a fix will reopen it."
+
+// advisoryNote is actNote for an advisory finding, where any reasoned reply
+// dismisses it (§7 rule 4).
+const advisoryNote = "Fix it and reply with the commit, or reply with a reason, such as deferred or intentional, to dismiss it. " +
+	"buggrit checks on the next push; resolving the thread without a fix will reopen it."
+
+// TransitionBody renders the reply that records a transition of an earlier
+// finding, at head sha, ending with its transition marker (design §6).
+func TransitionBody(tr *review.Transition, sha string) (string, error) {
+	t := tr.Tracked
+	at := "`" + short(sha) + "`"
+	reason := strings.TrimSpace(tr.Reason)
+	var lead, note string
+	switch tr.Kind {
+	case state.KindFixed:
+		lead = "**Fixed** at " + at + ". " + reason
+		note = "checked against " + strings.Join(tr.Evidence, ", ") + "; if those files change, buggrit checks again"
+	case state.KindRegressed:
+		lead = "**Regressed** at " + at + ", so this thread is reopened. " + reason
+		note = actNote
+	case state.KindReopened:
+		lead = "**Still present** at " + at + ", so this thread is reopened. " + reason
+		note = actNote
+	case state.KindRebutted:
+		lead = "**Still open** at " + at + ". " + reason
+		note = "Fix it, or reply again if you still disagree. buggrit argues a finding only a set number of times, then leaves it to a human."
+	case state.KindNeedsHuman:
+		lead = "**Needs a human.** " + reason
+		note = "buggrit won't argue further. The next reply or resolution, by anyone, settles this finding as dismissed."
+	case state.KindDismissed:
+		lead = "**Dismissed.** " + reason
+		note = "buggrit won't raise this again"
+	case state.KindSettled:
+		lead = "**Dismissed**, settled by resolving the thread."
+		if n := len(t.Pending); n > 0 {
+			lead = "**Dismissed**, settled by " + t.Pending[n-1].Author + "'s reply."
+		}
+		note = "buggrit won't raise this again"
+	default:
+		return "", fmt.Errorf("render %s: unknown transition %q", t.ID, tr.Kind)
+	}
+	text := fmt.Sprintf("%s\n\n<sub>buggrit %s · %s</sub>", strings.TrimSpace(lead), t.ID, note)
+	m := &state.Marker{ID: t.ID, To: tr.Kind.To(), Kind: tr.Kind, SHA: sha, Seen: tr.Seen, Evidence: tr.Evidence}
+	body, err := state.Append(capBody(text), m)
+	if err != nil {
+		return "", fmt.Errorf("render %s: %w", t.ID, err)
+	}
+	return body, nil
 }
 
 // codeFence returns a backtick fence longer than any run of backticks in s,
@@ -78,13 +132,25 @@ func codeFence(s string) string {
 // summary.
 func Status(res *review.Result) string {
 	at := short(res.HeadSHA)
-	switch {
-	case res.Skipped:
+	if res.Skipped {
 		return fmt.Sprintf("skipped at %s: %s", at, res.SkipReason)
-	case !res.Complete:
-		return fmt.Sprintf("incomplete at %s: %s", at, res.Reason)
-	case len(res.Findings) == 0:
-		return fmt.Sprintf("complete at %s: no new findings", at)
+	}
+	var parts []string
+	if !res.ReconcileOnly && res.Complete {
+		parts = append(parts, newFindings(res))
+	}
+	if e := earlier(res); e != "" {
+		parts = append(parts, e)
+	}
+	if !res.Done() {
+		return fmt.Sprintf("incomplete at %s: %s", at, strings.Join(append([]string{res.Reason}, parts...), "; "))
+	}
+	return fmt.Sprintf("complete at %s: %s", at, strings.Join(parts, "; "))
+}
+
+func newFindings(res *review.Result) string {
+	if len(res.Findings) == 0 {
+		return "no new findings"
 	}
 	blocking := 0
 	for i := range res.Findings {
@@ -92,13 +158,61 @@ func Status(res *review.Result) string {
 			blocking++
 		}
 	}
-	return fmt.Sprintf("complete at %s: %d new %s (%d blocking, %d advisory)",
-		at, len(res.Findings), plural(len(res.Findings), "finding"), blocking, len(res.Findings)-blocking)
+	return fmt.Sprintf("%d new %s (%d blocking, %d advisory)",
+		len(res.Findings), plural(len(res.Findings), "finding"), blocking, len(res.Findings)-blocking)
+}
+
+// kindLabel names a kind of transition in the status line; a step with no
+// kind is a repair.
+func kindLabel(k state.Kind) string {
+	switch k {
+	case "":
+		return "repaired"
+	case state.KindNeedsHuman:
+		return "sent to a human"
+	case state.KindSettled:
+		return "dismissed"
+	}
+	return string(k)
+}
+
+// earlier summarizes what the pass did with earlier findings, or "" if it
+// did nothing visible. A finding verified with no change counts as
+// unchanged.
+func earlier(res *review.Result) string {
+	counts := map[string]int{}
+	var order []string
+	add := func(label string) {
+		if counts[label] == 0 {
+			order = append(order, label)
+		}
+		counts[label]++
+	}
+	changed := map[string]bool{}
+	for i := range res.Transitions {
+		tr := &res.Transitions[i]
+		add(kindLabel(tr.Kind))
+		changed[tr.Tracked.ID] = tr.Kind != ""
+	}
+	for i := range res.Checks {
+		if id := res.Checks[i].Tracked.ID; res.Verify != nil && res.Verify.Verdicts[id] != nil && !changed[id] {
+			add("unchanged")
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	out := make([]string, len(order))
+	for i, label := range order {
+		out[i] = fmt.Sprintf("%d %s", counts[label], label)
+	}
+	return "earlier findings: " + strings.Join(out, ", ")
 }
 
 // ReviewBody renders the pass's review body, ending with its pass marker
-// (design §6, "Review baseline").
-func ReviewBody(res *review.Result) (string, error) {
+// (design §6, "Review baseline"). manual lists threads GitHub wouldn't
+// resolve or reopen for buggrit (§3).
+func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**buggrit** pass %d\n\n", res.Pass)
 	if res.Scope != "" {
@@ -114,6 +228,8 @@ func ReviewBody(res *review.Result) (string, error) {
 		b.WriteString(" Nothing from this pass was posted; the next run at this commit tries again.")
 	case !res.Complete:
 		b.WriteString(" The findings it reached are posted; the next run at this commit reviews it again.")
+	case len(res.Unverified) > 0:
+		b.WriteString(" Earlier findings it didn't reach are checked on the next run.")
 	}
 	b.WriteString("\n")
 	var dropped []string
@@ -126,11 +242,22 @@ func ReviewBody(res *review.Result) (string, error) {
 	if len(dropped) > 0 {
 		fmt.Fprintf(&b, "\nNot posted: %s.\n", strings.Join(dropped, ", "))
 	}
+	if len(manual) > 0 {
+		b.WriteString("\nGitHub didn't let buggrit change these threads' resolution; please do it by hand:\n")
+		for i := range manual {
+			verb := "reopen"
+			if manual[i].Resolve {
+				verb = "resolve"
+			}
+			fmt.Fprintf(&b, "- %s %s %s\n", verb, manual[i].ID, manual[i].URL)
+		}
+	}
 	status := state.PassComplete
 	if !res.Complete {
 		status = state.PassIncomplete
 	}
-	body, err := state.Append(capBody(b.String()), &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status})
+	m := &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status, Unverified: res.Unverified}
+	body, err := state.Append(capBody(b.String()), m)
 	if err != nil {
 		return "", fmt.Errorf("render review body: %w", err)
 	}
