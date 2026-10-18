@@ -452,3 +452,31 @@ func TestLifecycleForcePushBackToReviewedHead(t *testing.T) {
 		t.Fatalf("back at the fixed head: %+v, %v", p.res, p.err)
 	}
 }
+
+// Someone resolving the thread while the verifier runs doesn't settle the
+// finding it then sends to a human: the unresolve goes out regardless of
+// the thread as first read.
+func TestLifecycleNeedsHumanResolvedMidRun(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Convergence.MaxRebuttals = 0
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Disagree.")
+	verifier := &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		w.fake.SetResolved(7, th.ID, true) // the author resolves mid-run
+		return testllm.ToolCallResponse("1", "submit_verdicts", verdict(id, "open", "Still wrong.")), nil
+	}}
+	pref := review.PRRef{Repo: ref.Repo, Number: 7, HeadSHA: w.head()}
+	res, err := review.Review(context.Background(), pref, w.ws, w.gh, &review.Options{Config: &w.cfg, Find: model("submit_findings", ""), Verify: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Publish(context.Background(), w.gh, pref, res); err != nil {
+		t.Fatal(err)
+	}
+	if th.Resolved || lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatalf("resolved %v", th.Resolved)
+	}
+	if p := w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatalf("settled without a human: %+v", p.posted)
+	}
+}

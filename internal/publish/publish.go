@@ -143,11 +143,13 @@ func publishReview(ctx context.Context, gh GitHub, ref review.PRRef, res *review
 // killed in between leaves the marker for the next run to repair from. A
 // needs_human transition goes the other way: replay reads a resolution
 // under its marker as a human settling the finding, so the thread must be
-// unresolved before the marker lands (§6). GitHub refusing a resolution is
+// unresolved before the marker lands (§6). That unresolve is sent whatever
+// the thread looked like when it was read, since someone may have resolved
+// it while the verifier ran. GitHub refusing a resolution is
 // recorded in out.Manual, not an error (design §3).
 func publishTransition(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, tr *review.Transition, out *Posted) error {
 	if tr.Kind == state.KindNeedsHuman {
-		refused, err := setResolution(ctx, gh, fence, tr, out)
+		refused, err := setResolution(ctx, gh, fence, tr, true, out)
 		if err != nil {
 			return err
 		}
@@ -156,7 +158,7 @@ func publishTransition(ctx context.Context, gh GitHub, fence *github.Fence, ref 
 	if err := postReply(ctx, gh, fence, ref, res, tr, false, out); err != nil {
 		return err
 	}
-	_, err := setResolution(ctx, gh, fence, tr, out)
+	_, err := setResolution(ctx, gh, fence, tr, false, out)
 	return err
 }
 
@@ -180,10 +182,11 @@ func postReply(ctx context.Context, gh GitHub, fence *github.Fence, ref review.P
 	return nil
 }
 
-// setResolution resolves or unresolves tr's thread if it isn't already as
-// wanted. refused reports that GitHub wouldn't let buggrit change it.
-func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, out *Posted) (refused bool, err error) {
-	if !tr.Repair() {
+// setResolution resolves or unresolves tr's thread if it wasn't already as
+// wanted when read, or always if always is set. refused reports that GitHub
+// wouldn't let buggrit change it.
+func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, always bool, out *Posted) (refused bool, err error) {
+	if tr.Want == state.Keep || !always && !tr.Repair() {
 		return false, nil
 	}
 	if ferr := fence.Check(ctx); ferr != nil {

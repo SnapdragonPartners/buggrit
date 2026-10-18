@@ -549,8 +549,10 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   the verifier first, since that's the "resolved without fixing" case.
 - **A needs_human thread is unresolved before its marker lands.** Replay
   reads a resolution under a `needs_human` marker as a human settling the
-  finding, so the order matters there. A run killed between the two then
-  leaves no marker, and the next run decides again. Every other transition
+  finding, so the order matters there. The unresolve is sent even if the
+  thread looked open when it was read, since someone may have resolved it
+  while the verifier ran. A run killed between the two then leaves no
+  marker, and the next run decides again. Every other transition
   posts its reply first and leaves the resolution to repair. If GitHub
   refuses the unresolve (§3), the marker records `"left_resolved":true`,
   and only a reply settles that finding.
