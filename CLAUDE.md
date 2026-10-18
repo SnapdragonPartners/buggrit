@@ -32,10 +32,10 @@ internal/config/   # .github/buggrit.json: strict decoding, defaults, validation
 internal/llm/      # Config → maestro-llms chat clients per stage, shared limiter (design §4, §9)
 internal/github/   # REST + GraphQL client, diff parsing, line → anchor mapping, head fence (design §2, §3, §8)
 internal/github/githubtest/  # httptest fake of the GitHub endpoints we use (design §11)
-internal/state/    # Comment markers and the own-comment check; later the ledger and state machine (design §6)
+internal/state/    # Comment markers, the own-comment check, thread replay and the state machine; later the ledger (design §6)
 internal/glob/     # include/exclude path globs with ** (design §4)
-internal/review/   # Engine: Review() entry point, workspace, read-only tools, prompts, agentic finder, reconcile (design §2, §5, §7)
-internal/publish/  # Render finding comments and the pass review, post them behind the head fence (design §6, §8)
+internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the shared stage loop, agentic verifier and finder, reconcile (design §2, §5, §6, §7)
+internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
 docs/design.md     # The binding design
 hooks/             # Git hooks (pre-push: lint + test)
 ```

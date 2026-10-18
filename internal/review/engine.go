@@ -91,7 +91,7 @@ type Result struct {
 // Done reports whether the pass finished everything it set out to do: its
 // whole scope searched and every selected finding verified. The status
 // line says "incomplete" otherwise (§7 rule 6).
-func (r *Result) Done() bool { return r.Skipped || r.Complete && len(r.Unverified) == 0 }
+func (r *Result) Done() bool { return r.Skipped || (r.Complete && len(r.Unverified) == 0) }
 
 // Review runs one pass over ref, whose head is checked out as ws: pick the
 // mode, load the PR and its history, verify earlier findings and find new

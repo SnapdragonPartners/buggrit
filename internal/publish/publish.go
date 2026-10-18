@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/review"
@@ -44,6 +45,9 @@ type Manual struct {
 	URL string
 	// Resolve is true for a thread to resolve, false for one to reopen.
 	Resolve bool
+	// New is set when the refusal follows a transition posted this run,
+	// rather than a repair retried from an earlier one.
+	New bool
 }
 
 // Publish posts a pass. First the transitions of earlier findings: each
@@ -73,7 +77,7 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 		}
 	}
 	if res.ReconcileOnly {
-		return out, nil
+		return out, publishManual(ctx, gh, fence, ref, res, out)
 	}
 	if len(res.Transitions) > 0 {
 		// The transitions took time; check again before the new threads.
@@ -134,6 +138,29 @@ func publishReview(ctx context.Context, gh GitHub, ref review.PRRef, res *review
 		return fmt.Errorf("publish: %w", err)
 	}
 	out.Threads += len(lines)
+	out.ReviewID = rv.ID
+	return nil
+}
+
+// publishManual tells the PR about resolutions GitHub refused in a
+// reconcile-only run, which posts no pass review to list them in (§3). It
+// posts only for refusals that follow a transition from this run; a repair
+// retried every run is already known, and stays in the job summary.
+func publishManual(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, out *Posted) error {
+	if !slices.ContainsFunc(out.Manual, func(m Manual) bool { return m.New }) {
+		return nil
+	}
+	if err := fence.Check(ctx); err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
+	body, err := ManualBody(res, out.Manual)
+	if err != nil {
+		return err
+	}
+	rv, err := gh.CreateReview(ctx, ref.Repo, ref.Number, &github.Review{Body: body, CommitID: res.HeadSHA})
+	if err != nil {
+		return fmt.Errorf("publish: %w", err)
+	}
 	out.ReviewID = rv.ID
 	return nil
 }
@@ -201,7 +228,7 @@ func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *revi
 	}
 	switch {
 	case github.IsForbidden(err):
-		out.Manual = append(out.Manual, Manual{ID: t.ID, URL: t.Root.URL, Resolve: resolve})
+		out.Manual = append(out.Manual, Manual{ID: t.ID, URL: t.Root.URL, Resolve: resolve, New: tr.Kind != ""})
 		return true, nil
 	case err != nil:
 		return false, fmt.Errorf("publish %s: %w", t.ID, err)

@@ -250,14 +250,8 @@ func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 		fmt.Fprintf(&b, "\nNot posted: %s.\n", strings.Join(dropped, ", "))
 	}
 	if len(manual) > 0 {
-		b.WriteString("\nGitHub didn't let buggrit change these threads' resolution; please do it by hand:\n")
-		for i := range manual {
-			verb := "reopen"
-			if manual[i].Resolve {
-				verb = "resolve"
-			}
-			fmt.Fprintf(&b, "- %s %s %s\n", verb, manual[i].ID, manual[i].URL)
-		}
+		b.WriteByte('\n')
+		b.WriteString(ManualList(manual))
 	}
 	status := state.PassComplete
 	if !res.Complete {
@@ -267,6 +261,33 @@ func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 	body, err := state.Append(capBody(b.String()), m)
 	if err != nil {
 		return "", fmt.Errorf("render review body: %w", err)
+	}
+	return body, nil
+}
+
+// ManualList asks a person to make the resolution changes GitHub refused
+// buggrit (§3).
+func ManualList(manual []Manual) string {
+	var b strings.Builder
+	b.WriteString("GitHub didn't let buggrit change these threads' resolution; please do it by hand:\n")
+	for i := range manual {
+		verb := "reopen"
+		if manual[i].Resolve {
+			verb = "resolve"
+		}
+		fmt.Fprintf(&b, "- %s %s %s\n", verb, manual[i].ID, manual[i].URL)
+	}
+	return b.String()
+}
+
+// ManualBody is the review a reconcile-only run posts when GitHub refused a
+// resolution it needed. It carries a marker naming it, which replay and the
+// baseline ignore.
+func ManualBody(res *review.Result, manual []Manual) (string, error) {
+	text := fmt.Sprintf("**buggrit** at %s\n\n%s", short(res.HeadSHA), ManualList(manual))
+	body, err := state.Append(capBody(text), &state.Marker{ID: "manual", SHA: res.HeadSHA})
+	if err != nil {
+		return "", fmt.Errorf("render manual list: %w", err)
 	}
 	return body, nil
 }

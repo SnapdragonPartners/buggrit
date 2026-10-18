@@ -535,3 +535,23 @@ func TestLifecycleReplyBeforeEscalationDoesNotSettle(t *testing.T) {
 		t.Fatalf("a later reply didn't settle it: %+v", p.posted)
 	}
 }
+
+// A reconcile-only run posts no pass review, so a resolution GitHub refuses
+// there gets a review of its own listing what to do by hand (§3). A repair
+// retried on a later run doesn't post it again.
+func TestLifecycleReconcileOnlyReportsRefusal(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Fixed: entries is now made in Put.")
+	w.fake.ForbidResolve = true
+	p := w.pass("", verdict(id, "fixed", "Put now makes the map.", "cache.go"))
+	reviews := w.fake.PR(7).Reviews
+	if p.err != nil || !p.res.ReconcileOnly || len(reviews) != 2 || !strings.Contains(reviews[1].Body, "please do it by hand:\n- resolve "+id) {
+		t.Fatalf("refusal not reported: %v; %d reviews", p.err, len(reviews))
+	}
+	// The notice isn't a pass: the head still has its complete pass.
+	p = w.pass("", "")
+	if p.err != nil || !p.res.ReconcileOnly || len(p.posted.Manual) != 1 || len(w.fake.PR(7).Reviews) != 2 {
+		t.Fatalf("retried repair: %+v, %v; %d reviews", p.posted, p.err, len(w.fake.PR(7).Reviews))
+	}
+}

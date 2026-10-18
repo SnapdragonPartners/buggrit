@@ -743,7 +743,11 @@ reopened.", "**Regressed** at …", "**Still open** at …" (a rebuttal),
 "**Needs a human.**", "**Dismissed.**". The verifier's reason follows. A
 `fixed` reply also names the evidence files buggrit will watch. When GitHub
 refuses a resolve or unresolve (§3), the pass's review body lists the
-threads to change by hand.
+threads to change by hand, and so does the job summary. A reconcile-only
+run posts no pass review. If a transition it posted has its resolution
+refused, it posts a short review with the list. A repair that keeps being
+refused on later runs is listed only in the job summary, so that review
+isn't repeated on every run.
 
 **Fingerprint** (§7 rule 3): a hash of the path, the category, and the
 anchored lines with whitespace normalized (head lines from the checkout,

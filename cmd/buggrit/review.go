@@ -191,6 +191,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 // finish publishes the pass, or prints it for a dry run, and reports it.
 func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Result, cfg *config.Config) (int, string) {
+	var manual []publish.Manual
 	if r.args.dryRun {
 		r.print(res)
 	} else {
@@ -207,13 +208,14 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 			m := &posted.Manual[i]
 			say(r.stderr, "buggrit: GitHub refused to change the resolution of %s; do it by hand: %s\n", m.ID, m.URL)
 		}
+		manual = posted.Manual
 	}
 	say(r.stdout, "buggrit: %s\n", publish.Status(res))
 	code := 0
 	if !res.Done() {
 		code = 1
 	}
-	return code, jobSummary(res, cfg)
+	return code, jobSummary(res, cfg, manual)
 }
 
 // stop ends a run that has nothing to do; that isn't a failure.
@@ -274,24 +276,7 @@ func (r *reviewer) print(res *review.Result) {
 		return
 	}
 	for i := range res.Transitions {
-		tr := &res.Transitions[i]
-		var lines []string
-		if tr.Kind != "" {
-			text, err := publish.TransitionBody(tr, res.HeadSHA, false)
-			if err != nil {
-				say(r.stderr, "buggrit: %v\n", err)
-				continue
-			}
-			lines = append(lines, text)
-		}
-		if tr.Repair() {
-			action := "unresolve"
-			if tr.Want == state.Resolve {
-				action = "resolve"
-			}
-			lines = append(lines, "(then "+action+" the thread)")
-		}
-		say(r.stdout, "=== reply on %s (%s)\n%s\n\n", tr.Tracked.ID, tr.Tracked.Thread.Path, strings.Join(lines, "\n"))
+		r.printTransition(&res.Transitions[i], res.HeadSHA)
 	}
 	if res.ReconcileOnly {
 		return
@@ -316,8 +301,33 @@ func (r *reviewer) print(res *review.Result) {
 	}
 }
 
-// jobSummary renders the pass for $GITHUB_STEP_SUMMARY (design §8).
-func jobSummary(res *review.Result, cfg *config.Config) string {
+// printTransition shows a transition's steps in the order Publish takes
+// them: a needs_human thread is unresolved before its reply (§6).
+func (r *reviewer) printTransition(tr *review.Transition, sha string) {
+	var steps []string
+	if tr.Kind != "" {
+		text, err := publish.TransitionBody(tr, sha, false)
+		if err != nil {
+			say(r.stderr, "buggrit: %v\n", err)
+			return
+		}
+		steps = append(steps, text)
+	}
+	if tr.Kind == state.KindNeedsHuman {
+		steps = append([]string{"(first unresolve the thread; if GitHub refuses, the marker records left_resolved)"}, steps...)
+	} else if tr.Repair() {
+		action := "unresolve"
+		if tr.Want == state.Resolve {
+			action = "resolve"
+		}
+		steps = append(steps, "(then "+action+" the thread)")
+	}
+	say(r.stdout, "=== reply on %s (%s)\n%s\n\n", tr.Tracked.ID, tr.Tracked.Thread.Path, strings.Join(steps, "\n"))
+}
+
+// jobSummary renders the pass for $GITHUB_STEP_SUMMARY (design §8), with
+// the threads GitHub wouldn't let buggrit resolve or reopen (§3).
+func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual) string {
 	var b strings.Builder
 	if res.ReconcileOnly {
 		fmt.Fprintf(&b, "## buggrit\n\n**%s**\n\n%s already had a complete pass; this run only reconciled earlier findings.\n\n",
@@ -327,6 +337,10 @@ func jobSummary(res *review.Result, cfg *config.Config) string {
 	}
 	if res.Scope != "" {
 		fmt.Fprintf(&b, "Scope: %s.\n\n", res.Scope)
+	}
+	if len(manual) > 0 {
+		b.WriteString(publish.ManualList(manual))
+		b.WriteByte('\n')
 	}
 	if res.Find == nil && res.Verify == nil {
 		return b.String()
