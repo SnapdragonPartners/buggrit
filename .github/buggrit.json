@@ -6,7 +6,8 @@
       "base_url": "https://gw.lunaroute.com/v1",
       "model": "deepseek-4.1-flash",
       "api_key_env": "LUNAROUTE_API_KEY",
-      "max_output_tokens": 32768
+      "max_output_tokens": 32768,
+      "reasoning_effort": "medium"
     }
   },
   "limits": {
