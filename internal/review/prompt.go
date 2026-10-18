@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"path"
 	"strings"
+
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 )
 
 // Prompt budgets. Past these, the opening message lists what it left out and
@@ -32,8 +34,9 @@ const systemPrompt = `You are buggrit, a code reviewer for a pull request. You r
 
 How to work:
 - The opening message has the pull request description, the repository's instructions, and the diff with head-side line numbers. Start from it, then investigate with the tools: read_file, grep, list_dir, get_diff. Read callers, tests, docs and design files the change touches or relies on. All tools are read-only.
+- Batch your tool calls. The tools return almost instantly; nearly all of a review's time is your own thinking between calls, so every turn costs time whether it makes one call or six. Whenever you know what you need next, request it all in one turn: read a file together with its callers and tests, run several greps at once. Fewer, fuller turns leave more of your time budget for reasoning about what you found.
 - When you are done, call submit_findings exactly once with every finding. If there is nothing worth raising, submit an empty list. Do not answer in plain text.
-- You have a time budget, stated in the opening message, and every tool result ends with the time used. Plan to submit before the wrap-up time. Set coverage to "complete" only if you reviewed the whole change; otherwise set "partial" and say in summary what you did not cover. A partial review is reviewed again on the next run, so report honestly rather than rushing.
+- You have a time budget, stated in the opening message, and every tool result ends with the time used. Plan to submit before the wrap-up time. Set coverage to "complete" only if you reviewed everything in this pass's scope: the whole change on a first pass, or the lines listed under "Scope of this pass" on a later one. Otherwise set "partial" and say in summary what you did not cover. A partial review is reviewed again on the next run, so report honestly rather than rushing.
 
 What to report:
 - Concrete problems introduced or exposed by this change: bugs, unsafe concurrency, mishandled errors, security exposures, broken API contracts, missing tests for new behavior, and documentation drift. Documentation drift means docs, ADRs, help text, comments or config examples that this change made inaccurate; look for it actively, including in files the diff did not touch.
@@ -52,7 +55,7 @@ Report each pattern once, completely:
 - Don't repeat issues already raised in the existing review threads listed in the opening message.
 
 Anchoring:
-- path must be a file this pull request changes. line is a head-side line number as shown in the diff or by read_file; use start_line for a range. A finding about a file the diff doesn't touch (for example a stale doc) is anchored at the changed line that made it wrong, and names the other file in problem and instances.
+- path must be a file this pull request changes. On a later pass, the opening message's "Scope of this pass" section narrows where findings may be anchored; follow its rules. line is a head-side line number as shown in the diff or by read_file; use start_line for a range. A finding about a file the diff doesn't touch (for example a stale doc) is anchored at the changed line that made it wrong, and names the other file in problem and instances.
 - suggestion, if given, is the exact replacement text for the anchored lines and nothing else.
 
 Writing: be specific and brief. problem says what is wrong and why, citing code. impact says what breaks. fix says what to change.`
@@ -97,13 +100,11 @@ func openingMessage(in *FindInput) string {
 	b.WriteString(fileList(in.Diff, in.Scope.InScope, 0, maxPromptFileList))
 	b.WriteString("\nFiles marked \"excluded from review\" may be read for context but must not be the subject of findings.\n\n")
 
+	writeIncremental(&b, in.Incremental)
+
 	b.WriteString("## Diff\n\nHead-side line numbers are on the left; deleted lines have none.\n\n")
 	var skipped []string
-	for i := range in.Diff.Files {
-		f := &in.Diff.Files[i]
-		if !in.Scope.InScope(f.Path()) {
-			continue
-		}
+	for _, f := range diffOrder(in) {
 		text := renderFileDiff(f, 0, maxResultBytes)
 		if b.Len()+len(text) > maxPromptDiffBytes-maxDeferredList {
 			skipped = append(skipped, f.Path())
@@ -126,6 +127,47 @@ func openingMessage(in *FindInput) string {
 	}
 	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
 	return b.String()
+}
+
+// diffOrder returns the in-scope files to show in the diff. On an
+// incremental pass, files with changes since the completed pass come first,
+// so they're the last to be deferred to get_diff.
+func diffOrder(in *FindInput) []*github.FileDiff {
+	var first, rest []*github.FileDiff
+	for i := range in.Diff.Files {
+		f := &in.Diff.Files[i]
+		switch {
+		case !in.Scope.InScope(f.Path()):
+		case in.Incremental != nil && in.Incremental.files[f.Path()]:
+			first = append(first, f)
+		default:
+			rest = append(rest, f)
+		}
+	}
+	return append(first, rest...)
+}
+
+// writeIncremental tells the finder where this pass looks for new findings
+// (design §7 rule 2). submit_findings enforces it, and its error names the
+// lines, so a list cut short for space is recoverable.
+func writeIncremental(b *strings.Builder, inc *Incremental) {
+	if inc == nil {
+		return
+	}
+	fmt.Fprintf(b, "## Scope of this pass\n\n"+
+		"An earlier pass reviewed this pull request through commit %s. Report new findings only on what changed since then, "+
+		"listed below. Use the rest of the pull request and the repository as context: a change here can break code elsewhere, "+
+		"and a finding about that is anchored on the change.\n\n%s\nCoverage refers to what is listed here.\n\n", short(inc.Since), scopeRules)
+	start := b.Len()
+	paths := inc.paths()
+	for i, p := range paths {
+		if b.Len()-start > maxPromptFileList {
+			fmt.Fprintf(b, "(and %d more files; submit_findings names the lines for a file it rejects)\n", len(paths)-i)
+			break
+		}
+		fmt.Fprintf(b, "- %s: %s\n", p, inc.ranges(p))
+	}
+	b.WriteByte('\n')
 }
 
 // writeInstructions adds the repository's instruction files and

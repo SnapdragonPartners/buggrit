@@ -389,8 +389,9 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
 `submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
-`coverage` is required: `complete` if the model reviewed the whole change,
-`partial` if it didn't (it says what it missed in `summary`). A partial
+`coverage` is required: `complete` if the model reviewed the pass's whole
+scope (the whole change, or on a later pass the lines changed since
+`completed_sha`, §7 rule 2), `partial` if it didn't (it says what it missed in `summary`). A partial
 submission's findings are posted, but the pass is incomplete, so the next
 run reviews that head again (§9).
 
@@ -534,7 +535,8 @@ of the threads that did land keeps it from posting them twice.
 Incremental scope (§7) starts from `completed_sha`. An interrupted pass
 (deadline, ceiling, cancellation, fence) doesn't advance it, so the next
 pass covers what was missed. If `completed_sha` isn't an ancestor of HEAD
-(force-push or rebase), the pass falls back to the full PR diff.
+(force-push or rebase), GitHub no longer has it, or GitHub won't diff the
+changes since it, the pass falls back to the full PR diff.
 
 ## 7. Convergence (the critical requirement)
 
@@ -554,6 +556,33 @@ buggrit doesn't end. The rules, in order of importance:
    correct, because fixes can introduce regressions. Code that was already
    reviewed isn't re-reviewed by a model that just happened to notice
    something different this time.
+
+   "Changed since `completed_sha`" comes from GitHub's compare API
+   (`completed_sha...HEAD`), read against the PR's own diff:
+   - A line is in scope if the changes since `completed_sha` add it **and**
+     the PR's diff adds it. A merge from the base branch therefore brings
+     nothing into scope.
+   - A run of lines that is only deleted (not replaced) puts its head-side
+     neighbors in scope, since that's where a finding about the deletion is
+     anchored, but only where the PR's diff also deletes next to them. That
+     keeps a merge's deletions out.
+   - A change with no head-side lines to anchor on (a file emptied or
+     deleted, a binary file, a mode change, a pure rename) puts the file in
+     scope for file-level and deleted-line findings. A change with no text
+     hunks counts only if the PR's diff makes the same kind of change, again
+     to keep a merge's changes out.
+   - Only a finding's **anchor** must be in scope, checked as it will be
+     published: a range GitHub would narrow to its last line is judged by
+     that line, and a line that would fall back to a file-level comment is
+     out of scope. A file-level finding, or one on a deleted line, needs
+     only its file to have changed. A class finding's other instances may
+     be anywhere (rule 1).
+
+   The opening message lists the lines in scope, and `submit_findings`
+   rejects an anchor outside them, naming the lines it would accept. If
+   nothing reviewable changed (say, only a merge from the base branch), the
+   pass completes without running the finder. Each pass's review body
+   states its scope.
 3. **Stable identity and deduplication.** Every candidate is compared to all
    earlier findings, including fixed and dismissed ones. A deterministic
    fingerprint (path, category, normalized snippet) does the first pass and a
@@ -692,6 +721,12 @@ time pressure could make a model submit before it has covered everything,
 `submit_findings` asks for `coverage`, and a `partial` review leaves the
 pass incomplete instead of recording a complete pass over partial work.
 
+**Batched tool calls.** The tools return in milliseconds; a pass's time is
+the model's reasoning between calls, which dogfooding measured at about a
+minute per turn late in a pass. The system prompt therefore tells the model
+to request everything it knows it needs in one turn, and why: fewer, fuller
+turns leave more of the budget for reasoning.
+
 **Concurrency and lanes.** Every model call goes through a `Limiter` seam in
 `internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
 enforce lane limits (for example LunaRoute) or limits shared across runs,
@@ -767,7 +802,7 @@ merge gate is the control for those.
 3. **Agentic finder, end to end:** toolloop with the read-only tools,
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
 4. **Verifier and thread lifecycle:** the state machine in §6, rebuttal judging.
-5. **Convergence controls:** incremental scope, dedupe (including other
+5. **Convergence controls:** dedupe (including other
    reviewers' threads), class sweep, `needs_human`, the non-convergence warning,
    summary ledger, gate check.
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
@@ -779,7 +814,9 @@ merge gate is the control for those.
    agents. Measures precision, recall and passes to convergence per model.
 
 **Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
-reviews its own PRs. The maestro-llms work step 3 needed has shipped:
+reviews its own PRs. Incremental scope (§7 rule 2) was pulled forward from
+step 5, because dogfooding showed full re-reviews drip-feeding new advisory
+findings into text earlier passes had already seen. The maestro-llms work step 3 needed has shipped:
 terminal tools
 ([#53](https://github.com/SnapdragonPartners/maestro-llms/issues/53),
 v0.8.0), the LunaRoute path

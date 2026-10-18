@@ -446,7 +446,8 @@
       {
         "old_path": "script.sh",
         "new_path": "script.sh",
-        "status": "modified"
+        "status": "modified",
+        "mode_changed": true
       },
       {
         "old_path": "with space.go",

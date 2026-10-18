@@ -101,6 +101,9 @@ func Status(res *review.Result) string {
 func ReviewBody(res *review.Result) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**buggrit** pass %d\n\n", res.Pass)
+	if res.Scope != "" {
+		fmt.Fprintf(&b, "**Scope:** %s.\n\n", res.Scope)
+	}
 	if s := strings.TrimSpace(res.Summary); s != "" {
 		b.WriteString(s)
 		b.WriteString("\n\n")

@@ -53,14 +53,14 @@ func (f *Finding) Blocking() bool {
 	return f.Severity == config.SeverityP0 || f.Severity == config.SeverityP1
 }
 
-// Coverage values: whether the model reviewed the whole change.
+// Coverage values: whether the model reviewed the pass's whole scope.
 const (
 	CoverageComplete = "complete"
 	CoveragePartial  = "partial"
 )
 
 // Submission is submit_findings' argument object. Coverage is the model's
-// own account of whether it reviewed the whole change; "partial" leaves the
+// own account of whether it reviewed the pass's whole scope; "partial" leaves the
 // pass incomplete, so the next run reviews it again (design §9).
 type Submission struct {
 	Summary  string    `json:"summary,omitempty"`
@@ -81,13 +81,13 @@ func submitFindingsDef() llms.ToolDefinition {
   "type": "object",
   "properties": {
     "summary": {"type": "string", "description": "One short paragraph on the change overall; with partial coverage, say what you did not get to"},
-    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed the whole change; partial if you ran short of time or could not cover some of it"},
+    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed everything in this pass's scope (the whole change, or on a later pass the lines listed under Scope of this pass); partial if you ran short of time or could not cover some of it"},
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "path": {"type": "string", "description": "A file changed by this pull request"},
+          "path": {"type": "string", "description": "A file changed by this pull request; on a later pass, one changed since the last completed review (see the opening message's scope section)"},
           "line": {"type": "integer", "minimum": 0, "description": "Head-side line the finding anchors to (the last line of a range); 0 for the whole file"},
           "start_line": {"type": "integer", "minimum": 1, "description": "First line of a multi-line range (optional)"},
           "side": {"type": "string", "enum": ["RIGHT", "LEFT"], "description": "RIGHT (default) for head lines; LEFT only for a deleted line, numbered in the base file"},
@@ -128,7 +128,9 @@ func submitFindingsDef() llms.ToolDefinition {
 type submitTool struct {
 	env     *toolEnv
 	inScope func(string) bool
-	result  *Submission
+	// incremental, if set, is where this pass may anchor findings.
+	incremental *Incremental
+	result      *Submission
 }
 
 func (s *submitTool) tool() toolloop.Tool {
@@ -313,6 +315,13 @@ func (s *submitTool) validateAnchor(f *Finding) []string {
 		out = append(out, s.rightProblems(f, fd)...)
 	default:
 		add("side must be RIGHT or LEFT, not %q", f.Side)
+	}
+	if len(out) == 0 {
+		// The scope check reads the anchor, so on an invalid one it would
+		// only add a misleading second problem.
+		if p := s.incremental.check(f, anchor(f, s.env.diff)); p != "" {
+			out = append(out, p)
+		}
 	}
 	return out
 }

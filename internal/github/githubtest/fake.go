@@ -84,11 +84,13 @@ type Server struct {
 	tokens    map[string]string
 	prs       map[int]*PR
 	// files maps a ref to the repository's files at that ref.
-	files  map[string]map[string]string
-	owner  string
-	repo   string
-	mu     sync.Mutex
-	nextID int64
+	files map[string]map[string]string
+	// compares maps "base...head" to a stored comparison.
+	compares map[string]Comparison
+	owner    string
+	repo     string
+	mu       sync.Mutex
+	nextID   int64
 	// ThreadsPageSize and CommentsPageSize force GraphQL pagination.
 	ThreadsPageSize  int
 	CommentsPageSize int
@@ -111,6 +113,7 @@ func New(t testing.TB, repo string) *Server {
 		repo:             r.Name,
 		prs:              map[int]*PR{},
 		files:            map[string]map[string]string{},
+		compares:         map[string]Comparison{},
 		tokens:           map[string]string{DefaultToken: DefaultLogin},
 		nextID:           1000,
 		ThreadsPageSize:  50,
@@ -163,6 +166,25 @@ func (s *Server) SetFile(ref, path, content string) {
 		s.files[ref] = map[string]string{}
 	}
 	s.files[ref][path] = content
+}
+
+// Comparison is a stored result of the compare endpoint: Status is
+// "ahead", "behind", "diverged" or "identical", and Diff the unified diff
+// from the merge base to head. DiffTooLarge makes the diff request fail as
+// GitHub does for a diff it won't render (406), while the status request
+// still succeeds.
+type Comparison struct {
+	Status       string
+	Diff         string
+	DiffTooLarge bool
+}
+
+// SetCompare stores what comparing base...head returns. An unknown pair is
+// a 404, as for a commit GitHub doesn't have.
+func (s *Server) SetCompare(base, head string, c Comparison) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compares[base+"..."+head] = c
 }
 
 // PR returns the stored PR itself, not a copy. Read it only while no request
@@ -244,6 +266,7 @@ func (s *Server) routes() http.Handler {
 	handle("GET /pulls/{number}/reviews", "GET reviews", s.listReviews)
 	handle("POST /pulls/{number}/reviews", "POST review", s.postReview)
 	handle("GET /contents/{path...}", "GET contents", s.getContents)
+	handle("GET /compare/{basehead}", "GET compare", s.getCompare)
 	handle("POST /pulls/{number}/comments", "POST file comment", s.postFileComment)
 	handle("POST /pulls/{number}/comments/{id}/replies", "POST reply", s.postReply)
 	handle("DELETE /pulls/comments/{id}", "DELETE review comment", s.deleteReviewComment)
@@ -414,6 +437,20 @@ func (s *Server) getContents(r *http.Request, _ string) (int, any) {
 		return http.StatusNotFound, msg("Not Found")
 	}
 	return http.StatusOK, rawBody(content)
+}
+
+func (s *Server) getCompare(r *http.Request, _ string) (int, any) {
+	c, ok := s.compares[r.PathValue("basehead")]
+	if !ok {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	switch {
+	case r.Header.Get("Accept") != "application/vnd.github.diff":
+		return http.StatusOK, map[string]any{"status": c.Status}
+	case c.DiffTooLarge:
+		return http.StatusNotAcceptable, msg("Sorry, this diff is unavailable")
+	}
+	return http.StatusOK, rawBody(c.Diff)
 }
 
 // diffAt parses the PR's diff at commit, which must be a head the PR has had.

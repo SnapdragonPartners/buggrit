@@ -21,6 +21,9 @@ type FindInput struct {
 	Client    llms.ChatClient
 	Workspace Workspace
 	Diff      *github.Diff
+	// Incremental, if set, limits where new findings may be anchored to the
+	// lines changed since the last completed pass (§7 rule 2).
+	Incremental *Incremental
 	// OnToolCall, if set, observes each tool call (for logs and stats).
 	OnToolCall       func(toolloop.ToolCallEvent)
 	PR               Context
@@ -66,7 +69,7 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 		return nil, errors.New("find: client, workspace and diff are required")
 	}
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
-	submit := &submitTool{env: env, inScope: in.Scope.InScope}
+	submit := &submitTool{env: env, inScope: in.Scope.InScope, incremental: in.Incremental}
 	clock := newPassClock(ctx, time.Now(), in.WrapUp)
 	tools := clock.timed(append(readOnlyTools(env), submit.tool()))
 

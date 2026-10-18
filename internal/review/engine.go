@@ -22,6 +22,8 @@ type GitHub interface {
 	Diff(ctx context.Context, repo github.Repo, number int) (*github.Diff, error)
 	ReviewThreads(ctx context.Context, repo github.Repo, number int) ([]github.Thread, error)
 	Reviews(ctx context.Context, repo github.Repo, number int) ([]github.ReviewSummary, error)
+	CompareStatus(ctx context.Context, repo github.Repo, base, head string) (string, error)
+	CompareDiff(ctx context.Context, repo github.Repo, base, head string) (*github.Diff, error)
 }
 
 // PRRef names the pull request to review and the head the caller checked
@@ -49,7 +51,10 @@ type Result struct {
 	// Skipped is set when there was nothing to do; SkipReason says why.
 	SkipReason string
 	// Reason says why an incomplete pass stopped.
-	Reason   string
+	Reason string
+	// Scope says what the pass looked for new findings in: the whole PR, or
+	// the lines changed since the last completed pass (design §7 rule 2).
+	Scope    string
 	Summary  string
 	HeadSHA  string
 	Findings []Candidate
@@ -108,9 +113,23 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	}
 	known, notes := readThreads(threads, cfg.Identity.BotLogin)
 
+	scope := glob.Filter{Include: cfg.Review.Include, Exclude: cfg.Review.Exclude}
+	inc, desc, err := passScope(ctx, gh, ref, baseline.CompletedSHA, diff, scope.InScope)
+	if err != nil {
+		return nil, fmt.Errorf("review: %w", err)
+	}
+	res.Scope = desc
+	if inc.Empty() {
+		// Nothing reviewable changed since the completed pass, say a merge
+		// from the base branch: the pass is complete without the finder.
+		res.Complete = true
+		res.Summary = "Nothing reviewable changed since " + short(inc.Since) + ", the last completed review."
+		res.Elapsed = time.Since(start)
+		return res, nil
+	}
+
 	findCtx, cancel, wrapUp := findTimes(ctx, cfg.Limits.PassDeadline.Std())
 	defer cancel()
-	scope := glob.Filter{Include: cfg.Review.Include, Exclude: cfg.Review.Exclude}
 	found, err := Find(findCtx, &FindInput{
 		Client:           opts.Find,
 		Workspace:        ws,
@@ -121,6 +140,7 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 		InstructionFiles: cfg.Review.InstructionFiles,
 		OtherThreads:     notes,
 		Scope:            scope,
+		Incremental:      inc,
 		MaxIterations:    cfg.Limits.MaxToolIterations,
 		WrapUp:           wrapUp,
 	})
@@ -160,8 +180,9 @@ func wrapUpReserve(deadline time.Duration) time.Duration {
 
 // readThreads splits the PR's threads into the fingerprints of buggrit's own
 // findings, for dedupe, and notes on every thread, so the finder doesn't
-// raise them again. buggrit's own earlier findings are included: until the
-// incremental scope of build step 5, each push gets a full pass.
+// raise them again. buggrit's own earlier findings are included, since a
+// pass over the whole PR (the first, or one after a force-push) can meet
+// them again.
 func readThreads(threads []github.Thread, botLogin string) (known map[string]bool, notes []ThreadNote) {
 	known = map[string]bool{}
 	for i := range threads {

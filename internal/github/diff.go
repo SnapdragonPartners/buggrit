@@ -68,6 +68,9 @@ type FileDiff struct {
 	Status  FileStatus `json:"status"`
 	Hunks   []Hunk     `json:"hunks,omitempty"`
 	Binary  bool       `json:"binary,omitempty"`
+	// ModeChanged is set when the file's mode changes (git writes "old mode"
+	// and "new mode" only then).
+	ModeChanged bool `json:"mode_changed,omitempty"`
 }
 
 // Path is the path a review comment on this file uses: the head path, or the
@@ -258,9 +261,11 @@ func (p *diffParser) parseFile() (FileDiff, error) {
 }
 
 // headerLine applies one extended header line. Lines it doesn't need (index,
-// modes, similarity, binary patch data) are ignored.
+// similarity, binary patch data) are ignored.
 func headerLine(f *FileDiff, line string) {
 	switch {
+	case strings.HasPrefix(line, "new mode "):
+		f.ModeChanged = true
 	case strings.HasPrefix(line, "new file mode"):
 		f.Status = StatusAdded
 	case strings.HasPrefix(line, "deleted file mode"):
