@@ -378,32 +378,39 @@ func TestWellFormedDropsDanglingToolCalls(t *testing.T) {
 	if got := wellFormed(done); len(got) != 3 {
 		t.Errorf("dropped a complete turn: %d messages", len(got))
 	}
-	empty := append(done, llms.Message{Role: llms.RoleAssistant})
-	if got := wellFormed(empty); len(got) != 3 {
-		t.Errorf("kept an empty assistant turn: %d messages", len(got))
-	}
 	text := append(done, testllm.TextResponse("Looks fine.").Message)
 	if got := wellFormed(text); len(got) != 4 {
 		t.Errorf("dropped a text answer: %d messages", len(got))
 	}
 }
 
-// A turn that spent its whole budget reasoning comes back empty. The nudge
-// must not send that empty turn back (the provider layer rejects it).
+// A turn that spent its whole budget reasoning comes back empty. It gets the
+// nudge, like a text answer, and isn't sent back; a second empty turn ends
+// the run with the stop reason.
 func TestFindNudgeAfterEmptyTurn(t *testing.T) {
 	empty := llms.ChatResponse{Message: llms.Message{Role: llms.RoleAssistant}, StopReason: "length"}
 	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{
 		empty,
 		testllm.ToolCallResponse("1", "submit_findings", `{"coverage": "complete", "findings": []}`),
 	}}
-	res, err := Find(context.Background(), findInput(t, fake))
+	in := findInput(t, fake)
+	in.MaxIterations = 0
+	res, err := Find(context.Background(), in)
 	if err != nil || !res.Complete {
 		t.Fatalf("result = %+v, %v", res, err)
 	}
-	for _, m := range fake.Calls()[1].Messages {
-		if m.Role == llms.RoleAssistant && !hasContent(&m) {
-			t.Error("the empty assistant turn was sent back")
-		}
+	second := fake.Calls()[1].Messages
+	if len(second) != 2 || second[1].Content[0].Text != nudge {
+		t.Errorf("second call's messages = %+v, want the opening and the nudge", second)
+	}
+
+	fake = &testllm.FakeChatClient{Responses: []llms.ChatResponse{empty, empty}}
+	res, err = Find(context.Background(), findInput(t, fake))
+	if err != nil || res.Complete || res.Reason != `the model returned an empty response (stop reason "length")` {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	if n := len(fake.Calls()); n != 2 {
+		t.Errorf("%d model calls, want 2 (one nudge only)", n)
 	}
 }
 

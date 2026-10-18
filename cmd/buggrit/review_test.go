@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
-	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
@@ -67,7 +66,7 @@ func setupReview(t *testing.T, model *testllm.FakeChatClient) *reviewEnv {
 
 	e.deps = reviewDeps{
 		head: func(string) (string, error) { return head, nil },
-		clients: func(cfg *config.Config, _ middleware.Observer) (*llm.Clients, error) {
+		clients: func(cfg *config.Config, _ modelObserver) (*llm.Clients, error) {
 			if cfg.Stage(config.StageFind).Model != "glm-5.3" {
 				t.Errorf("config not read from the base branch: %+v", cfg.Models)
 			}
@@ -259,5 +258,31 @@ func TestJobSummaryScope(t *testing.T) {
 	}
 	if without := jobSummary(&review.Result{HeadSHA: head, Pass: 1, Skipped: true, SkipReason: "done"}, &cfg, nil); strings.Contains(without, "Scope:") {
 		t.Errorf("summary without a scope:\n%s", without)
+	}
+}
+
+// The usage table shows cached input, which maestro-llms counts inside
+// InputTokens.
+func TestJobSummaryUsage(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Models.Default.Model = "m"
+	res := &review.Result{HeadSHA: head, Pass: 1, Complete: true, Find: &review.FindResult{
+		Iterations: 7,
+		Usage:      llms.Usage{InputTokens: 1000, CacheReadTokens: 600, OutputTokens: 50, ReasoningTokens: 20},
+	}}
+	if got := jobSummary(res, &cfg, nil); !strings.Contains(got, "| find | m | 7 | 1000 | 600 | 50 | 20 |\n") {
+		t.Errorf("summary:\n%s", got)
+	}
+}
+
+func TestModelLogReportsReasoning(t *testing.T) {
+	var b strings.Builder
+	l := modelLog{&b}
+	l.ObserveReasoning(config.StageFind, "low", &llms.ReasoningConfig{Effort: llms.ReasoningEffortLow})
+	l.ObserveReasoning(config.StageVerify, "xhigh", nil)
+	want := "buggrit: find reasoning_effort low: sent as low\n" +
+		"buggrit: verify reasoning_effort xhigh: not supported by the provider; the model default applies\n"
+	if b.String() != want {
+		t.Errorf("log = %q, want %q", b.String(), want)
 	}
 }

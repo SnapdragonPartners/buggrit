@@ -3,8 +3,6 @@ package review
 import (
 	"context"
 	"errors"
-	"math"
-	"strings"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
@@ -62,9 +60,9 @@ func (s *stage) run(ctx context.Context) (*stageRun, error) {
 	tools := clock.timed(append(append([]toolloop.Tool(nil), s.tools...), s.terminal))
 	maxIter := s.maxIterations
 	if maxIter <= 0 {
-		// toolloop reads <= 0 as its small default; buggrit's 0 means none.
+		// toolloop reads 0 as its small default; buggrit's 0 means none.
 		// The deadline bounds the run (§9).
-		maxIter = math.MaxInt
+		maxIter = toolloop.NoIterationLimit
 	}
 
 	// Investigate until the deadline less the wrap-up reserve.
@@ -87,7 +85,7 @@ func (s *stage) run(ctx context.Context) (*stageRun, error) {
 }
 
 // investigate is the main loop: tools until the terminal tool, with one
-// nudge if the model answers in text. On a run without a submission it
+// nudge if the model answers in text or comes back empty. On a run without a submission it
 // returns the last outcome, whose transcript the wrap-up continues.
 func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter int, budget string) (*stageRun, *toolloop.Outcome, error) {
 	res := &stageRun{}
@@ -101,7 +99,7 @@ func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter 
 				Purpose:  s.purpose,
 			},
 			Tools:         tools,
-			MaxIterations: maxIter - res.iterations,
+			MaxIterations: remaining(maxIter, res.iterations),
 			OnToolCall:    s.onToolCall,
 		})
 		addUsage(&res.usage, &out.TotalUsage)
@@ -111,7 +109,8 @@ func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter 
 			res.submitted = s.submitted()
 			return res, &out, nil
 		}
-		if out.Kind == toolloop.OutcomeFinalAnswer && attempt == 0 && res.iterations < maxIter {
+		stopped := out.Kind == toolloop.OutcomeFinalAnswer || out.Kind == toolloop.OutcomeEmptyResponse
+		if stopped && attempt == 0 && remaining(maxIter, res.iterations) != 0 {
 			messages = append(wellFormed(out.Messages), llms.UserText(s.nudge))
 			continue
 		}
@@ -147,16 +146,25 @@ func (s *stage) wrapUpTurn(ctx context.Context, res *stageRun, out *toolloop.Out
 	}
 }
 
-// wellFormed drops a trailing assistant turn that can't be sent back: one
-// whose tool calls have no results (a run canceled mid-tool), or one with no
-// content at all (a reasoning model that spent its whole output budget
-// reasoning). maestro-llms rejects a transcript holding either.
+// remaining is the iteration limit left for the next toolloop run: 0 when
+// the ceiling is spent, NoIterationLimit when there is none.
+func remaining(maxIter, used int) int {
+	if maxIter < 0 {
+		return toolloop.NoIterationLimit
+	}
+	return maxIter - used
+}
+
+// wellFormed drops a trailing assistant turn whose tool calls have no
+// results, which a run canceled mid-tool leaves behind and maestro-llms
+// rejects. Dropping the last turn leaves the reasoning in earlier turns
+// valid: only an edit before a reasoning part invalidates it.
 func wellFormed(messages []llms.Message) []llms.Message {
 	n := len(messages)
 	if n == 0 || messages[n-1].Role != llms.RoleAssistant {
 		return messages
 	}
-	if last := &messages[n-1]; hasToolCalls(last) || !hasContent(last) {
+	if hasToolCalls(&messages[n-1]) {
 		return messages[:n-1]
 	}
 	return messages
@@ -165,15 +173,6 @@ func wellFormed(messages []llms.Message) []llms.Message {
 func hasToolCalls(m *llms.Message) bool {
 	for i := range m.Content {
 		if m.Content[i].ToolCall != nil {
-			return true
-		}
-	}
-	return false
-}
-
-func hasContent(m *llms.Message) bool {
-	for i := range m.Content {
-		if m.Content[i].ToolCall != nil || strings.TrimSpace(m.Content[i].Text) != "" {
 			return true
 		}
 	}

@@ -272,7 +272,8 @@ error. Settings left out take defaults from code, and `version` is required.
       "model": "qwen3-coder",
       "api_key_env": "BUGGRIT_LLM_API_KEY",
       "request_timeout": "10m",
-      "max_output_tokens": 0
+      "max_output_tokens": 0,
+      "reasoning_effort": ""
     },
     "verify": { "model": "glm-4.6" }
   },
@@ -324,6 +325,16 @@ Notes:
   option, and a key that would be silently ignored is worse than an error.
 - `max_output_tokens` caps every request a stage makes. A caller's smaller
   limit is kept.
+- `reasoning_effort` asks a reasoning model to bound its thinking:
+  `none | minimal | low | medium | high | xhigh | max`, or `""` (the
+  default) for the model's own default. It's set per stage like any other
+  model field, and sent as maestro-llms' `ChatRequest.Reasoning`. Each
+  provider maps a level it supports and omits the rest, so an unsupported
+  level falls back to the model default rather than failing. The job log
+  says, once per stage, what the provider actually received. A model that
+  rejects a level its provider supports fails the call with the provider's
+  error. buggrit sets no default: which level converges fastest is measured
+  in [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8).
 - `gate.fail_on`: `none | P0 | P1` (§8).
 - `identity.bot_login` is the login buggrit's own comments must be authored
   by (§3, "Own comments"). Change it when using `GITHUB_TOKEN`
@@ -392,15 +403,15 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   verified on a later run.
 - **Files outside the diff:** a finding about a file the diff doesn't touch,
   such as a stale doc, is anchored at the changed line that made it wrong.
-- **No submission:** a model that answers in text instead of submitting gets
-  one nudge. If it still doesn't submit, or the run hits a ceiling, the
-  deadline or a model error, the pass is reported incomplete with that
-  reason. It never comes back silently empty (§9).
+- **No submission:** a model that answers in text, or returns an empty
+  response (a reasoning model that spent its whole output budget thinking),
+  instead of submitting gets one nudge. If it still doesn't submit, or the
+  run hits a ceiling, the deadline or a model error, the pass is reported
+  incomplete with that reason. It never comes back silently empty (§9).
 - **"No ceiling":** `max_tool_iterations: 0` is passed to toolloop as
-  `math.MaxInt`, since toolloop reads 0 as its own default of 8. The deadline
-  bounds the run. This relies on maestro-llms v0.9.0, which stopped sizing
-  its transcript by the limit
-  ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
+  `toolloop.NoIterationLimit`, since toolloop reads 0 as its own default
+  of 8. The deadline bounds the run (maestro-llms v0.10.0,
+  [ADR-0019](https://github.com/SnapdragonPartners/maestro-llms/blob/v0.10.0/docs/adr/0019-toolloop-deadline-and-no-iteration-limit.md)).
 
 `submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
 `coverage` is required: `complete` if the model reviewed the pass's whole
@@ -809,10 +820,12 @@ posted, and the pass is still marked incomplete. The verifier's verdicts
 are applied, and the findings it left out stay unverified. Without this, a
 slow model (GLM-5.3 can reason for minutes on one turn) would lose a whole
 pass's work at the deadline. Before continuing a transcript (the nudge, or
-the wrap-up), the stage drops a trailing assistant turn that maestro-llms
-would reject. That's either a turn that spent its whole output budget on
-reasoning and came back empty, or a turn whose tool calls have no results
-because the investigation was canceled mid-tool.
+the wrap-up), the stage drops a trailing assistant turn whose tool calls
+have no results because the investigation was canceled mid-tool, which
+maestro-llms would reject. An empty turn never reaches the transcript:
+toolloop reports it as an empty response and doesn't append it
+([maestro-llms#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85),
+v0.10.0).
 
 **The model knows the clock.** The opening message states the time budget
 and when to submit, and every tool result ends with
@@ -931,13 +944,12 @@ v0.8.0), the LunaRoute path
 ([#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
 v0.8.1), and the toolloop preallocation fix
 ([#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73),
-v0.9.0). Still open upstream:
-[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86)
-(reasoning-effort control). The empty-turn fix
-([#85](https://github.com/SnapdragonPartners/maestro-llms/issues/85)) is
-merged but not yet released, so buggrit keeps its own empty-turn check
-(§9). The other half of that guard, dropping a canceled run's dangling
-tool-call turn before the wrap-up, isn't covered by #85 and stays.
+v0.9.0). Since then, buggrit is on maestro-llms v0.11.0, which brought the
+empty-response and deadline outcomes and the unlimited-iteration setting
+(v0.10.0), and per-stage reasoning control (§4,
+[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86)). buggrit
+still drops a canceled run's dangling tool-call turn before the wrap-up
+(§9); that isn't toolloop's to fix.
 
 ## 13. Decisions
 
@@ -953,8 +965,8 @@ tool-call turn before the wrap-up, isn't covered by #85 and stays.
   spending their whole output budget, and never submitted. What matters is
   wall clock to convergence: every extra pass also costs a repair cycle and
   a CI run, so a slower pass that finds everything beats fast drip-feeding.
-  Reasoning control is
-  [maestro-llms#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86).
+  Reasoning control is `reasoning_effort` (§4); which level to dogfood with is
+  [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8).
 - Every review uses tools. There's no tool-free mode.
 - Comments are the only store for now. A database may come later.
 - **LunaRoute** is OpenAI-compatible and is reached through

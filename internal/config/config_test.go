@@ -69,15 +69,15 @@ func TestStageOverrideMergesFieldByField(t *testing.T) {
 	  "version": 1,
 	  "models": {
 	    "default": {"provider": "openai-compatible", "base_url": "https://llm.example", "model": "qwen3-coder", "api_key_env": "KEY"},
-	    "verify": {"model": "glm-4.6"}
+	    "verify": {"model": "glm-4.6", "reasoning_effort": "low"}
 	  }
 	}`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	v := cfg.Stage(StageVerify)
-	if v.Model != "glm-4.6" {
-		t.Errorf("verify model = %q, want glm-4.6", v.Model)
+	if v.Model != "glm-4.6" || v.ReasoningEffort != "low" {
+		t.Errorf("verify model = %q at %q, want glm-4.6 at low", v.Model, v.ReasoningEffort)
 	}
 	if v.Provider != ProviderOpenAICompatible || v.BaseURL != "https://llm.example" || v.APIKeyEnv != "KEY" {
 		t.Errorf("verify did not inherit unset fields: %+v", v)
@@ -119,6 +119,7 @@ func TestParseRejects(t *testing.T) {
 		{"zero concurrency", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_concurrency": 0},`, 1), "max_concurrency"},
 		{"bad include glob", strings.Replace(minimal, `"version": 1,`, `"version": 1, "review": {"include": ["src/**x"]},`, 1), "review.include: pattern"},
 		{"bad exclude glob", strings.Replace(minimal, `"version": 1,`, `"version": 1, "review": {"exclude": ["[ab"]},`, 1), "review.exclude: pattern"},
+		{"bad reasoning effort", strings.Replace(minimal, `}}`, `}, "find": {"reasoning_effort": "extreme"}}`, 1), `models.find: reasoning_effort must be one of none, minimal, low, medium, high, xhigh, max (got "extreme")`},
 		{"bad stage override", strings.Replace(minimal, `}}`, `}, "find": {"provider": "nope"}}`, 1), `models.find: unknown provider "nope"`},
 	}
 	for _, tt := range tests {
@@ -138,15 +139,15 @@ func TestStageOverrideExplicitEmptyReplacesDefault(t *testing.T) {
 	cfg, err := Parse([]byte(`{
 	  "version": 1,
 	  "models": {
-	    "default": {"provider": "openai-compatible", "base_url": "https://llm.example", "model": "qwen3-coder", "api_key_env": "KEY", "max_output_tokens": 4096},
-	    "verify": {"provider": "ollama", "model": "glm4", "base_url": "", "api_key_env": "", "max_output_tokens": 0}
+	    "default": {"provider": "openai-compatible", "base_url": "https://llm.example", "model": "qwen3-coder", "api_key_env": "KEY", "max_output_tokens": 4096, "reasoning_effort": "high"},
+	    "verify": {"provider": "ollama", "model": "glm4", "base_url": "", "api_key_env": "", "max_output_tokens": 0, "reasoning_effort": ""}
 	  }
 	}`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	v := cfg.Stage(StageVerify)
-	if v.BaseURL != "" || v.APIKeyEnv != "" || v.MaxOutputTokens != 0 {
+	if v.BaseURL != "" || v.APIKeyEnv != "" || v.MaxOutputTokens != 0 || v.ReasoningEffort != "" {
 		t.Errorf("explicit empty override fields were not applied: %+v", v)
 	}
 	if v.Provider != ProviderOllama || v.Model != "glm4" {
