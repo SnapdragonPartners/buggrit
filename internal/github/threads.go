@@ -19,6 +19,10 @@ type Comment struct {
 	// CommitSHA is the commit a review comment was made on (empty for
 	// conversation comments and for replies read over REST).
 	CommitSHA string
+	// DiffHunk is the diff excerpt a review comment was made on, read from
+	// GraphQL. For a thread's root it is the original snippet, which the
+	// verifier needs once the anchor is outdated (design §6).
+	DiffHunk string
 	// DatabaseID is the REST ID, used to reply and to edit.
 	DatabaseID int64
 }
@@ -92,6 +96,7 @@ const commentFragment = `fragment threadComment on PullRequestReviewComment {
   databaseId
   body
   url
+  diffHunk
   createdAt
   author { __typename login }
   commit { oid }
@@ -115,6 +120,7 @@ type gqlComment struct {
 	ID         string `json:"id"`
 	Body       string `json:"body"`
 	URL        string `json:"url"`
+	DiffHunk   string `json:"diffHunk"`
 	DatabaseID int64  `json:"databaseId"`
 }
 
@@ -142,6 +148,7 @@ func (g *gqlComment) comment() Comment {
 		DatabaseID: g.DatabaseID,
 		Body:       g.Body,
 		URL:        g.URL,
+		DiffHunk:   g.DiffHunk,
 		CreatedAt:  g.CreatedAt,
 	}
 	if g.Author != nil { // nil for deleted ("ghost") users
@@ -242,6 +249,28 @@ func (c *Client) thread(ctx context.Context, g *gqlThread) (Thread, error) {
 		}
 		comments = data.Node.Comments
 	}
+}
+
+const threadResolvedQuery = `query ThreadResolved($id: ID!) {
+  node(id: $id) { ... on PullRequestReviewThread { isResolved } }
+}`
+
+// ThreadResolved reads whether one review thread is resolved now. Publishing
+// uses it when GitHub refuses to change a thread, to learn whether the
+// change was needed at all.
+func (c *Client) ThreadResolved(ctx context.Context, threadID string) (bool, error) {
+	var data struct {
+		Node *struct {
+			IsResolved bool `json:"isResolved"`
+		} `json:"node"`
+	}
+	if err := c.graphQL(ctx, "ThreadResolved", threadResolvedQuery, map[string]any{"id": threadID}, &data); err != nil {
+		return false, fmt.Errorf("read thread %s: %w", threadID, err)
+	}
+	if data.Node == nil {
+		return false, fmt.Errorf("read thread %s: %w", threadID, &APIError{Type: "NOT_FOUND", Message: "thread not found"})
+	}
+	return data.Node.IsResolved, nil
 }
 
 const resolveMutation = `mutation ResolveThread($id: ID!) {

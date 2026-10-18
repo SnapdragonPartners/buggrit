@@ -204,7 +204,7 @@ func TestFindNudgesOnce(t *testing.T) {
 
 	fake = &testllm.FakeChatClient{Text: "still just text"}
 	res, err = Find(context.Background(), findInput(t, fake))
-	if err != nil || res.Complete || !strings.Contains(res.Reason, "without submitting") {
+	if err != nil || res.Complete || !strings.Contains(res.Reason, "without calling submit_findings") {
 		t.Fatalf("result = %+v, %v", res, err)
 	}
 	if n := len(fake.Calls()); n != 2 {

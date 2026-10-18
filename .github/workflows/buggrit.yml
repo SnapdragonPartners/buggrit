@@ -7,8 +7,8 @@ name: buggrit
 # with the App token or the LunaRoute key (design §4, §10). Until build
 # step 7 ships the composite action, it builds from source.
 #
-# Reply-triggered runs (pull_request_review_comment, design §3) arrive with
-# the verifier in build step 4.
+# Reply-triggered runs (pull_request_review_comment, design §3) arrive in
+# the second build-step-4 PR, once the verifier is on main.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]

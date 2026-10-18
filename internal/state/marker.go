@@ -1,5 +1,6 @@
-// Package state holds buggrit's comment markers, and later the finding
-// ledger and thread state machine (docs/design.md §6).
+// Package state holds buggrit's comment markers, the replay that reads each
+// finding's state from its thread, and the thread state machine
+// (docs/design.md §6).
 //
 // Comments are buggrit's only store. Every buggrit comment ends with a hidden
 // marker carrying the machine-readable part:
@@ -43,6 +44,37 @@ func (s FindingState) Valid() bool {
 	return false
 }
 
+// Kind says why a transition happened. Several kinds lead to the same
+// state, and replay needs to tell them apart: rebuttals are counted against
+// max_rebuttals, and an identical transition isn't posted twice (§6, §7).
+type Kind string
+
+// Transition kinds, each with the state it leads to (Kind.To).
+const (
+	KindFixed      Kind = "fixed"       // open → fixed
+	KindRegressed  Kind = "regressed"   // fixed → open: the defect is back
+	KindReopened   Kind = "reopened"    // resolved without a fix → open
+	KindRebutted   Kind = "rebutted"    // a reply judged invalid → open, with reasoning
+	KindNeedsHuman Kind = "needs_human" // a reply judged invalid, rebuttals used up
+	KindDismissed  Kind = "dismissed"   // a reply judged valid, or any reply to an advisory finding
+	KindSettled    Kind = "settled"     // needs_human, then a human replied or resolved
+)
+
+// To is the state a transition of kind k leads to, or "" for an unknown kind.
+func (k Kind) To() FindingState {
+	switch k {
+	case KindFixed:
+		return StateFixed
+	case KindRegressed, KindReopened, KindRebutted:
+		return StateOpen
+	case KindNeedsHuman:
+		return StateNeedsHuman
+	case KindDismissed, KindSettled:
+		return StateDismissed
+	}
+	return ""
+}
+
 // PassStatus is how a pass ended. Each pass's review body carries a pass
 // marker with it (design §6, "Review baseline").
 type PassStatus string
@@ -55,8 +87,9 @@ const (
 
 // Marker is the payload of a buggrit marker. A thread's root comment carries
 // a finding marker (FP, Severity, Pass set); each buggrit reply carries a
-// transition marker (To set, plus Evidence for a fixed verdict); each pass's
-// review body carries a pass marker (Status, Pass and SHA set).
+// transition marker (To, Kind, SHA and Seen set, plus Evidence for a fixed
+// verdict); each pass's review body carries a pass marker (Status, Pass and
+// SHA set).
 //
 // Unknown fields are ignored when decoding, so a marker written by a newer
 // buggrit still reads.
@@ -66,9 +99,18 @@ type Marker struct {
 	Severity string       `json:"sev,omitempty"`
 	SHA      string       `json:"sha,omitempty"`
 	To       FindingState `json:"to,omitempty"`
+	Kind     Kind         `json:"kind,omitempty"`
 	Status   PassStatus   `json:"status,omitempty"`
 	Evidence []string     `json:"evidence_files,omitempty"`
-	Pass     int          `json:"pass,omitempty"`
+	// Seen is the database ID of the newest human comment in the thread when
+	// the transition was decided. Later comments are still unhandled, even
+	// if they landed before the transition's reply (§6).
+	Seen int64 `json:"seen,omitempty"`
+	Pass int   `json:"pass,omitempty"`
+	// LeftResolved marks a needs_human transition posted on a thread GitHub
+	// wouldn't unresolve. That resolution predates the transition, so it
+	// doesn't settle the finding; only a reply does (§6).
+	LeftResolved bool `json:"left_resolved,omitempty"`
 }
 
 // IsTransition reports whether m records a state transition.
@@ -83,6 +125,8 @@ func (m *Marker) validate() error {
 		return errors.New("marker has no id")
 	case m.To != "" && !m.To.Valid():
 		return fmt.Errorf("marker %s: unknown state %q", m.ID, m.To)
+	case m.Kind != "" && m.Kind.To() != m.To:
+		return fmt.Errorf("marker %s: kind %q does not lead to state %q", m.ID, m.Kind, m.To)
 	case m.To == StateFixed && len(m.Evidence) == 0:
 		// §6: a fixed verdict must list the files it relied on.
 		return fmt.Errorf("marker %s: fixed transition has no evidence_files", m.ID)
@@ -115,6 +159,15 @@ func Append(body string, m *Marker) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(body, "\n") + "\n" + line, nil
+}
+
+// Strip returns body without its trailing marker, for showing a comment to
+// the model or quoting it.
+func Strip(body string) string {
+	if i := strings.LastIndex(body, markerOpen); i >= 0 && strings.Contains(body[i:], markerClose) {
+		return strings.TrimRight(body[:i], "\n")
+	}
+	return body
 }
 
 // ErrNoMarker means a comment body has no buggrit marker.

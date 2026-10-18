@@ -151,7 +151,7 @@ func TestReviewBodyGolden(t *testing.T) {
 			Findings: []review.Candidate{classFinding()}},
 	}
 	for name, res := range cases {
-		body, err := ReviewBody(res)
+		body, err := ReviewBody(res, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

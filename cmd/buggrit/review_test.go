@@ -14,7 +14,10 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
+	"github.com/SnapdragonPartners/buggrit/internal/llm"
+	"github.com/SnapdragonPartners/buggrit/internal/publish"
 	"github.com/SnapdragonPartners/buggrit/internal/review"
+	"github.com/SnapdragonPartners/buggrit/internal/state"
 )
 
 const (
@@ -34,11 +37,13 @@ const (
 )
 
 type reviewEnv struct {
-	deps    reviewDeps
-	fake    *githubtest.Server
-	env     map[string]string
-	model   *testllm.FakeChatClient
-	summary string
+	deps  reviewDeps
+	fake  *githubtest.Server
+	env   map[string]string
+	model *testllm.FakeChatClient
+	// verifier is the verify stage's client; nil until a test needs one.
+	verifier *testllm.FakeChatClient
+	summary  string
 }
 
 // setupReview runs review against the fake GitHub with a fake model, a
@@ -62,11 +67,11 @@ func setupReview(t *testing.T, model *testllm.FakeChatClient) *reviewEnv {
 
 	e.deps = reviewDeps{
 		head: func(string) (string, error) { return head, nil },
-		findClient: func(cfg *config.Config, _ middleware.Observer) (llms.ChatClient, error) {
+		clients: func(cfg *config.Config, _ middleware.Observer) (*llm.Clients, error) {
 			if cfg.Stage(config.StageFind).Model != "glm-5.3" {
 				t.Errorf("config not read from the base branch: %+v", cfg.Models)
 			}
-			return model, nil
+			return &llm.Clients{Find: model, Verify: e.verifier}, nil
 		},
 	}
 	return e
@@ -98,9 +103,17 @@ func TestReviewPostsAndThenSkips(t *testing.T) {
 		t.Errorf("job summary = %q, %v", summary, err)
 	}
 
-	// The head now has a completed pass, so the next run does nothing.
+	// The head now has a completed pass, so the next run only checks the
+	// open finding again, posting nothing.
+	m, err := state.Parse(pr.Threads[0].Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Still nil."}]}`)}}
 	code, out, _ = e.run(t)
-	if code != 0 || !strings.Contains(out, "skipped at 1111111: a pass already completed") || len(e.fake.PR(7).Reviews) != 1 {
+	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 unchanged") ||
+		len(e.fake.PR(7).Reviews) != 1 || len(pr.Threads[0].Comments) != 1 {
 		t.Errorf("second run: exit %d, %s", code, out)
 	}
 }
@@ -113,6 +126,56 @@ func TestReviewDryRunPostsNothing(t *testing.T) {
 	}
 	if pr := e.fake.PR(7); len(pr.Threads) != 0 || len(pr.Reviews) != 0 {
 		t.Error("dry run posted")
+	}
+}
+
+// A reply to a finding brings a reconcile-only run at the same head: the
+// verifier judges it, and the dry run shows the reply it would post.
+func TestReviewReconcilesAReply(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, out, errOut := e.run(t); code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	th := e.fake.PR(7).Threads[0]
+	m, err := state.Parse(th.Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake.Reply(7, th.ID, "dan", "This is intentional.")
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
+
+	code, out, errOut := e.run(t, "--dry-run")
+	if code != 0 || !strings.Contains(out, "=== reply on "+m.ID+" (cache.go)\n**Still open** at `1111111`. Nothing documents it.") ||
+		strings.Contains(out, "=== review body") || len(th.Comments) != 2 {
+		t.Fatalf("dry run: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
+	code, out, _ = e.run(t)
+	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 rebutted") || len(th.Comments) != 3 {
+		t.Fatalf("publish: exit %d, %s", code, out)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "| verify | glm-5.3 | 1 |") || !strings.Contains(string(summary), "only reconciled earlier findings") {
+		t.Errorf("job summary = %s, %v", summary, err)
+	}
+}
+
+// Earlier findings left unverified make the run fail, though the finder
+// completed.
+func TestReviewUnverifiedExitsNonZero(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, _, _ := e.run(t); code != 0 {
+		t.Fatal("first run failed")
+	}
+	th := e.fake.PR(7).Threads[0]
+	e.fake.Reply(7, th.ID, "dan", "Disagree.")
+	e.verifier = &testllm.FakeChatClient{Text: "just chatting"}
+	code, out, _ := e.run(t)
+	if code != 1 || !strings.Contains(out, "incomplete at 1111111: verification: the model stopped without calling submit_verdicts; 1 of 1 earlier finding not verified") {
+		t.Fatalf("exit %d, %s", code, out)
 	}
 }
 
@@ -185,11 +248,16 @@ func TestReviewArgs(t *testing.T) {
 // The job summary states the pass's scope when it has one (design §7 rule 2).
 func TestJobSummaryScope(t *testing.T) {
 	cfg := config.Defaults()
-	with := jobSummary(&review.Result{HeadSHA: head, Pass: 2, Complete: true, Scope: "lines changed since ccccccc"}, &cfg)
+	with := jobSummary(&review.Result{HeadSHA: head, Pass: 2, Complete: true, Scope: "lines changed since ccccccc"}, &cfg, nil)
+	manual := jobSummary(&review.Result{HeadSHA: head, ReconcileOnly: true, Complete: true}, &cfg,
+		[]publish.Manual{{ID: "f-abc123", URL: "https://example/1", Resolve: true}})
+	if !strings.Contains(manual, "please do it by hand:\n- resolve f-abc123 https://example/1") {
+		t.Errorf("summary without the manual list:\n%s", manual)
+	}
 	if !strings.Contains(with, "\nScope: lines changed since ccccccc.\n") {
 		t.Errorf("summary with a scope:\n%s", with)
 	}
-	if without := jobSummary(&review.Result{HeadSHA: head, Pass: 1, Skipped: true, SkipReason: "done"}, &cfg); strings.Contains(without, "Scope:") {
+	if without := jobSummary(&review.Result{HeadSHA: head, Pass: 1, Skipped: true, SkipReason: "done"}, &cfg, nil); strings.Contains(without, "Scope:") {
 		t.Errorf("summary without a scope:\n%s", without)
 	}
 }

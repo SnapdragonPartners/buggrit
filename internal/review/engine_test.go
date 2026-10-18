@@ -35,6 +35,11 @@ func engineOptions(client llms.ChatClient) *Options {
 	return &Options{Config: &cfg, Find: client}
 }
 
+// verifying returns a fake verifier that submits args at once.
+func verifying(args string) *testllm.FakeChatClient {
+	return &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts", args)}}
+}
+
 // submitting returns a fake model that submits args at once.
 func submitting(args string) *testllm.FakeChatClient {
 	return &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_findings", args)}}
@@ -88,7 +93,9 @@ func TestReviewDedupesAgainstOwnThreads(t *testing.T) {
 	fake.AddThread(7, githubtest.DefaultLogin, c.Path, c.Line, body)
 
 	model := submitting(`{"coverage": "complete", "findings": [` + validFinding + `]}`)
-	second, err := Review(context.Background(), ref, testWorkspace(), gh, engineOptions(model))
+	opts := engineOptions(model)
+	opts.Verify = verifying(`{"verdicts": [{"id": "` + c.ID + `", "state": "open", "reason": "Still nil."}]}`)
+	second, err := Review(context.Background(), ref, testWorkspace(), gh, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +168,10 @@ func TestReviewIncomplete(t *testing.T) {
 
 // The reserve follows the deadline that applies: a caller's shorter one
 // wins over pass_deadline.
-func TestFindTimes(t *testing.T) {
+func TestPassTimes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	findCtx, stop, wrapUp := findTimes(ctx, 30*time.Minute)
+	findCtx, stop, wrapUp := passTimes(ctx, 30*time.Minute)
 	defer stop()
 	if dl, _ := findCtx.Deadline(); time.Until(dl) > 2*time.Minute {
 		t.Errorf("deadline in %s, want the caller's 2m", time.Until(dl))
@@ -172,12 +179,12 @@ func TestFindTimes(t *testing.T) {
 	if wrapUp > time.Minute {
 		t.Errorf("wrap-up reserve %s exceeds half of the 2m that applies", wrapUp)
 	}
-	if _, stop2, w := findTimes(context.Background(), 0); w != 0 {
+	if _, stop2, w := passTimes(context.Background(), 0); w != 0 {
 		t.Errorf("reserve %s with no deadline", w)
 	} else {
 		stop2()
 	}
-	_, stop3, w := findTimes(context.Background(), 30*time.Minute)
+	_, stop3, w := passTimes(context.Background(), 30*time.Minute)
 	defer stop3()
 	if w < 7*time.Minute || w > 7*time.Minute+30*time.Second {
 		t.Errorf("reserve for 30m = %s", w)
