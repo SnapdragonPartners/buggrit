@@ -227,6 +227,16 @@ func (inc *Incremental) ranges(p string) string {
 	return b.String()
 }
 
+// scopeRules states, for the model, exactly what check enforces. It is the
+// one statement of the rules the model sees (the system prompt points to it),
+// so the two can't drift apart: change both together.
+const scopeRules = `Anchor rules for this pass (submit_findings enforces them):
+- The finding's file must be listed below.
+- A finding on head-side lines must be anchored on a listed line. A range counts if the line GitHub will comment on is listed: the whole range when it lies within one diff hunk, otherwise only its last line. A line outside every diff hunk can't be anchored on this pass.
+- A file-level finding (line 0) needs only its file to be listed. So does a finding on a deleted line (side LEFT), where the file's diff deletes lines.
+- A class finding's other instances may be anywhere.
+`
+
 // check reports why f's published anchor (a) is outside the scope, or "".
 // Only the anchor is checked: a class finding's other instances may be
 // anywhere (§7 rule 1). A file-level finding, or one on a deleted line,
@@ -245,18 +255,23 @@ func (inc *Incremental) check(f *Finding, a github.Anchor) string {
 	if f.Line == 0 || a.Side == github.SideLeft {
 		return ""
 	}
+	if a.FileLevel() {
+		return fmt.Sprintf("line %d of %s is outside every diff hunk of this pull request, so it would be posted as a "+
+			"file-level comment, which this pass doesn't accept for a head-side line. Anchor on a line changed since %s "+
+			"(in %s: %s), or use line 0 for a file-level finding", f.Line, f.Path, short(inc.Since), f.Path, inc.ranges(f.Path))
+	}
 	start := a.StartLine
 	if start == 0 {
 		start = a.Line
 	}
-	for n := start; n <= a.Line && !a.FileLevel(); n++ {
+	for n := start; n <= a.Line; n++ {
 		if inc.lines[f.Path][n] {
 			return ""
 		}
 	}
 	return fmt.Sprintf("line %d of %s hasn't changed since %s, the last completed review (a range is anchored on its "+
 		"last line unless it lies within one diff hunk). This pass reports new findings only on lines changed since then; "+
-		"in %s those are %s", f.Line, f.Path, short(inc.Since), f.Path, inc.ranges(f.Path))
+		"in %s those are %s. A file-level finding (line 0) is also accepted in this file", a.Line, f.Path, short(inc.Since), f.Path, inc.ranges(f.Path))
 }
 
 // passScope picks the pass's scope (design §6 "Review baseline", §7 rule 2):

@@ -261,7 +261,11 @@ func TestSubmitIncrementalPublishedAnchor(t *testing.T) {
 	// Spans both hunks, so GitHub gets line 9 alone, which isn't in scope.
 	wantErr(t, submit(`"start_line": 2, "line": 9`), "line 9 of a.go hasn't changed since ccccccc")
 	// Line 6 is outside every hunk and would fall back to file level.
-	wantErr(t, submit(`"line": 6`), "line 6 of a.go hasn't changed")
+	res := submit(`"line": 6`)
+	wantErr(t, res, "line 6 of a.go is outside every diff hunk of this pull request, so it would be posted as a file-level comment")
+	wantErr(t, res, "or use line 0 for a file-level finding")
+	// ...which is accepted, since a.go changed.
+	wantOK(t, submit(`"line": 0`))
 }
 
 func TestSubmitIncremental(t *testing.T) {
@@ -353,7 +357,7 @@ func TestReviewIncremental(t *testing.T) {
 	}
 	calls := model.Calls()
 	msg := calls[0].Messages[0].Content[0].Text
-	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", "- internal/cache/cache.go: 3\n", "- old.txt: " + fileOrDeleted + "\n"} {
+	for _, want := range []string{"## Scope of this pass", "through commit ccccccc", scopeRules, "- internal/cache/cache.go: 3\n", "- old.txt: " + fileOrDeleted + "\n"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("opening message missing %q", want)
 		}

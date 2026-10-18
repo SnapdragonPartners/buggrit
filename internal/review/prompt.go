@@ -55,7 +55,7 @@ Report each pattern once, completely:
 - Don't repeat issues already raised in the existing review threads listed in the opening message.
 
 Anchoring:
-- path must be a file this pull request changes. On a later pass, the opening message's "Scope of this pass" section narrows that further: the finding's file, and its line, must have changed since the last completed review. line is a head-side line number as shown in the diff or by read_file; use start_line for a range. A finding about a file the diff doesn't touch (for example a stale doc) is anchored at the changed line that made it wrong, and names the other file in problem and instances.
+- path must be a file this pull request changes. On a later pass, the opening message's "Scope of this pass" section narrows where findings may be anchored; follow its rules. line is a head-side line number as shown in the diff or by read_file; use start_line for a range. A finding about a file the diff doesn't touch (for example a stale doc) is anchored at the changed line that made it wrong, and names the other file in problem and instances.
 - suggestion, if given, is the exact replacement text for the anchored lines and nothing else.
 
 Writing: be specific and brief. problem says what is wrong and why, citing code. impact says what breaks. fix says what to change.`
@@ -155,10 +155,9 @@ func writeIncremental(b *strings.Builder, inc *Incremental) {
 		return
 	}
 	fmt.Fprintf(b, "## Scope of this pass\n\n"+
-		"An earlier pass reviewed this pull request through commit %s. Report new findings only on the lines changed since then, "+
-		"listed below (head-side line numbers). Use the rest of the pull request and the repository as context: a change here can "+
-		"break code elsewhere, and a finding about that is anchored on the changed line. A class finding is anchored on a changed "+
-		"line, but its other instances may be anywhere. Coverage refers to these lines.\n\n", short(inc.Since))
+		"An earlier pass reviewed this pull request through commit %s. Report new findings only on what changed since then, "+
+		"listed below. Use the rest of the pull request and the repository as context: a change here can break code elsewhere, "+
+		"and a finding about that is anchored on the change.\n\n%s\nCoverage refers to what is listed here.\n\n", short(inc.Since), scopeRules)
 	start := b.Len()
 	paths := inc.paths()
 	for i, p := range paths {
