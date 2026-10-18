@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,13 @@ const (
 	ProviderOllama           = "ollama"
 	ProviderOpenAICompatible = "openai-compatible"
 )
+
+// ReasoningEfforts lists the reasoning_effort levels, lowest to highest.
+// They match maestro-llms' provider-neutral levels; each provider maps what
+// it supports and omits the rest, so the model's default applies (§4).
+func ReasoningEfforts() []string {
+	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+}
 
 // Limit profiles (§9). In unlimited, token and iteration settings are sanity
 // ceilings against runaways; in budget they are hard spending caps.
@@ -90,6 +98,9 @@ type Model struct {
 	// APIKeyEnv names the environment variable holding the key. The key
 	// itself never appears in config.
 	APIKeyEnv string `json:"api_key_env,omitempty"`
+	// ReasoningEffort asks a reasoning model to bound its thinking; "" means
+	// the model's default.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// RequestTimeout bounds a single model call attempt; retries each get
 	// their own.
 	RequestTimeout Duration `json:"request_timeout,omitempty"`
@@ -107,6 +118,7 @@ type ModelOverride struct {
 	APIKeyEnv       *string   `json:"api_key_env,omitempty"`
 	RequestTimeout  *Duration `json:"request_timeout,omitempty"`
 	MaxOutputTokens *int      `json:"max_output_tokens,omitempty"`
+	ReasoningEffort *string   `json:"reasoning_effort,omitempty"`
 }
 
 // Limits bound a single pass (§9).
@@ -117,8 +129,8 @@ type Limits struct {
 	PassDeadline   Duration `json:"pass_deadline"`
 	MaxConcurrency int      `json:"max_concurrency"`
 	// MaxToolIterations and MaxTokensPerPass of 0 mean no ceiling. Whatever
-	// calls toolloop must translate 0 itself: toolloop treats MaxIterations
-	// <= 0 as its own small default, not as unlimited.
+	// calls toolloop must translate 0 to toolloop.NoIterationLimit: toolloop
+	// reads 0 as its own small default, not as unlimited.
 	MaxToolIterations int `json:"max_tool_iterations"`
 	MaxTokensPerPass  int `json:"max_tokens_per_pass"`
 }
@@ -233,6 +245,9 @@ func (c *Config) Stage(s Stage) Model {
 	if o.MaxOutputTokens != nil {
 		m.MaxOutputTokens = *o.MaxOutputTokens
 	}
+	if o.ReasoningEffort != nil {
+		m.ReasoningEffort = *o.ReasoningEffort
+	}
 	return m
 }
 
@@ -338,6 +353,9 @@ func validateModel(field string, m *Model) []error {
 	}
 	if m.MaxOutputTokens < 0 {
 		add("max_output_tokens must be >= 0")
+	}
+	if m.ReasoningEffort != "" && !slices.Contains(ReasoningEfforts(), m.ReasoningEffort) {
+		add("reasoning_effort must be one of %s (got %q)", strings.Join(ReasoningEfforts(), ", "), m.ReasoningEffort)
 	}
 	return errs
 }

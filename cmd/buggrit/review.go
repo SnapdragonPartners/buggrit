@@ -29,24 +29,39 @@ import (
 
 // reviewDeps are review's seams to the outside world, replaced in tests:
 // the checkout's HEAD and the stages' chat clients. clients reports each
-// model attempt to obs.
+// model attempt, and what each stage's reasoning_effort became, to obs.
 type reviewDeps struct {
 	head    func(dir string) (string, error)
-	clients func(cfg *config.Config, obs middleware.Observer) (*llm.Clients, error)
+	clients func(cfg *config.Config, obs modelObserver) (*llm.Clients, error)
+}
+
+type modelObserver interface {
+	middleware.Observer
+	llm.ReasoningObserver
 }
 
 func defaultReviewDeps() reviewDeps {
 	return reviewDeps{
 		head: gitHead,
-		clients: func(cfg *config.Config, obs middleware.Observer) (*llm.Clients, error) {
-			return llm.New(cfg, llm.WithObserver(obs)) //nolint:wrapcheck // already names the stage
+		clients: func(cfg *config.Config, obs modelObserver) (*llm.Clients, error) {
+			return llm.New(cfg, llm.WithObserver(obs), llm.WithReasoningObserver(obs)) //nolint:wrapcheck // already names the stage
 		},
 	}
 }
 
 // modelLog logs each model attempt, so a slow or failing endpoint shows in
-// the job log.
+// the job log, and what each stage's reasoning_effort became.
 type modelLog struct{ w io.Writer }
+
+// ObserveReasoning logs what the provider received for a stage's
+// reasoning_effort; a provider without that level leaves the model default.
+func (l modelLog) ObserveReasoning(s config.Stage, effort string, applied *llms.ReasoningConfig) {
+	if applied == nil || applied.Effort == "" {
+		say(l.w, "buggrit: %s reasoning_effort %s: not supported by the provider; the model default applies\n", s, effort)
+		return
+	}
+	say(l.w, "buggrit: %s reasoning_effort %s: sent as %s\n", s, effort, applied.Effort)
+}
 
 //nolint:gocritic // hugeParam: the signature is fixed by middleware.Observer
 func (l modelLog) Observe(e middleware.Event) {
@@ -345,10 +360,10 @@ func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual)
 	if res.Find == nil && res.Verify == nil {
 		return b.String()
 	}
-	b.WriteString("| Stage | Model | Tool iterations | Input tokens | Output tokens | Reasoning tokens |\n|---|---|---|---|---|---|\n")
+	b.WriteString("| Stage | Model | Tool iterations | Input tokens | Cached input | Output tokens | Reasoning tokens |\n|---|---|---|---|---|---|---|\n")
 	row := func(stage config.Stage, iterations int, u *llms.Usage) {
-		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d |\n",
-			stage, cfg.Stage(stage).Model, iterations, u.InputTokens, u.OutputTokens, u.ReasoningTokens)
+		fmt.Fprintf(&b, "| %s | %s | %d | %d | %d | %d | %d |\n",
+			stage, cfg.Stage(stage).Model, iterations, u.InputTokens, u.CacheReadTokens, u.OutputTokens, u.ReasoningTokens)
 	}
 	if res.Verify != nil {
 		row(config.StageVerify, res.Verify.Iterations, &res.Verify.Usage)

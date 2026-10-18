@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
@@ -53,9 +54,10 @@ func (c *Clients) For(s config.Stage) llms.ChatClient {
 type baseFactory func(m *config.Model, apiKey string) (llms.ChatClient, error)
 
 type options struct {
-	getenv   func(string) string
-	newBase  baseFactory
-	observer middleware.Observer
+	getenv    func(string) string
+	newBase   baseFactory
+	observer  middleware.Observer
+	reasoning ReasoningObserver
 }
 
 // Option customizes New.
@@ -67,6 +69,19 @@ func WithGetenv(f func(string) string) Option { return func(o *options) { o.gete
 // WithObserver adds maestro-llms' metrics middleware, reporting one event per
 // provider attempt.
 func WithObserver(obs middleware.Observer) Option { return func(o *options) { o.observer = obs } }
+
+// ReasoningObserver learns, once per stage, what reasoning control the
+// provider actually received for the stage's reasoning_effort. applied is nil
+// when the provider couldn't express it and the model's default applied.
+type ReasoningObserver interface {
+	ObserveReasoning(stage config.Stage, effort string, applied *llms.ReasoningConfig)
+}
+
+// WithReasoningObserver reports what each stage's reasoning_effort became.
+// Stages without one aren't reported.
+func WithReasoningObserver(obs ReasoningObserver) Option {
+	return func(o *options) { o.reasoning = obs }
+}
 
 // New builds the stage clients for cfg. Stages that resolve to the same model
 // still get separate clients, so each has its own circuit breaker; they share
@@ -92,12 +107,12 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		if err != nil {
 			return nil, fmt.Errorf("stage %s: %w", s, err)
 		}
-		c := capOutput(middleware.RecommendedChat(base, middleware.RecommendedConfig{
+		c := forStage(middleware.RecommendedChat(base, middleware.RecommendedConfig{
 			Limiter:  lim,
 			Observer: o.observer,
 			Retry:    middleware.DefaultRetryConfig(),
 			Timeout:  m.RequestTimeout.Std(),
-		}), m.MaxOutputTokens)
+		}), s, &m, o.reasoning)
 		switch s {
 		case config.StageFind:
 			out.Find = c
@@ -110,29 +125,47 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 	return out, nil
 }
 
-// capOutput applies a stage's max_output_tokens to every request. A caller's
-// smaller limit is kept; 0 means no cap.
-func capOutput(c llms.ChatClient, maxTokens int) llms.ChatClient {
-	if maxTokens <= 0 {
+// forStage applies a stage's max_output_tokens and reasoning_effort to every
+// request. A caller's smaller token limit, or its own reasoning setting, is
+// kept.
+func forStage(c llms.ChatClient, s config.Stage, m *config.Model, obs ReasoningObserver) llms.ChatClient {
+	if m.MaxOutputTokens <= 0 && m.ReasoningEffort == "" {
 		return c
 	}
-	return &cappedClient{ChatClient: c, max: maxTokens}
+	sc := &stageClient{ChatClient: c, stage: s, max: m.MaxOutputTokens, obs: obs}
+	if m.ReasoningEffort != "" {
+		sc.reasoning = &llms.ReasoningConfig{Effort: llms.ReasoningEffort(m.ReasoningEffort)}
+	}
+	return sc
 }
 
-type cappedClient struct {
+type stageClient struct {
 	llms.ChatClient
-	max int
+	reasoning *llms.ReasoningConfig
+	obs       ReasoningObserver
+	stage     config.Stage
+	reported  sync.Once
+	max       int
 }
 
-// Complete applies the cap and forwards the request. The signature is fixed
-// by llms.ChatClient.
+// Complete applies the stage's settings and forwards the request. The
+// signature is fixed by llms.ChatClient.
 //
 //nolint:gocritic // hugeParam: req is passed by value to satisfy the interface
-func (c *cappedClient) Complete(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
-	if req.MaxTokens <= 0 || req.MaxTokens > c.max {
+func (c *stageClient) Complete(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+	if c.max > 0 && (req.MaxTokens <= 0 || req.MaxTokens > c.max) {
 		req.MaxTokens = c.max
 	}
-	return c.ChatClient.Complete(ctx, req) //nolint:wrapcheck // a transparent decorator; callers inspect the provider error directly
+	ours := c.reasoning != nil && req.Reasoning == nil
+	if ours {
+		r := *c.reasoning
+		req.Reasoning = &r
+	}
+	resp, err := c.ChatClient.Complete(ctx, req)
+	if err == nil && ours && c.obs != nil {
+		c.reported.Do(func() { c.obs.ObserveReasoning(c.stage, string(c.reasoning.Effort), resp.AppliedReasoning) })
+	}
+	return resp, err //nolint:wrapcheck // a transparent decorator; callers inspect the provider error directly
 }
 
 // keyRequired reports whether a provider cannot work without an API key.

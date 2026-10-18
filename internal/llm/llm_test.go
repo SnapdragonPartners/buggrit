@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestNewBuildsEachStageFromItsEffectiveModel(t *testing.T) {
 	var calls []call
 	fake := func(m *config.Model, key string) (llms.ChatClient, error) {
 		calls = append(calls, call{m.Model, key})
-		return &testllm.FakeChatClient{ModelRef: llms.ModelRef{Provider: m.Provider, Name: m.Model}}, nil
+		return &testllm.FakeChatClient{ModelRef: llms.ModelRef{Provider: llms.ProviderID(m.Provider), Name: m.Model}}, nil
 	}
 	clients, err := New(cfg, env(map[string]string{"K": "secret"}), func(o *options) { o.newBase = fake })
 	if err != nil {
@@ -108,7 +109,7 @@ func TestStagesShareTheConcurrencyLimit(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	fake := func(m *config.Model, _ string) (llms.ChatClient, error) {
 		return &testllm.FakeChatClient{
-			ModelRef: llms.ModelRef{Provider: m.Provider, Name: m.Model},
+			ModelRef: llms.ModelRef{Provider: llms.ProviderID(m.Provider), Name: m.Model},
 			Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
 				n := inFlight.Add(1)
 				for {
@@ -156,7 +157,7 @@ func TestMaxOutputTokensCapsRequests(t *testing.T) {
 	var seen []int
 	fake := func(m *config.Model, _ string) (llms.ChatClient, error) {
 		return &testllm.FakeChatClient{
-			ModelRef: llms.ModelRef{Provider: m.Provider, Name: m.Model},
+			ModelRef: llms.ModelRef{Provider: llms.ProviderID(m.Provider), Name: m.Model},
 			Func: func(_ context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
 				seen = append(seen, req.MaxTokens)
 				return testllm.TextResponse("ok"), nil
@@ -191,5 +192,100 @@ func TestMaxOutputTokensCapsRequests(t *testing.T) {
 				t.Errorf("provider saw MaxTokens %v, want [%d]", seen, tt.want)
 			}
 		})
+	}
+}
+
+// Every reasoning_effort the config accepts is one of maestro-llms' levels,
+// so none is silently omitted as unknown.
+func TestReasoningEffortsMatchMaestro(t *testing.T) {
+	known := []llms.ReasoningEffort{
+		llms.ReasoningEffortNone, llms.ReasoningEffortMinimal, llms.ReasoningEffortLow, llms.ReasoningEffortMedium,
+		llms.ReasoningEffortHigh, llms.ReasoningEffortXHigh, llms.ReasoningEffortMax,
+	}
+	got := config.ReasoningEfforts()
+	if len(got) != len(known) {
+		t.Fatalf("config has %d levels, maestro-llms %d", len(got), len(known))
+	}
+	for i := range known {
+		if llms.ReasoningEffort(got[i]) != known[i] {
+			t.Errorf("level %d = %q, want %q", i, got[i], known[i])
+		}
+	}
+}
+
+type reasoningLog struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (l *reasoningLog) ObserveReasoning(s config.Stage, effort string, applied *llms.ReasoningConfig) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a := "default"
+	if applied != nil {
+		a = string(applied.Effort)
+	}
+	l.seen = append(l.seen, string(s)+":"+effort+"->"+a)
+}
+
+func TestReasoningEffortSetsRequests(t *testing.T) {
+	cfg := parse(t, `{"version": 1, "models": {
+	  "default": {"provider": "ollama", "model": "m", "reasoning_effort": "high"},
+	  "verify": {"reasoning_effort": "none"},
+	  "dedupe": {"reasoning_effort": ""}}}`)
+
+	var seen []*llms.ReasoningConfig
+	fake := func(m *config.Model, _ string) (llms.ChatClient, error) {
+		return &testllm.FakeChatClient{
+			ModelRef: llms.ModelRef{Provider: llms.ProviderID(m.Provider), Name: m.Model},
+			Func: func(_ context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+				seen = append(seen, req.Reasoning)
+				resp := testllm.TextResponse("ok")
+				if req.Reasoning != nil && req.Reasoning.Effort != llms.ReasoningEffortNone {
+					resp.AppliedReasoning = &llms.ReasoningConfig{Effort: req.Reasoning.Effort}
+				}
+				return resp, nil
+			},
+		}, nil
+	}
+	log := &reasoningLog{}
+	clients, err := New(cfg, WithReasoningObserver(log), func(o *options) { o.newBase = fake })
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		client llms.ChatClient
+		asked  *llms.ReasoningConfig
+		want   llms.ReasoningEffort
+	}{
+		{"default effort", clients.Find, nil, llms.ReasoningEffortHigh},
+		{"a caller's own setting is kept", clients.Find, &llms.ReasoningConfig{Effort: llms.ReasoningEffortLow}, llms.ReasoningEffortLow},
+		{"stage override", clients.Verify, nil, llms.ReasoningEffortNone},
+		{"explicit empty means the model default", clients.Dedupe, nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seen = nil
+			req := llms.ChatRequest{Messages: []llms.Message{llms.UserText("hi")}, Reasoning: tt.asked}
+			for range 2 {
+				if _, err := tt.client.Complete(context.Background(), req); err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+			}
+			var got llms.ReasoningEffort
+			if seen[0] != nil {
+				got = seen[0].Effort
+			}
+			if got != tt.want {
+				t.Errorf("provider saw effort %q, want %q", got, tt.want)
+			}
+		})
+	}
+	// Each stage reports once, and only for its own setting.
+	want := []string{"find:high->high", "verify:none->default"}
+	if strings.Join(log.seen, " ") != strings.Join(want, " ") {
+		t.Errorf("reports = %v, want %v", log.seen, want)
 	}
 }

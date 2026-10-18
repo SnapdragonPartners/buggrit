@@ -112,6 +112,9 @@ func plural(n int, word string) string {
 	return word + "s"
 }
 
+// reasonDeadline is the incomplete reason for a run the deadline stopped.
+const reasonDeadline = "deadline reached"
+
 // incompleteReason says why a run ended without a submission, or returns an
 // error for outcomes that mean a bug rather than a model or deadline problem.
 func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations int, terminal string) (string, error) {
@@ -119,12 +122,16 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 	switch out.Kind {
 	case toolloop.OutcomeFinalAnswer:
 		return "the model stopped without calling " + terminal, nil
+	case toolloop.OutcomeEmptyResponse:
+		return fmt.Sprintf("the model returned an empty response (stop reason %q)", out.Response.StopReason), nil
 	case toolloop.OutcomeMaxIterations:
 		return fmt.Sprintf("tool iteration ceiling reached (%d)", maxIterations), nil
+	case toolloop.OutcomeDeadline:
+		return reasonDeadline, nil
 	case toolloop.OutcomeCanceled, toolloop.OutcomeLLMError:
 		switch {
 		case deadline:
-			return "deadline reached", nil
+			return reasonDeadline, nil
 		case out.Kind == toolloop.OutcomeCanceled:
 			return "canceled", nil
 		}
@@ -134,7 +141,7 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 		// the context) is an incomplete pass, not a bug.
 		switch {
 		case deadline:
-			return "deadline reached", nil
+			return reasonDeadline, nil
 		case ctx.Err() != nil:
 			return "canceled", nil //nolint:nilerr // cancellation is an incomplete pass, not a fault
 		}
