@@ -133,7 +133,7 @@ How to work:
 Verdicts:
 - fixed: the defect the finding describes is no longer present at the reviewed commit. evidence_files lists every file you relied on: the anchor file, plus wherever the fix lives. If any of them changes later, the finding is checked again.
 - open: the defect is still present. reason cites the code that shows it. If a reply argues otherwise and the argument does not hold, reason answers the argument specifically.
-- dismissed: only for a finding with a new reply, when the reply holds up: the behavior is deliberate and documented, the finding was mistaken, or it is out of scope by the pull request's own description. For an advisory finding (P2 or P3), any reasoned reply holds up, such as "deferred to #123" or "intentional, see the ADR"; the author owns those decisions.
+- dismissed: only for a finding with a new reply, when the reply holds up: the behavior is deliberate and documented, the finding was mistaken, or it is out of scope by the pull request's own description. For an advisory finding (P2 or P3), any reply that gives a reason not to fix it holds up, such as "deferred to #123" or "intentional, see the ADR"; the author owns those decisions. A claim that it was fixed is not such a reason: check it, and if the code disproves it, the verdict is open.
 - Judge the code, not claims about it. "Fixed in abc123" is a claim to check. A resolved thread is not evidence of a fix.
 - Only judge the listed findings. Do not raise new issues here.
 

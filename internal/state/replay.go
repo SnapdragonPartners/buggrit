@@ -29,6 +29,8 @@ type Tracked struct {
 	Rebuttals int
 	// Seen is the newest human comment any transition handled.
 	Seen int64
+	// LastID is the database ID of the comment that carries Last.
+	LastID int64
 }
 
 // Blocking reports whether the finding blocks convergence (P0 or P1, §5).
@@ -60,7 +62,7 @@ func Replay(threads []github.Thread, botLogin string) []Tracked {
 			case !own:
 				human = append(human, *c)
 			case tm.ID == t.ID && tm.IsTransition():
-				t.apply(tm)
+				t.apply(tm, c.DatabaseID)
 			}
 			// buggrit's own comments with other markers are ignored.
 		}
@@ -74,8 +76,8 @@ func Replay(threads []github.Thread, botLogin string) []Tracked {
 	return out
 }
 
-func (t *Tracked) apply(m *Marker) {
-	t.Last = m
+func (t *Tracked) apply(m *Marker, id int64) {
+	t.Last, t.LastID = m, id
 	t.State = m.To
 	t.Seen = max(t.Seen, m.Seen)
 	if m.Kind == KindRebutted {

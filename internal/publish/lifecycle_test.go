@@ -278,14 +278,27 @@ func TestLifecycleValidRebuttalAndAdvisoryReply(t *testing.T) {
 		t.Fatalf("valid rebuttal: %+v, %v", p.posted, p.err)
 	}
 
+	// An advisory deferral holds up (§7 rule 4).
 	w2 := newWorld(t)
 	th2, id2 := w2.raise("P2")
 	w2.fake.Reply(7, th2.ID, "dan", "Deferred to #12.")
-	// The verifier calls it still present; for an advisory finding the
-	// reply decides anyway (§7 rule 4).
-	p = w2.pass("", verdict(id2, "open", "It is still there."))
+	p = w2.pass("", verdict(id2, "dismissed", "Deferred, fine."))
 	if p.err != nil || lastTransition(t, th2).Kind != state.KindDismissed || !th2.Resolved {
-		t.Fatalf("advisory reply: %+v, %v", p.posted, p.err)
+		t.Fatalf("advisory deferral: %+v, %v", p.posted, p.err)
+	}
+
+	// A fix claim the code disproves is rebutted; once rebuttals are used
+	// up, the author's word stands, and an advisory finding never goes to
+	// a human (§7 rule 5).
+	w3 := newWorld(t)
+	th3, id3 := w3.raise("P2")
+	w3.fake.Reply(7, th3.ID, "dan", "Fixed in 1111111.")
+	if p = w3.pass("", verdict(id3, "open", "1111111 doesn't touch New.")); lastTransition(t, th3).Kind != state.KindRebutted {
+		t.Fatalf("failed fix claim: %+v", p.posted)
+	}
+	w3.fake.Reply(7, th3.ID, "dan", "We'll leave it.")
+	if p = w3.pass("", verdict(id3, "open", "Still there.")); lastTransition(t, th3).Kind != state.KindDismissed || !th3.Resolved {
+		t.Fatalf("advisory after its rebuttal: %+v", p.posted)
 	}
 }
 
@@ -422,8 +435,16 @@ func TestLifecycleNeedsHumanLeftResolved(t *testing.T) {
 	if p.err != nil || m.Kind != state.KindNeedsHuman || !m.LeftResolved || len(p.posted.Manual) != 1 {
 		t.Fatalf("forbidden: %+v, %+v, %v", m, p.posted, p.err)
 	}
-	if p = w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman {
-		t.Fatal("the old resolution settled the finding")
+	if !strings.Contains(th.Comments[len(th.Comments)-1].Body, "The next reply, by anyone, settles") {
+		t.Errorf("reply promises a resolution settles it: %q", th.Comments[len(th.Comments)-1].Body)
+	}
+	if p = w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman || len(p.posted.Manual) != 1 {
+		t.Fatal("the old resolution settled the finding, or the unresolve wasn't retried")
+	}
+	// With permission back, the next run unresolves the thread.
+	w.fake.ForbidResolve = false
+	if p = w.pass("", verdict(id, "open", "Still wrong.")); th.Resolved || p.posted.Unresolved != 1 || lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatalf("unresolve not repaired: %+v", p.posted)
 	}
 	w.fake.Reply(7, th.ID, "erin", "Ship it.")
 	if p = w.pass("", ""); lastTransition(t, th).Kind != state.KindSettled {
@@ -478,5 +499,39 @@ func TestLifecycleNeedsHumanResolvedMidRun(t *testing.T) {
 	}
 	if p := w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman {
 		t.Fatalf("settled without a human: %+v", p.posted)
+	}
+}
+
+// A reply that lands while buggrit decides to escalate answered the earlier
+// state, not the escalation, so it doesn't settle the finding.
+func TestLifecycleReplyBeforeEscalationDoesNotSettle(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Convergence.MaxRebuttals = 0
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Disagree.")
+	verifier := &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		w.fake.Reply(7, th.ID, "dan", "And another thing.") // unseen by this run
+		return testllm.ToolCallResponse("1", "submit_verdicts", verdict(id, "open", "Still wrong.")), nil
+	}}
+	pref := review.PRRef{Repo: ref.Repo, Number: 7, HeadSHA: w.head()}
+	res, err := review.Review(context.Background(), pref, w.ws, w.gh, &review.Options{Config: &w.cfg, Find: model("submit_findings", ""), Verify: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Publish(context.Background(), w.gh, pref, res); err != nil {
+		t.Fatal(err)
+	}
+	if lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatal("not escalated")
+	}
+	// The unseen reply is still unhandled, so the finding is checked again,
+	// but nothing settles it.
+	p := w.pass("", verdict(id, "open", "Still wrong."))
+	if p.err != nil || lastTransition(t, th).Kind != state.KindNeedsHuman || len(p.res.Checks) != 1 {
+		t.Fatalf("settled by a reply from before the escalation: %+v, %v", p.posted, p.err)
+	}
+	w.fake.Reply(7, th.ID, "erin", "Accepting it.")
+	if p = w.pass("", ""); lastTransition(t, th).Kind != state.KindSettled {
+		t.Fatalf("a later reply didn't settle it: %+v", p.posted)
 	}
 }

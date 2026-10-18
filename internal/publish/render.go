@@ -94,6 +94,11 @@ func TransitionBody(tr *review.Transition, sha string, leftResolved bool) (strin
 	case state.KindNeedsHuman:
 		lead = "**Needs a human.** " + reason
 		note = "buggrit won't argue further. The next reply or resolution, by anyone, settles this finding as dismissed."
+		if leftResolved {
+			// Replay ignores this thread's resolution, which GitHub
+			// wouldn't let buggrit undo (§6).
+			note = "buggrit won't argue further. The next reply, by anyone, settles this finding as dismissed."
+		}
 	case state.KindDismissed:
 		lead = "**Dismissed.** " + reason
 		note = "buggrit won't raise this again"

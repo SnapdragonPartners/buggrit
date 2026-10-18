@@ -23,6 +23,7 @@ func TestNext(t *testing.T) {
 		pending   []github.Comment
 		want      Step
 		rebuttals int
+		lastID    int64
 		resolved  bool
 	}
 	for _, c := range []tc{
@@ -37,14 +38,19 @@ func TestNext(t *testing.T) {
 		{name: "invalid rebuttal", pending: reply, v: present, want: Step{Kind: KindRebutted, Reason: present.Reason, Want: Unresolve}},
 		{name: "invalid rebuttal, resolved by the replier", pending: reply, resolved: true, v: present, want: Step{Kind: KindRebutted, Reason: present.Reason, Want: Unresolve}},
 		{name: "rebuttals used up", pending: reply, rebuttals: 1, v: present, want: Step{Kind: KindNeedsHuman, Reason: present.Reason, Want: Unresolve}},
-		{name: "advisory reply dismisses", sev: "P2", pending: reply, v: present, want: Step{Kind: KindDismissed, Reason: present.Reason, Want: Resolve}},
+		{name: "advisory reply that holds up", sev: "P2", pending: reply, v: valid, want: Step{Kind: KindDismissed, Reason: valid.Reason, Want: Resolve}},
+		{name: "advisory reply that doesn't: rebutted", sev: "P2", pending: reply, v: present, want: Step{Kind: KindRebutted, Reason: present.Reason, Want: Unresolve}},
+		{name: "advisory, rebuttals used up: the author's word stands", sev: "P3", pending: reply, rebuttals: 1, v: present, want: Step{Kind: KindDismissed, Reason: present.Reason, Want: Resolve}},
 		{name: "advisory reply with a fix", sev: "P3", pending: reply, v: fixed, want: Step{Kind: KindFixed, Reason: fixed.Reason, Evidence: fixed.Evidence, Want: Resolve}},
 		{name: "advisory false resolve still reopens", sev: "P2", resolved: true, v: present, want: Step{Kind: KindReopened, Reason: present.Reason, Want: Unresolve}},
 
 		{name: "needs_human settled by a reply", state: StateNeedsHuman, pending: reply, want: Step{Kind: KindSettled, Want: Resolve}},
 		{name: "needs_human settled by a resolution", state: StateNeedsHuman, resolved: true, want: Step{Kind: KindSettled, Want: Resolve}},
 		{name: "needs_human, fixed meanwhile", state: StateNeedsHuman, v: fixed, want: Step{Kind: KindFixed, Reason: fixed.Reason, Evidence: fixed.Evidence, Want: Resolve}},
-		{name: "needs_human waits", state: StateNeedsHuman, v: present, want: Step{}},
+		{name: "needs_human waits, open", state: StateNeedsHuman, v: present, want: Step{Want: Unresolve}},
+		{name: "needs_human left resolved: not settled, unresolve retried", state: StateNeedsHuman, resolved: true,
+			last: &Marker{ID: "f-1", To: StateNeedsHuman, Kind: KindNeedsHuman, SHA: "a", LeftResolved: true}, v: present, want: Step{Want: Unresolve}},
+		{name: "needs_human: a reply from before the marker doesn't settle", state: StateNeedsHuman, lastID: 20, pending: reply, v: present, want: Step{Want: Unresolve}},
 
 		{name: "fixed, not re-verified: repair", state: StateFixed, want: Step{Want: Resolve}},
 		{name: "fixed, still fixed: nothing to say", state: StateFixed, v: fixed, want: Step{Want: Resolve}},
@@ -57,7 +63,7 @@ func TestNext(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			tr := &Tracked{
 				Thread: &github.Thread{IsResolved: c.resolved}, ID: "f-1", Severity: "P1", State: StateOpen,
-				Last: c.last, Pending: c.pending, Rebuttals: c.rebuttals,
+				Last: c.last, LastID: c.lastID, Pending: c.pending, Rebuttals: c.rebuttals,
 			}
 			if c.state != "" {
 				tr.State = c.state

@@ -534,7 +534,9 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   Claude Code acting with a person's credentials. Replies to `open` findings
   go through the rebuttal rules in §7. Once a finding is `needs_human`, the
   next reply or resolution from anyone settles it as `dismissed`, and buggrit
-  doesn't argue. The one thing that never settles a finding is **a bare
+  doesn't argue. Only a reply posted after the `needs_human` marker counts.
+  One that landed while buggrit was deciding answered the earlier state; it
+  stays unhandled, but it settles nothing. The one thing that never settles a finding is **a bare
   resolution with no reply while the issue is still present**. That reopens
   the thread, because it's the "resolved without fixing" case.
 - **`dismissed` is terminal. `fixed` is terminal unless the defect comes
@@ -545,7 +547,8 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   disagree, it does the missing resolve or unresolve without reposting the
   transition reply. This repairs runs killed between "post marker" and
   "resolve". `fixed` and `dismissed` threads should be resolved, and
-  `needs_human` ones left open. An open thread someone resolved goes to
+  `needs_human` ones left open. A `needs_human` thread GitHub wouldn't
+  unresolve is retried every pass. An open thread someone resolved goes to
   the verifier first, since that's the "resolved without fixing" case.
 - **A needs_human thread is unresolved before its marker lands.** Replay
   reads a resolution under a `needs_human` marker as a human settling the
@@ -661,7 +664,12 @@ buggrit doesn't end. The rules, in order of importance:
    which matches "if Codex reaffirms, stop and bring it to Dan". For
    **advisory** findings (P2/P3), any reasoned reply ("deferred to #123",
    "intentional, see ADR 0042") is accepted as a dismissal without a rebuttal.
-   The agent owns those decisions, as the morris workflow already says.
+   The agent owns those decisions, as the morris workflow already says. The
+   verifier judges whether a reply gives such a reason. A claim of a fix
+   that the code disproves doesn't, and it gets the usual rebuttal. An
+   advisory finding never goes to `needs_human`, which would hold up
+   convergence (rule 5). Once its rebuttals are used up, the author's word
+   stands and it's dismissed.
 5. **Advisory findings never block convergence.** Thresholds don't tighten as
    passes add up: P2/P3 findings such as docs drift are still raised on the
    last pass. Instead, only open **blocking** findings and `needs_human` count

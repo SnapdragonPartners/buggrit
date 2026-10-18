@@ -35,15 +35,22 @@ type Step struct {
 // human: any reply or resolution since it went to a human (§6, "Humans
 // settle findings"). Settling needs no model.
 //
-// The resolution counts because publishing unresolves the thread before it
-// posts the needs_human marker, so a resolved thread under that marker was
-// resolved afterwards. The exception is a thread GitHub wouldn't
-// unresolve, which the marker records.
+// Only a reply posted after the needs_human marker counts. One that landed
+// while buggrit was deciding is unhandled, but it answered the earlier
+// state, not the escalation. A resolution counts because publishing
+// unresolves the thread before it posts the needs_human marker, so a
+// resolved thread under that marker was resolved afterwards. The exception
+// is a thread GitHub wouldn't unresolve, which the marker records.
 func (t *Tracked) NeedsSettling() bool {
 	if t.State != StateNeedsHuman {
 		return false
 	}
-	return len(t.Pending) > 0 || t.Thread.IsResolved && (t.Last == nil || !t.Last.LeftResolved)
+	for i := range t.Pending {
+		if t.Pending[i].DatabaseID > t.LastID {
+			return true
+		}
+	}
+	return t.Thread.IsResolved && (t.Last == nil || !t.Last.LeftResolved)
 }
 
 // Next applies the state machine in §6 to a finding. v is the verifier's
@@ -66,7 +73,9 @@ func Next(t *Tracked, v *Verdict, maxRebuttals int) Step {
 		case v != nil && v.State == StateFixed:
 			return Step{Kind: KindFixed, Reason: v.Reason, Evidence: v.Evidence, Want: Resolve}
 		}
-		return Step{}
+		// Left open for a human. A thread still resolved here is one GitHub
+		// wouldn't unresolve; keep asking, since permission may come back.
+		return Step{Want: Unresolve}
 	case StateFixed:
 		return nextFixed(t, v)
 	}
@@ -103,12 +112,15 @@ func nextOpen(t *Tracked, v *Verdict, maxRebuttals int) Step {
 	switch {
 	case v.State == StateFixed:
 		return Step{Kind: KindFixed, Reason: v.Reason, Evidence: v.Evidence, Want: Resolve}
-	case v.State == StateDismissed && replied,
-		// §7 rule 4: for an advisory finding, the agent's reply decides.
-		replied && !t.Blocking():
+	case v.State == StateDismissed && replied:
 		return Step{Kind: KindDismissed, Reason: v.Reason, Want: Resolve}
 	case replied && t.Rebuttals < maxRebuttals:
 		return Step{Kind: KindRebutted, Reason: v.Reason, Want: Unresolve}
+	case replied && !t.Blocking():
+		// §7 rules 4 and 5: an advisory finding never goes to a human, since
+		// that would hold up convergence. Once its rebuttals are used up,
+		// the author's word stands.
+		return Step{Kind: KindDismissed, Reason: v.Reason, Want: Resolve}
 	case replied:
 		return Step{Kind: KindNeedsHuman, Reason: v.Reason, Want: Unresolve}
 	case !t.Thread.IsResolved:
