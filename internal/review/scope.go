@@ -260,8 +260,9 @@ func (inc *Incremental) check(f *Finding, a github.Anchor) string {
 }
 
 // passScope picks the pass's scope (design §6 "Review baseline", §7 rule 2):
-// the whole PR when no pass has completed, or when the completed pass's head
-// isn't an ancestor of HEAD (a force-push or rebase); otherwise the lines
+// the whole PR when no pass has completed, when the completed pass's head
+// isn't an ancestor of HEAD (a force-push or rebase), when GitHub no longer
+// has it, or when GitHub won't diff the changes since it; otherwise the lines
 // changed since it. It also returns a description for the review body.
 func passScope(ctx context.Context, gh GitHub, ref PRRef, since string, pr *github.Diff, inScope func(string) bool) (*Incremental, string, error) {
 	const whole = "the whole pull request"

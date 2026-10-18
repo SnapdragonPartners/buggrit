@@ -53,14 +53,14 @@ func (f *Finding) Blocking() bool {
 	return f.Severity == config.SeverityP0 || f.Severity == config.SeverityP1
 }
 
-// Coverage values: whether the model reviewed the whole change.
+// Coverage values: whether the model reviewed the pass's whole scope.
 const (
 	CoverageComplete = "complete"
 	CoveragePartial  = "partial"
 )
 
 // Submission is submit_findings' argument object. Coverage is the model's
-// own account of whether it reviewed the whole change; "partial" leaves the
+// own account of whether it reviewed the pass's whole scope; "partial" leaves the
 // pass incomplete, so the next run reviews it again (design §9).
 type Submission struct {
 	Summary  string    `json:"summary,omitempty"`
@@ -81,7 +81,7 @@ func submitFindingsDef() llms.ToolDefinition {
   "type": "object",
   "properties": {
     "summary": {"type": "string", "description": "One short paragraph on the change overall; with partial coverage, say what you did not get to"},
-    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed the whole change; partial if you ran short of time or could not cover some of it"},
+    "coverage": {"type": "string", "enum": ["complete", "partial"], "description": "complete if you reviewed everything in this pass's scope (the whole change, or on a later pass the lines listed under Scope of this pass); partial if you ran short of time or could not cover some of it"},
     "findings": {
       "type": "array",
       "items": {

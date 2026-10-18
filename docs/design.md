@@ -389,8 +389,9 @@ its ADR-0017). buggrit calls `toolloop` from one function in
   ([maestro-llms#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73)).
 
 `submit_findings` takes `{"summary", "coverage", "findings": [...]}`.
-`coverage` is required: `complete` if the model reviewed the whole change,
-`partial` if it didn't (it says what it missed in `summary`). A partial
+`coverage` is required: `complete` if the model reviewed the pass's whole
+scope (the whole change, or on a later pass the lines changed since
+`completed_sha`, §7 rule 2), `partial` if it didn't (it says what it missed in `summary`). A partial
 submission's findings are posted, but the pass is incomplete, so the next
 run reviews that head again (§9).
 
