@@ -52,7 +52,7 @@ func TestSelectChecks(t *testing.T) {
 		replied,
 	}
 	why := map[string]string{}
-	for _, c := range selectChecks(context.Background(), gh, ref, all, false, nil) {
+	for _, c := range selectChecks(context.Background(), gh, ref, all) {
 		why[c.Tracked.ID] = c.Why
 	}
 	want := map[string]string{
@@ -74,22 +74,6 @@ func TestSelectChecks(t *testing.T) {
 	for id := range why {
 		if _, ok := want[id]; !ok {
 			t.Errorf("%s was selected: %s", id, why[id])
-		}
-	}
-
-	// At a head that already has a complete pass, untouched open and
-	// needs_human findings are left alone unless that pass didn't reach
-	// them.
-	why = map[string]string{}
-	for _, c := range selectChecks(context.Background(), gh, ref, all, true, []string{"f-waitin"}) {
-		why[c.Tracked.ID] = c.Why
-	}
-	if _, ok := why["f-open00"]; ok {
-		t.Error("an untouched open finding was rechecked at a reviewed head")
-	}
-	for _, id := range []string{"f-resolv", "f-replyo", "f-waitin", "f-touchd", "f-replid"} {
-		if why[id] == "" {
-			t.Errorf("%s not selected in a reconcile-only run", id)
 		}
 	}
 }

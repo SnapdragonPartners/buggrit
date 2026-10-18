@@ -79,10 +79,12 @@ one. Every run therefore:
   the head in the event payload;
 - picks its mode from state: a full pass if that head has no completed pass,
   otherwise reconcile only (step 2 plus publish, no finder and no review).
-  A reconcile-only run verifies only findings someone has acted on since
-  (a reply or a resolution), plus any the last pass at that head didn't
-  reach (§6). The code is the same as when that pass judged the rest, so
-  judging them again could only add noise.
+  A reconcile-only run selects findings to verify by the same rules as a
+  full pass (§6). A completed pass at the head doesn't prove each thread's
+  current state was judged against it: after a force-push back to an
+  earlier head, for one, later transitions were decided elsewhere. Skipping
+  findings no one has touched needs a per-finding record of the head each
+  was last verified at, which belongs with the summary ledger (step 5).
 
 This keeps an invariant: the last run to start in a PR's group saw the
 latest head, so replacing a pending run never loses work.
@@ -545,6 +547,13 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   "resolve". `fixed` and `dismissed` threads should be resolved, and
   `needs_human` ones left open. An open thread someone resolved goes to
   the verifier first, since that's the "resolved without fixing" case.
+- **A needs_human thread is unresolved before its marker lands.** Replay
+  reads a resolution under a `needs_human` marker as a human settling the
+  finding, so the order matters there. A run killed between the two then
+  leaves no marker, and the next run decides again. Every other transition
+  posts its reply first and leaves the resolution to repair. If GitHub
+  refuses the unresolve (§3), the marker records `"left_resolved":true`,
+  and only a reply settles that finding.
 - **Never say the same thing twice.** If buggrit's latest transition already
   says a finding is open (`reopened`, `regressed` or `rebutted`) and no
   human has commented since, a resolved thread is just unresolved, with no
@@ -575,11 +584,10 @@ Each pass's review body ends with a **pass marker**
 The status follows the finder: `complete` means the pass searched its whole
 scope for new findings. Verification doesn't affect it, because re-running
 the finder over a scope it already searched is the drip-feed that
-incremental scope (§7 rule 2) exists to stop. Findings the verifier didn't
-reach are listed in the marker (`"unverified":["f-…"]`). Nothing was posted
-on their threads, so a reconcile-only run at the same head checks them. In
-the meantime, the pass's status line says `incomplete` and the run exits 1
-(§7 rule 6, §8).
+incremental scope (§7 rule 2) exists to stop. Nothing was posted on the
+threads of findings the verifier didn't reach, so the next run, at the same
+head or a new one, selects them again. In the meantime, the pass's status
+line says `incomplete` and the run exits 1 (§7 rule 6, §8).
 The review is the last thing a pass posts, after every finding thread, so
 `complete` also means "finished publishing". A head with a complete pass
 gets no new full pass (§2, step 0). A pass that stops partway leaves no

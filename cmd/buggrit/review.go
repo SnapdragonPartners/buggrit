@@ -277,7 +277,7 @@ func (r *reviewer) print(res *review.Result) {
 		tr := &res.Transitions[i]
 		var lines []string
 		if tr.Kind != "" {
-			text, err := publish.TransitionBody(tr, res.HeadSHA)
+			text, err := publish.TransitionBody(tr, res.HeadSHA, false)
 			if err != nil {
 				say(r.stderr, "buggrit: %v\n", err)
 				continue

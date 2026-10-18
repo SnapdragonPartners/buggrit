@@ -34,8 +34,16 @@ type Step struct {
 // NeedsSettling reports whether a needs_human finding has been settled by a
 // human: any reply or resolution since it went to a human (§6, "Humans
 // settle findings"). Settling needs no model.
+//
+// The resolution counts because publishing unresolves the thread before it
+// posts the needs_human marker, so a resolved thread under that marker was
+// resolved afterwards. The exception is a thread GitHub wouldn't
+// unresolve, which the marker records.
 func (t *Tracked) NeedsSettling() bool {
-	return t.State == StateNeedsHuman && (len(t.Pending) > 0 || t.Thread.IsResolved)
+	if t.State != StateNeedsHuman {
+		return false
+	}
+	return len(t.Pending) > 0 || t.Thread.IsResolved && (t.Last == nil || !t.Last.LeftResolved)
 }
 
 // Next applies the state machine in §6 to a finding. v is the verifier's

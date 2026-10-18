@@ -89,7 +89,7 @@ const (
 // a finding marker (FP, Severity, Pass set); each buggrit reply carries a
 // transition marker (To, Kind, SHA and Seen set, plus Evidence for a fixed
 // verdict); each pass's review body carries a pass marker (Status, Pass and
-// SHA set, plus Unverified when verification didn't finish).
+// SHA set).
 //
 // Unknown fields are ignored when decoding, so a marker written by a newer
 // buggrit still reads.
@@ -102,16 +102,15 @@ type Marker struct {
 	Kind     Kind         `json:"kind,omitempty"`
 	Status   PassStatus   `json:"status,omitempty"`
 	Evidence []string     `json:"evidence_files,omitempty"`
-	// Unverified lists the earlier findings a pass didn't get to verify.
-	// They have no new transition, so a later run at the same head selects
-	// them again; the pass's status is incomplete meanwhile (§6, "Review
-	// baseline").
-	Unverified []string `json:"unverified,omitempty"`
 	// Seen is the database ID of the newest human comment in the thread when
 	// the transition was decided. Later comments are still unhandled, even
 	// if they landed before the transition's reply (§6).
 	Seen int64 `json:"seen,omitempty"`
 	Pass int   `json:"pass,omitempty"`
+	// LeftResolved marks a needs_human transition posted on a thread GitHub
+	// wouldn't unresolve. That resolution predates the transition, so it
+	// doesn't settle the finding; only a reply does (§6).
+	LeftResolved bool `json:"left_resolved,omitempty"`
 }
 
 // IsTransition reports whether m records a state transition.

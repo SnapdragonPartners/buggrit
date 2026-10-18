@@ -215,9 +215,11 @@ func TestLifecycleRebuttals(t *testing.T) {
 	if p.err != nil || lastTransition(t, th).Kind != state.KindRebutted || th.Resolved {
 		t.Fatalf("first rebuttal: %+v, %v", p.posted, p.err)
 	}
-	// A run with nothing new does nothing.
-	if p = w.pass("", ""); !p.res.Skipped {
-		t.Fatalf("idle run: %+v", p.res)
+	// A run with nothing new checks the open finding again (§6) and says
+	// nothing.
+	before := len(th.Comments)
+	if p = w.pass("", verdict(id, "open", "Same.")); p.err != nil || len(th.Comments) != before || !strings.Contains(Status(p.res), "1 unchanged") {
+		t.Fatalf("idle run: %+v, %v; status %s", p.posted, p.err, Status(p.res))
 	}
 
 	w.fake.Reply(7, th.ID, "dan", "Still intentional.")
@@ -348,10 +350,9 @@ func TestLifecycleResolveForbidden(t *testing.T) {
 	}
 }
 
-// Verification cut short leaves the pass complete for the finder, with the
-// unchecked findings in its marker; the next run at that head checks just
-// those (§6).
-func TestLifecycleUnverifiedRecheckedAtSameHead(t *testing.T) {
+// Verification cut short leaves the pass complete for the finder, but the
+// run incomplete; the next run at that head checks the finding (§6).
+func TestLifecycleUnverifiedCheckedNextRun(t *testing.T) {
 	w := newWorld(t)
 	th, id := w.raise("P1")
 	w.push("cache.go")
@@ -368,12 +369,86 @@ func TestLifecycleUnverifiedRecheckedAtSameHead(t *testing.T) {
 		t.Fatal(perr)
 	}
 	m, err := state.Parse(w.fake.PR(7).Reviews[1].Body)
-	if err != nil || m.Status != state.PassComplete || len(m.Unverified) != 1 || m.Unverified[0] != id {
+	if err != nil || m.Status != state.PassComplete {
 		t.Fatalf("pass marker = %+v, %v", m, err)
 	}
 
 	p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go"))
 	if p.err != nil || !p.res.ReconcileOnly || !th.Resolved || !p.res.Done() {
 		t.Fatalf("recheck: %+v, %v", p.res, p.err)
+	}
+}
+
+// A needs_human transition on a resolved thread unresolves it first. If the
+// run dies there, nothing was posted, and the old resolution can't pass for
+// a human settling the finding (§6).
+func TestLifecycleNeedsHumanUnresolvesFirst(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Convergence.MaxRebuttals = 0
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Disagree.")
+	w.fake.SetResolved(7, th.ID, true)
+	w.fake.OnRequest = func(op string) int {
+		if op == "graphql UnresolveThread" {
+			return http.StatusBadGateway
+		}
+		return 0
+	}
+	if p := w.pass("", verdict(id, "open", "Still wrong.")); p.err == nil || len(th.Comments) != 2 {
+		t.Fatalf("killed run: err %v, %d comments", p.err, len(th.Comments))
+	}
+	w.fake.OnRequest = nil
+	p := w.pass("", verdict(id, "open", "Still wrong."))
+	if p.err != nil || lastTransition(t, th).Kind != state.KindNeedsHuman || th.Resolved {
+		t.Fatalf("rerun: %+v, %v", p.posted, p.err)
+	}
+	// Nobody has acted since, so nothing is settled.
+	if p = w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatal("settled without a human")
+	}
+}
+
+// When GitHub won't unresolve, the needs_human marker says the thread was
+// left resolved, and only a reply settles it.
+func TestLifecycleNeedsHumanLeftResolved(t *testing.T) {
+	w := newWorld(t)
+	w.cfg.Convergence.MaxRebuttals = 0
+	th, id := w.raise("P1")
+	w.fake.Reply(7, th.ID, "dan", "Disagree.")
+	w.fake.SetResolved(7, th.ID, true)
+	w.fake.ForbidResolve = true
+	p := w.pass("", verdict(id, "open", "Still wrong."))
+	m := lastTransition(t, th)
+	if p.err != nil || m.Kind != state.KindNeedsHuman || !m.LeftResolved || len(p.posted.Manual) != 1 {
+		t.Fatalf("forbidden: %+v, %+v, %v", m, p.posted, p.err)
+	}
+	if p = w.pass("", verdict(id, "open", "Still wrong.")); lastTransition(t, th).Kind != state.KindNeedsHuman {
+		t.Fatal("the old resolution settled the finding")
+	}
+	w.fake.Reply(7, th.ID, "erin", "Ship it.")
+	if p = w.pass("", ""); lastTransition(t, th).Kind != state.KindSettled {
+		t.Fatalf("a reply didn't settle it: %+v", p.posted)
+	}
+}
+
+// A force-push back to a head that already had a complete pass still
+// verifies the findings whose state was decided elsewhere since.
+func TestLifecycleForcePushBackToReviewedHead(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.push("cache.go")
+	fixedAt := w.head()
+	if p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go")); p.err != nil || !th.Resolved {
+		t.Fatalf("fix: %v", p.err)
+	}
+	w.push("cache.go")
+	if p := w.pass("", verdict(id, "open", "The initialization is gone again.")); p.err != nil || th.Resolved {
+		t.Fatalf("regression: %v", p.err)
+	}
+	w.fake.Push(7, fixedAt, diff)
+	w.heads = append(w.heads, fixedAt)
+	p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go"))
+	if p.err != nil || !p.res.ReconcileOnly || !th.Resolved || lastTransition(t, th).Kind != state.KindFixed {
+		t.Fatalf("back at the fixed head: %+v, %v", p.res, p.err)
 	}
 }

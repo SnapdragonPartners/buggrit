@@ -69,7 +69,7 @@ type Result struct {
 	Checks      []Check
 	Transitions []Transition
 	// Unverified lists the checks the verifier didn't reach. They keep
-	// their state and are selected again next run (§6).
+	// their state, and the next run selects them again (§6).
 	Unverified []string
 	Elapsed    time.Duration
 	// Pass is this pass's number (design §6).
@@ -132,12 +132,8 @@ func (p *pass) run(ctx context.Context) (*Result, error) {
 	// Mode (§2, step 0): a full pass unless this head already has a
 	// completed one; then only earlier findings are reconciled.
 	res.ReconcileOnly = p.baseline.CompletedAt(p.ref.HeadSHA)
-	var recheck []string
-	if res.ReconcileOnly {
-		res.Complete = true
-		recheck = p.baseline.UnverifiedAt(p.ref.HeadSHA)
-	}
-	res.Checks = selectChecks(ctx, p.gh, p.ref, p.tracked, res.ReconcileOnly, recheck)
+	res.Complete = res.ReconcileOnly
+	res.Checks = selectChecks(ctx, p.gh, p.ref, p.tracked)
 	if res.ReconcileOnly && len(res.Checks) == 0 {
 		// Settling and repairs need no model and no diff.
 		res.Transitions = transitions(p.tracked, nil, nil, cfg.Convergence.MaxRebuttals)

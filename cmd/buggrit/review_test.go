@@ -102,9 +102,17 @@ func TestReviewPostsAndThenSkips(t *testing.T) {
 		t.Errorf("job summary = %q, %v", summary, err)
 	}
 
-	// The head now has a completed pass, so the next run does nothing.
+	// The head now has a completed pass, so the next run only checks the
+	// open finding again, posting nothing.
+	m, err := state.Parse(pr.Threads[0].Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Still nil."}]}`)}}
 	code, out, _ = e.run(t)
-	if code != 0 || !strings.Contains(out, "skipped at 1111111: a pass already completed") || len(e.fake.PR(7).Reviews) != 1 {
+	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 unchanged") ||
+		len(e.fake.PR(7).Reviews) != 1 || len(pr.Threads[0].Comments) != 1 {
 		t.Errorf("second run: exit %d, %s", code, out)
 	}
 }

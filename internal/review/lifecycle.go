@@ -40,13 +40,7 @@ func (t *Transition) Repair() bool {
 //
 // Dismissed findings are terminal, and a settled needs_human finding is
 // dismissed without a model.
-//
-// A reconcile-only run (the head already has a complete pass) leaves out
-// open and needs_human findings that nobody has touched: the code is the
-// same as when that pass judged them, so checking again could only add
-// noise. recheck names the findings that pass didn't reach, which it still
-// checks.
-func selectChecks(ctx context.Context, gh GitHub, ref PRRef, tracked []state.Tracked, reconcileOnly bool, recheck []string) []Check {
+func selectChecks(ctx context.Context, gh GitHub, ref PRRef, tracked []state.Tracked) []Check {
 	since := map[string]fixDelta{}
 	fixed := func(sha string) fixDelta {
 		d, ok := since[sha]
@@ -59,11 +53,6 @@ func selectChecks(ctx context.Context, gh GitHub, ref PRRef, tracked []state.Tra
 	var out []Check
 	for i := range tracked {
 		t := &tracked[i]
-		untouched := len(t.Pending) == 0 && !t.Thread.IsResolved
-		if reconcileOnly && untouched && !slices.Contains(recheck, t.ID) &&
-			(t.State == state.StateOpen || t.State == state.StateNeedsHuman) {
-			continue
-		}
 		if why := checkReason(t, fixed); why != "" {
 			out = append(out, Check{Tracked: t, Why: why})
 		}

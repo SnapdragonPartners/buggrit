@@ -71,7 +71,9 @@ const advisoryNote = "Fix it and reply with the commit, or reply with a reason, 
 
 // TransitionBody renders the reply that records a transition of an earlier
 // finding, at head sha, ending with its transition marker (design §6).
-func TransitionBody(tr *review.Transition, sha string) (string, error) {
+// leftResolved records that GitHub refused to unresolve a needs_human
+// thread before the reply.
+func TransitionBody(tr *review.Transition, sha string, leftResolved bool) (string, error) {
 	t := tr.Tracked
 	at := "`" + short(sha) + "`"
 	reason := strings.TrimSpace(tr.Reason)
@@ -105,7 +107,7 @@ func TransitionBody(tr *review.Transition, sha string) (string, error) {
 		return "", fmt.Errorf("render %s: unknown transition %q", t.ID, tr.Kind)
 	}
 	text := fmt.Sprintf("%s\n\n<sub>buggrit %s · %s</sub>", strings.TrimSpace(lead), t.ID, note)
-	m := &state.Marker{ID: t.ID, To: tr.Kind.To(), Kind: tr.Kind, SHA: sha, Seen: tr.Seen, Evidence: tr.Evidence}
+	m := &state.Marker{ID: t.ID, To: tr.Kind.To(), Kind: tr.Kind, SHA: sha, Seen: tr.Seen, Evidence: tr.Evidence, LeftResolved: leftResolved}
 	body, err := state.Append(capBody(text), m)
 	if err != nil {
 		return "", fmt.Errorf("render %s: %w", t.ID, err)
@@ -256,7 +258,7 @@ func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 	if !res.Complete {
 		status = state.PassIncomplete
 	}
-	m := &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status, Unverified: res.Unverified}
+	m := &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status}
 	body, err := state.Append(capBody(b.String()), m)
 	if err != nil {
 		return "", fmt.Errorf("render review body: %w", err)
