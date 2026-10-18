@@ -40,7 +40,8 @@ func TestNext(t *testing.T) {
 		{name: "rebuttals used up", pending: reply, rebuttals: 1, v: present, want: Step{Kind: KindNeedsHuman, Reason: present.Reason, Want: Unresolve}},
 		{name: "advisory reply that holds up", sev: "P2", pending: reply, v: valid, want: Step{Kind: KindDismissed, Reason: valid.Reason, Want: Resolve}},
 		{name: "advisory reply that doesn't: rebutted", sev: "P2", pending: reply, v: present, want: Step{Kind: KindRebutted, Reason: present.Reason, Want: Unresolve}},
-		{name: "advisory, rebuttals used up: the author's word stands", sev: "P3", pending: reply, rebuttals: 1, v: present, want: Step{Kind: KindDismissed, Reason: present.Reason, Want: Resolve}},
+		{name: "advisory, rebuttals used up: the author's word stands", sev: "P3", pending: reply, rebuttals: 1, v: present,
+			want: Step{Kind: KindDismissed, Reason: AdvisoryStands + " For the record: " + present.Reason, Want: Resolve}},
 		{name: "advisory reply with a fix", sev: "P3", pending: reply, v: fixed, want: Step{Kind: KindFixed, Reason: fixed.Reason, Evidence: fixed.Evidence, Want: Resolve}},
 		{name: "advisory false resolve still reopens", sev: "P2", resolved: true, v: present, want: Step{Kind: KindReopened, Reason: present.Reason, Want: Unresolve}},
 

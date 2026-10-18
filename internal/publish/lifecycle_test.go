@@ -300,6 +300,9 @@ func TestLifecycleValidRebuttalAndAdvisoryReply(t *testing.T) {
 	if p = w3.pass("", verdict(id3, "open", "Still there.")); lastTransition(t, th3).Kind != state.KindDismissed || !th3.Resolved {
 		t.Fatalf("advisory after its rebuttal: %+v", p.posted)
 	}
+	if body := th3.Comments[len(th3.Comments)-1].Body; !strings.Contains(body, "**Dismissed.** "+state.AdvisoryStands+" For the record: Still there.") {
+		t.Errorf("dismissal reply = %q", body)
+	}
 }
 
 // A run killed between the fixed reply and the resolve is repaired by the

@@ -53,6 +53,10 @@ func (t *Tracked) NeedsSettling() bool {
 	return t.Thread.IsResolved && (t.Last == nil || !t.Last.LeftResolved)
 }
 
+// AdvisoryStands explains dismissing an advisory finding whose rebuttals
+// are used up while the verifier still sees the issue (§7 rules 4 and 5).
+const AdvisoryStands = "This finding is advisory and its rebuttals are used up, so the author's decision stands."
+
 // Next applies the state machine in §6 to a finding. v is the verifier's
 // verdict, or nil if the finding wasn't verified this pass (not selected,
 // or verification didn't reach it). maxRebuttals is convergence.max_rebuttals.
@@ -119,8 +123,9 @@ func nextOpen(t *Tracked, v *Verdict, maxRebuttals int) Step {
 	case replied && !t.Blocking():
 		// §7 rules 4 and 5: an advisory finding never goes to a human, since
 		// that would hold up convergence. Once its rebuttals are used up,
-		// the author's word stands.
-		return Step{Kind: KindDismissed, Reason: v.Reason, Want: Resolve}
+		// the author's word stands. The verifier's reason argues the finding
+		// still holds, so the reply leads with why it's dropped anyway.
+		return Step{Kind: KindDismissed, Reason: AdvisoryStands + " For the record: " + v.Reason, Want: Resolve}
 	case replied:
 		return Step{Kind: KindNeedsHuman, Reason: v.Reason, Want: Unresolve}
 	case !t.Thread.IsResolved:
