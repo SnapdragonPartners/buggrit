@@ -4,7 +4,7 @@ Status: **draft** · 2026-10-15
 
 buggrit is an automated pull-request reviewer that runs as a GitHub Action,
 posts findings as review threads (like Copilot code review), and on every push
-checks its earlier findings, then resolves, reopens or escalates them. It talks
+or reply checks its earlier findings, then resolves, reopens or escalates them. It talks
 to models through [`maestro-llms`](https://github.com/SnapdragonPartners/maestro-llms),
 so it works with any provider that supports: Anthropic, OpenAI, Gemini, Ollama
 and vLLM.
@@ -730,7 +730,7 @@ cold start panics.
 
 Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same class: *uninitialized map on constructor path*).
 
-<sub>buggrit f-7f3a2c · blocking · Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push; resolving the thread without a fix will reopen it.</sub>
+<sub>buggrit f-7f3a2c · blocking · Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push or reply; resolving the thread without a fix will reopen it.</sub>
 <!-- buggrit:v1 {...} -->
 ````
 
