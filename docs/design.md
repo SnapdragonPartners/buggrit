@@ -219,7 +219,10 @@ passes secrets.
   would still enter the PR's concurrency group and replace a pending run
   queued by a human reply. So the concurrency group expression sends events
   authored by buggrit to a group of their own (§3 YAML), and the job-level
-  `if` then skips them.
+  `if` then skips them. Both expressions name the login literally, so they
+  must match `identity.bot_login` (§4): a differently named App, or
+  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs both edited.
+  Otherwise buggrit's own comments count as human events.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -928,11 +931,11 @@ merge gate is the control for those.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal
    agents. Measures precision, recall and passes to convergence per model.
 
-**Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
-reviews its own PRs. Step 4 is in two PRs. The first adds the verifier, the
-§6 state machine, transitions, and resolve, unresolve and repair. The
-second adds the reply-triggered runs and the bot-event concurrency group
-(§3) to the dogfood workflow. Reopening a fixed finding that comes back as
+**Status (October 2026):** steps 1–4 are done (PRs #2–#5, #9 and #16), and
+buggrit reviews its own PRs. Step 4 took two PRs. #9 added the verifier, the
+§6 state machine, transitions, and resolve, unresolve and repair. #16 added
+the reply-triggered runs and the bot-event concurrency group (§3) to the
+dogfood workflow. Reopening a fixed finding that comes back as
 a fingerprint match (§7 rule 3) stays with dedupe in step 5. Until then such
 a candidate is dropped as already raised. The verifier still reopens a
 regression whose evidence files changed. Incremental scope (§7 rule 2) was pulled forward from
