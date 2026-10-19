@@ -2,7 +2,7 @@
 
 ## Project
 
-buggrit is an automated pull-request reviewer that runs as a GitHub Action. It posts each finding as its own review thread, re-verifies earlier findings on every push, and drives the review → fix → review loop to an explicit final state. It reaches models through [`maestro-llms`](https://github.com/SnapdragonPartners/maestro-llms), so any provider that library supports works. The MVP targets Qwen and GLM through LunaRoute.
+buggrit is an automated pull-request reviewer that runs as a GitHub Action. It posts each finding as its own review thread, re-verifies earlier findings on every push and reply, and drives the review → fix → review loop to an explicit final state. It reaches models through [`maestro-llms`](https://github.com/SnapdragonPartners/maestro-llms), so any provider that library supports works. The MVP targets Qwen and GLM through LunaRoute.
 
 - Go 1.26, a single binary, standard library first
 - Module path: `github.com/SnapdragonPartners/buggrit`

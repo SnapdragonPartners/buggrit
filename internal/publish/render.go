@@ -61,13 +61,13 @@ func findingText(c *review.Candidate, suggestion bool) string {
 
 // actNote tells the reader of a finding how buggrit treats what they do
 // next (design §8).
-const actNote = "Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push; " +
+const actNote = "Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push or reply; " +
 	"resolving the thread without a fix will reopen it."
 
 // advisoryNote is actNote for an advisory finding, where any reasoned reply
 // dismisses it (§7 rule 4).
 const advisoryNote = "Fix it and reply with the commit, or reply with a reason, such as deferred or intentional, to dismiss it. " +
-	"buggrit checks on the next push; resolving the thread without a fix will reopen it."
+	"buggrit checks on the next push or reply; resolving the thread without a fix will reopen it."
 
 // TransitionBody renders the reply that records a transition of an earlier
 // finding, at head sha, ending with its transition marker (design §6).

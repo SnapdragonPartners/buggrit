@@ -4,7 +4,7 @@ Status: **draft** · 2026-10-15
 
 buggrit is an automated pull-request reviewer that runs as a GitHub Action,
 posts findings as review threads (like Copilot code review), and on every push
-checks its earlier findings, then resolves, reopens or escalates them. It talks
+or reply checks its earlier findings, then resolves, reopens or escalates them. It talks
 to models through [`maestro-llms`](https://github.com/SnapdragonPartners/maestro-llms),
 so it works with any provider that supports: Anthropic, OpenAI, Gemini, Ollama
 and vLLM.
@@ -212,14 +212,17 @@ passes secrets.
 - **Dogfooding:** this repo's own workflow (`.github/workflows/buggrit.yml`)
   builds buggrit from `main`, never from the PR, and skips with a notice
   when `main` has no config (as it did until PR #5 added one). Until build
-  step 7 it builds from source, and
-  until build step 4 it runs only on `pull_request` and `workflow_dispatch`.
+  step 7 it builds from source. It has the triggers and the bot-event
+  concurrency group shown above.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
   would still enter the PR's concurrency group and replace a pending run
   queued by a human reply. So the concurrency group expression sends events
   authored by buggrit to a group of their own (§3 YAML), and the job-level
-  `if` then skips them.
+  `if` then skips them. Both expressions name the login literally, so they
+  must match `identity.bot_login` (§4): a differently named App, or
+  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs both edited.
+  Otherwise buggrit's own comments count as human events.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -333,8 +336,9 @@ Notes:
   level falls back to the model default rather than failing. The job log
   says, once per stage, what the provider actually received. A model that
   rejects a level its provider supports fails the call with the provider's
-  error. buggrit sets no default: which level converges fastest is measured
-  in [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8).
+  error. buggrit sets no default, since the right level depends on the
+  model. [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8)
+  measured it for dogfooding (§13).
 - `gate.fail_on`: `none | P0 | P1` (§8).
 - `identity.bot_login` is the login buggrit's own comments must be authored
   by (§3, "Own comments"). Change it when using `GITHUB_TOKEN`
@@ -729,7 +733,7 @@ cold start panics.
 
 Also applies to: `internal/cache/lru.go:88`, `internal/cache/ttl.go:31` (same class: *uninitialized map on constructor path*).
 
-<sub>buggrit f-7f3a2c · blocking · Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push; resolving the thread without a fix will reopen it.</sub>
+<sub>buggrit f-7f3a2c · blocking · Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push or reply; resolving the thread without a fix will reopen it.</sub>
 <!-- buggrit:v1 {...} -->
 ````
 
@@ -927,12 +931,11 @@ merge gate is the control for those.
 8. **Eval harness:** PRs with planted bugs plus scripted fix and rebuttal
    agents. Measures precision, recall and passes to convergence per model.
 
-**Status (October 2026):** steps 1–3 are done (PRs #2–#5), and buggrit
-reviews its own PRs. Step 4 is in two PRs. The first adds the verifier, the
-§6 state machine, transitions, and resolve, unresolve and repair. The
-second adds the reply-triggered runs and the bot-event concurrency group
-(§3) to the dogfood workflow. Until the second lands, the workflow runs only
-on pushes and manual dispatch. Reopening a fixed finding that comes back as
+**Status (October 2026):** steps 1–4 are done (PRs #2–#5, #9 and #16), and
+buggrit reviews its own PRs. Step 4 took two PRs. #9 added the verifier, the
+§6 state machine, transitions, and resolve, unresolve and repair. #16 added
+the reply-triggered runs and the bot-event concurrency group (§3) to the
+dogfood workflow. Reopening a fixed finding that comes back as
 a fingerprint match (§7 rule 3) stays with dedupe in step 5. Until then such
 a candidate is dropped as already raised. The verifier still reopens a
 regression whose evidence files changed. Incremental scope (§7 rule 2) was pulled forward from
@@ -965,8 +968,14 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   spending their whole output budget, and never submitted. What matters is
   wall clock to convergence: every extra pass also costs a repair cycle and
   a CI run, so a slower pass that finds everything beats fast drip-feeding.
-  Reasoning control is `reasoning_effort` (§4); which level to dogfood with is
-  [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8).
+  Reasoning control is `reasoning_effort` (§4). Dogfooding sets `medium`
+  on `models.default`, from the
+  [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8) trial
+  (two replays of PR #9 per arm): `deepseek-4.1-flash` at `medium` took
+  31–40 minutes with the best recall and no false findings; `glm-5.3` at
+  `medium` had similar recall in 38–40 minutes with one false P1; `glm-5.3`
+  at `low` took 4–7 minutes but found far less, and half of its extras were
+  false.
 - Every review uses tools. There's no tool-free mode.
 - Comments are the only store for now. A database may come later.
 - **LunaRoute** is OpenAI-compatible and is reached through
