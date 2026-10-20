@@ -41,6 +41,14 @@ permissions:
 
 jobs:
   review:
+    # Events caused by buggrit's own comments report under their own check
+    # name, so their skipped runs never hide the real review (design §3,
+    # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
+    # skipped job's name, so those runs show this expression's text.
+    name: >-
+      ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
+           github.event.review.user.login == 'buggrit-bot[bot]')
+          && 'ignored bot event' || 'review' }}
     # Skip drafts, and skip events caused by buggrit's own comments.
     if: >-
       !github.event.pull_request.draft &&
