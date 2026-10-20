@@ -158,6 +158,11 @@ permissions:
   checks: write          # only if the gate check (§8) is enabled
 jobs:
   review:
+    # buggrit's own events get their own check name (§3 "Bot events")
+    name: >-
+      ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
+           github.event.review.user.login == 'buggrit-bot[bot]')
+          && 'ignored bot event' || 'review' }}
     # skip drafts, and skip events caused by buggrit's own comments
     if: >-
       !github.event.pull_request.draft &&
@@ -213,16 +218,23 @@ passes secrets.
   builds buggrit from `main`, never from the PR, and skips with a notice
   when `main` has no config (as it did until PR #5 added one). Until build
   step 7 it builds from source. It has the triggers and the bot-event
-  concurrency group shown above.
+  concurrency group and job name shown above.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
   would still enter the PR's concurrency group and replace a pending run
   queued by a human reply. So the concurrency group expression sends events
   authored by buggrit to a group of their own (§3 YAML), and the job-level
-  `if` then skips them. Both expressions name the login literally, so they
-  must match `identity.bot_login` (§4): a differently named App, or
-  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs both edited.
-  Otherwise buggrit's own comments count as human events.
+  `if` then skips them. A skipped job still files a check run under the
+  job's name on the PR head, and the checks panel and `gh pr checks` show
+  only the newest run per name. buggrit's events arrive while it is still
+  publishing, so with a single name a skipped run would hide the real one:
+  the PR would show `review` as skipped, and an agent waiting for the pass
+  (§8 "Completion signal") could take it as finished. So the job's `name`
+  uses the same test, and buggrit's own events report as `ignored bot
+  event`. The expressions name the login literally, so all three must match
+  `identity.bot_login` (§4): a differently named App, or
+  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs them all
+  edited. Otherwise buggrit's own comments count as human events.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -339,7 +351,8 @@ Notes:
   error. buggrit sets no default, since the right level depends on the
   model. [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8)
   measured it for dogfooding (§13).
-- `gate.fail_on`: `none | P0 | P1` (§8).
+- `gate.fail_on`: `none | P0 | P1` (§8). With `P0` or `P1`, the gate also
+  fails until the head has a complete, fully verified pass.
 - `identity.bot_login` is the login buggrit's own comments must be authored
   by (§3, "Own comments"). Change it when using `GITHUB_TOKEN`
   (`github-actions[bot]`) or a differently named App.
@@ -774,12 +787,28 @@ matches. A file-level finding has no anchored lines and uses its normalized
 title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 
 ### Completion signal
-- The job's check run tells the agent the pass is finished
-  (`gh pr checks --watch`).
+- The job's `review` check run tells the agent the pass is finished
+  (`gh pr checks --watch`). Runs skipped for buggrit's own events report
+  under another name, so they don't stand in for it (§3 "Bot events").
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
-  check run, created through the Checks API, whose conclusion is `failure`
-  while blocking findings are open or need a human. The review itself is
-  always `COMMENT`. The gate is off by default.
+  check run on the head, created through the Checks API. It is the check
+  to make required, rather than `review`, because GitHub counts a skipped
+  job as passing. Its conclusion is `success` only when all three hold:
+  - the head has a complete pass (§6 "Review baseline");
+  - no earlier finding is left unverified;
+  - no finding at or above `fail_on` is open or `needs_human`.
+
+  Otherwise it is `failure`. With `fail_on: P1`, `success` is exactly the
+  `converged` status line (§7 rule 6). It reflects whether the review finished, not
+  only what it found: a pass that hits the deadline with no blocking
+  findings posted yet stays `failure`. A run sets it to `in_progress` when
+  it starts and concludes it before exiting. A run killed before that leaves
+  it `in_progress`, which still blocks a required check. A new head has no
+  gate until its first run. So every gap fails toward "not done", the same
+  choice §6 makes for a thread whose state is unknown. The cost is that a
+  PR whose passes keep hitting the deadline stays blocked until someone
+  reruns the pass or overrides the check. The review itself is always
+  `COMMENT`. The gate is off by default.
 - Job summary (`$GITHUB_STEP_SUMMARY`): per-stage model, tokens, tool
   iterations, wall time. Useful for tuning even when tokens are free.
 - `buggrit review` exits 0 for a complete pass, a skipped one (the head
