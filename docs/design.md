@@ -230,8 +230,12 @@ passes secrets.
   publishing, so with a single name a skipped run would hide the real one:
   the PR would show `review` as skipped, and an agent waiting for the pass
   (§8 "Completion signal") could take it as finished. So the job's `name`
-  uses the same test, and buggrit's own events report as `ignored bot
-  event`. The expressions name the login literally, so all three must match
+  is an expression with the same test. GitHub doesn't evaluate the name of
+  a job its `if` skips, so these runs show the expression's text as their
+  name rather than `ignored bot event`, and so does a draft's skipped run.
+  That's untidy, but it's a different name from `review`, which is all the
+  fix needs. Running the job for bot events just to get a tidy name would
+  cost a runner start for every comment buggrit posts. The expressions name the login literally, so all three must match
   `identity.bot_login` (§4): a differently named App, or
   `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs them all
   edited. Otherwise buggrit's own comments count as human events.
@@ -794,12 +798,18 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   check run on the head, created through the Checks API. It is the check
   to make required, rather than `review`, because GitHub counts a skipped
   job as passing. Its conclusion is `success` only when all three hold:
-  - the head has a complete pass (§6 "Review baseline");
+  - the head has a complete pass marker (§6 "Review baseline"). A run
+    that skips because the head moved or the base branch has no config
+    doesn't create one. A reconcile-only run at a head that already has
+    one does count;
   - no earlier finding is left unverified;
   - no finding at or above `fail_on` is open or `needs_human`.
 
-  Otherwise it is `failure`. With `fail_on: P1`, `success` is exactly the
-  `converged` status line (§7 rule 6). It reflects whether the review finished, not
+  Otherwise it is `failure`. With `fail_on: P1` this is the same condition
+  as §7 rule 6's `converged`. Today's status line (`complete at …`) reports
+  what a pass did, not those totals. The `converged` line, the summary
+  ledger and the gate all land in build step 5 (§12). The gate reflects
+  whether the review finished, not
   only what it found: a pass that hits the deadline with no blocking
   findings posted yet stays `failure`. A run sets it to `in_progress` when
   it starts and concludes it before exiting. A run killed before that leaves
