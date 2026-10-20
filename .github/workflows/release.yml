@@ -38,12 +38,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Clients pin @v0. This job doesn't move it to this run's tag; it moves it
-  # to the newest published final release of the major, read fresh. So a
-  # patch to an older line never moves it backward, and if the shared group
-  # drops a pending run, the run that replaced it arrived later and sees
-  # every release published before it. A tag pushed with GITHUB_TOKEN
-  # doesn't start another workflow run.
+  # Clients pin @v0. This job doesn't move a tag to this run's release; for
+  # every major, it moves the major tag to that major's newest published
+  # final release, read fresh. So a patch to an older line never moves a
+  # tag backward, and if the shared group drops a pending run, the run that
+  # replaced it arrived later and reconciles every major from releases
+  # published before it. A tag pushed with GITHUB_TOKEN doesn't start
+  # another workflow run.
   major:
     needs: publish
     runs-on: ubuntu-latest
@@ -55,26 +56,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Move the major tag
+      - name: Move the major tags
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          major="${TAG%%.*}"
-          newest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
-                     --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' |
-                   { grep -E "^${major}\.[0-9]+\.[0-9]+$" || true; } | sort -V | tail -n1)
-          if [ -z "$newest" ]; then
-            echo "::notice::$major has no published final release yet; it stays put."
-            exit 0
-          fi
           git fetch --force --tags origin
-          target=$(git rev-list -n1 "refs/tags/$newest")
-          if [ "$(git rev-list -n1 "refs/tags/$major" 2>/dev/null || true)" = "$target" ]; then
-            echo "::notice::$major already points at $newest."
-            exit 0
-          fi
-          git tag -f "$major" "$target"
-          git push -f origin "refs/tags/$major"
-          echo "::notice::$major now points at $newest."
+          finals=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+                     --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' |
+                   { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V)
+          for major in $(sed 's/\..*//' <<< "$finals" | sort -u); do
+            newest=$(grep -E "^${major}\." <<< "$finals" | tail -n1)
+            target=$(git rev-list -n1 "refs/tags/$newest")
+            if [ "$(git rev-list -n1 "refs/tags/$major" 2>/dev/null || true)" = "$target" ]; then
+              echo "$major already points at $newest."
+              continue
+            fi
+            git tag -f "$major" "$target"
+            git push -f origin "refs/tags/$major"
+            echo "::notice::$major now points at $newest."
+          done

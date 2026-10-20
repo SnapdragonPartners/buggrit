@@ -199,9 +199,9 @@ below) writes its own job around the composite action instead, with
     amd64 and arm64, with `main.version` set to the tag, and uploads plain
     archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. Each tag's
     run has its own concurrency group, so overlapping tags never drop a
-    release. Then the moving major tag (`v0`) moves to the newest published
+    release. Then every moving major tag (`v0`) moves to the newest published
     final release of its major, read fresh rather than taken from the run's
-    tag. A patch to an older line never moves it backward, and the last
+    tag, with each run reconciling every major. A patch to an older line never moves it backward, and the last
     run to get there sees every release published before it.
   - **Which binary:** the action installs the highest tag on the commit it
     was used at whose release is published with the runner's archive and
