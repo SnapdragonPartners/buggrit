@@ -796,8 +796,10 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   under another name, so they don't stand in for it (§3 "Bot events").
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
-  to make required, rather than `review`, because GitHub counts a skipped
-  job as passing. Its conclusion is `success` only when all three hold:
+  to make required, rather than `review`. `review` reports only the run's
+  exit status, not whether blocking findings are open or waiting on a
+  human. A head whose only runs were skipped has no `review` at all. Its
+  conclusion is `success` only when all three hold:
   - the head has a complete pass marker (§6 "Review baseline"). A run
     that skips because the head moved or the base branch has no config
     doesn't create one. A reconcile-only run at a head that already has
