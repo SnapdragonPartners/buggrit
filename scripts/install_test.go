@@ -18,7 +18,8 @@ import (
 
 // fakeGH answers the gh calls install.sh makes from files under $FAKE_GH:
 // commits/<ref> holds the ref's SHA, tags lists "<name> <sha>" lines, and
-// releases/<tag>/ holds the assets.
+// releases/<tag>/ holds a published release's assets. A tag with no
+// releases/<tag>/ has no published release.
 const fakeGH = `#!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "$FAKE_GH/calls"
@@ -27,6 +28,10 @@ if [ "$1" = api ]; then
   [ "$1" = --paginate ] && shift
   case "$1" in
     */commits/*) cat "$FAKE_GH/commits/${1##*/}" ;;
+    */releases/tags/*)
+      dir="$FAKE_GH/releases/${1##*/}"
+      [ -d "$dir" ] || { echo "Not Found" >&2; exit 1; }
+      ls "$dir" ;;
     */tags*)
       sha=$(sed -n 's/.*select(.commit.sha == "\([0-9a-f]*\)").*/\1/p' <<< "$3")
       awk -v sha="$sha" '$2 == sha { print $1 }' "$FAKE_GH/tags" ;;
@@ -102,15 +107,18 @@ func (f *fixture) write(rel, content string, mode os.FileMode) {
 	}
 }
 
-// release publishes tag at sha, with a fake binary that prints the tag.
-func (f *fixture) release(tag, sha string) {
+// tag creates tag at sha, with no release.
+func (f *fixture) tag(tag, sha string) {
 	f.t.Helper()
 	f.write("commits/"+tag, sha+"\n", 0o644)
-	tags, err := os.ReadFile(filepath.Join(f.root, "tags"))
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	f.write("tags", string(tags)+tag+" "+sha+"\n", 0o644)
+	f.write("tags", mustRead(f.t, filepath.Join(f.root, "tags"))+tag+" "+sha+"\n", 0o644)
+}
+
+// release tags sha and publishes a release with a fake binary that prints
+// the tag.
+func (f *fixture) release(tag, sha string) {
+	f.t.Helper()
+	f.tag(tag, sha)
 	archive := tarball(f.t, "#!/bin/sh\necho "+tag+"\n")
 	f.write("releases/"+tag+"/"+f.asset, string(archive), 0o644)
 	sum := sha256.Sum256(archive)
@@ -176,17 +184,18 @@ func TestInstall(t *testing.T) {
 			env:  []string{"GITHUB_ACTION_PATH=/runner/_actions/o/buggrit/v0/"},
 			want: "v0.2.1",
 		},
-		{name: "commit with no release", env: []string{"REPO=o/buggrit", "REF=main"}, wantErr: "no release tag at main"},
+		{name: "commit with no release", env: []string{"REPO=o/buggrit", "REF=main"}, wantErr: "no published release at main"},
 		{name: "unknown release", env: []string{"REPO=o/buggrit", "VERSION=v9.9.9"}, wantErr: "release not found"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)
 			f.release("v0.1.0", shaA)
-			f.release("v0.2.0", shaB)
-			f.release("v0.2.1", shaB) // a re-tag of the same commit; the newest wins
-			f.write("commits/v0", shaB+"\n", 0o644)
-			f.write("tags", mustRead(t, filepath.Join(f.root, "tags"))+"v0 "+shaB+"\n", 0o644)
+			f.release("v0.2.0-rc.1", shaB)
+			f.release("v0.2.0", shaB) // the RC promoted: same commit, and the final outranks it
+			f.release("v0.2.1", shaB) // a re-tag of the same commit; the highest wins
+			f.tag("v0.3.0", shaB)     // tagged, but its release isn't published yet
+			f.tag("v0", shaB)
 			f.write("commits/"+shaA, shaA+"\n", 0o644)
 			f.write("commits/main", "cccccccccccccccccccccccccccccccccccccccc\n", 0o644)
 
@@ -207,6 +216,32 @@ func TestInstall(t *testing.T) {
 				t.Errorf("installed %q, want %q\n%s", got, tc.want, out)
 			}
 		})
+	}
+}
+
+func TestInstallPrefersFinalOverPrerelease(t *testing.T) {
+	f := newFixture(t)
+	f.release("v0.2.0-rc.2", shaB)
+	f.release("v0.2.0", shaB)
+	f.release("v0.2.0-rc.10", shaB)
+	f.tag("v0", shaB)
+	out, got, err := f.run("REPO=o/buggrit", "REF=v0")
+	if err != nil || got != "v0.2.0" {
+		t.Fatalf("installed %q, err %v, want v0.2.0\n%s", got, err, out)
+	}
+}
+
+func TestInstallSkipsReleaseWithoutThisRunnersAsset(t *testing.T) {
+	f := newFixture(t)
+	f.release("v0.1.0", shaA)
+	f.release("v0.1.1", shaA)
+	if err := os.Remove(filepath.Join(f.root, "releases/v0.1.1", f.asset)); err != nil {
+		t.Fatal(err)
+	}
+	f.tag("v0", shaA)
+	out, got, err := f.run("REPO=o/buggrit", "REF=v0")
+	if err != nil || got != "v0.1.0" {
+		t.Fatalf("installed %q, err %v, want v0.1.0\n%s", got, err, out)
 	}
 }
 

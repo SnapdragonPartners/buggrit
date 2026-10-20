@@ -197,14 +197,19 @@ below) writes its own job around the composite action instead, with
   - **Releases:** pushing an immutable `vX.Y.Z` tag runs
     `.github/workflows/release.yml`. goreleaser builds linux and darwin, on
     amd64 and arm64, with `main.version` set to the tag, and uploads plain
-    archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. The moving
-    major tag (`v0`) then moves to the release, but only for a final
-    release that is the newest of its major, so a patch to an older line
-    never moves it backward.
-  - **Which binary:** the action installs the newest release tag on the
-    commit it was used at. So `@v0` runs the release `v0` points at, and an
+    archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. Each tag's
+    run has its own concurrency group, so overlapping tags never drop a
+    release. Then the moving major tag (`v0`) moves to the newest published
+    final release of its major, read fresh rather than taken from the run's
+    tag. A patch to an older line never moves it backward, and the last
+    run to get there sees every release published before it.
+  - **Which binary:** the action installs the highest tag on the commit it
+    was used at whose release is published with the runner's archive and
+    `checksums.txt`, by SemVer precedence (a final release outranks its own
+    pre-releases). A tag whose release is still building, or failed, is
+    passed over. So `@v0` runs the release `v0` points at, and an
     action pinned by a release's SHA runs that release. A ref with no
-    release tag on its commit is an error. The `version` input overrides
+    published release on its commit is an error. The `version` input overrides
     this. A reusable workflow can't learn the ref it was called at, so
     `review.yml` uses the action at `@v0`; a caller that pins the workflow
     by SHA should also pass `version` to pin the binary.
