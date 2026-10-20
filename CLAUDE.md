@@ -38,6 +38,10 @@ internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the 
 internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
 docs/design.md     # The binding design
 hooks/             # Git hooks (pre-push: lint + test)
+action.yml         # Composite action: install the release binary, run review (design §3)
+scripts/           # install.sh, the action's download and checksum step, and its tests
+.goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
+.github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck
 ```
 
 `internal/github` uses only the standard library (no go-github). Tests drive the real client against `githubtest`; `TestLive` is skipped unless `BUGGRIT_LIVE_*` is set (see `internal/github/live_test.go`).
@@ -49,6 +53,8 @@ hooks/             # Git hooks (pre-push: lint + test)
 - `make lint`: `go vet` + `golangci-lint run` (v1.64.8, pinned in CI)
 - `make vuln`: `govulncheck ./...`
 - `make check`: everything CI runs (lint, vuln, build, test)
+- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`
+- `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
 - `make deps`: check the required tools are installed
 

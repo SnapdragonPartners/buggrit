@@ -1,0 +1,58 @@
+name: buggrit
+description: Review a pull request with buggrit, posting each finding as its own review thread
+author: SnapdragonPartners
+
+# A composite action, not a container one, so it runs on self-hosted and
+# macOS runners without Docker (docs/design.md §3, "Packaging"). It downloads
+# the release binary matching the action's ref and needs no build toolchain.
+#
+# The model's API key goes in the step's env, under the name the config's
+# api_key_env gives.
+
+inputs:
+  github-token:
+    description: >-
+      Token buggrit posts with: the buggrit-bot App's installation token, or
+      the Actions GITHUB_TOKEN as a fallback (design §3, "Identity")
+    required: true
+  download-token:
+    description: >-
+      Token that can read buggrit's releases. Defaults to github-token; while
+      buggrit's repository is private, use one with Contents read on it
+    required: false
+    default: ''
+  pr:
+    description: Pull request number (defaults to the triggering pull request)
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  workspace:
+    description: Checkout of the PR head
+    required: false
+    default: ${{ github.workspace }}
+  version:
+    description: >-
+      Release to run (v0.1.0). Defaults to the release at the ref this action
+      was used at
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install buggrit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.download-token || inputs.github-token }}
+        REPO: ${{ github.action_repository }}
+        REF: ${{ github.action_ref }}
+        VERSION: ${{ inputs.version }}
+        BIN_DIR: ${{ runner.temp }}/buggrit-bin
+      run: '"$GITHUB_ACTION_PATH/scripts/install.sh"'
+
+    - name: Review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        BUGGRIT_PR: ${{ inputs.pr }}
+        WORKSPACE: ${{ inputs.workspace }}
+      run: '"$RUNNER_TEMP/buggrit-bin/buggrit" review --workspace "$WORKSPACE"'

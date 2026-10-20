@@ -1,4 +1,4 @@
-.PHONY: build test lint vuln check install-hooks deps clean
+.PHONY: build test lint vuln check release-snapshot install-hooks deps clean
 
 BINARY := buggrit
 VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -21,6 +21,11 @@ vuln:
 
 # check is everything CI runs.
 check: lint vuln build test
+
+# release-snapshot builds the release archives into dist/ without publishing
+# (needs goreleaser v2). Releases come from pushing a vX.Y.Z tag.
+release-snapshot:
+	goreleaser release --snapshot --clean
 
 install-hooks:
 	@./hooks/install.sh

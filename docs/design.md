@@ -133,6 +133,7 @@ against fakes and reused by other front ends. A local front end would call
 
 ```yaml
 # .github/workflows/buggrit.yml in a consuming repo
+name: buggrit
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -146,64 +147,72 @@ concurrency:
   # Events caused by buggrit's own comments get a throwaway group, so they
   # never replace a pending run (§3 "Bot events").
   group: >-
-    ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
-         github.event.review.user.login == 'buggrit-bot[bot]')
+    ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
+         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
         && format('buggrit-ignored-{0}', github.run_id)
         || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   # pushes cancel an in-flight pass; comment-triggered runs wait their turn
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
-  pull-requests: write
-  checks: write          # only if the gate check (§8) is enabled
 jobs:
-  review:
-    # buggrit's own events get their own check name (§3 "Bot events")
-    name: >-
-      ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
-           github.event.review.user.login == 'buggrit-bot[bot]')
-          && 'ignored bot event' || 'review' }}
-    # skip drafts, and skip events caused by buggrit's own comments
-    if: >-
-      !github.event.pull_request.draft &&
-      github.event.comment.user.login != 'buggrit-bot[bot]' &&
-      github.event.review.user.login != 'buggrit-bot[bot]'
-    runs-on: [self-hosted]   # must be able to reach the model endpoint
-    timeout-minutes: 45      # hard wall-clock ceiling; buggrit's own deadline is lower
-    steps:
-      - uses: actions/create-github-app-token@v1
-        id: app
-        with:
-          app-id: ${{ vars.BUGGRIT_APP_ID }}
-          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
-      - id: head   # the PR's head now, not the event's (§2)
-        run: |
-          set -euo pipefail
-          sha=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
-          [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-          PR: ${{ github.event.pull_request.number || inputs.pr }}
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.head.outputs.sha }}   # the PR head, not the merge commit
-          fetch-depth: 0
-          persist-credentials: false                       # keep tokens out of .git/config
-      - uses: SnapdragonPartners/buggrit@v1
-        env:
-          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
-          BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
+  buggrit:
+    uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
+    secrets: inherit
+    # with: { runs-on: self-hosted, timeout-minutes: 70, version: v0.1.0 }
 ```
 
-The reusable workflow (below) hides all of this; a consuming repo only
-passes secrets.
+The triggers and the concurrency group stay in the calling workflow,
+because a run enters its group before any job starts. Everything else is
+in the reusable workflow, `.github/workflows/review.yml`, whose one job:
 
-- **Packaging:** a composite action that downloads a prebuilt release binary
-  for the runner's OS and architecture. It doesn't use a Docker container
-  action, because self-hosted runners may have no Docker and macOS runners
-  can't run container actions. We also ship a reusable workflow so a consuming
-  repo needs only one `uses:` line.
+- is named `review` and skips drafts and buggrit's own events, with the
+  same login test (§3 "Bot events"). Through a reusable workflow the check
+  shows as `buggrit / review`, the caller's job name first;
+- mints the App installation token for the calling repo, and a second
+  token that can only read buggrit's contents, for the release download
+  ("Packaging" below);
+- looks up the PR's head now, not the event's (§2), and checks it out with
+  `fetch-depth: 0` and `persist-credentials: false`;
+- runs the composite action (`SnapdragonPartners/buggrit@v0`), passing the
+  model key from the `LUNAROUTE_API_KEY` or `BUGGRIT_LLM_API_KEY` secret
+  (the config's `api_key_env` names one of them);
+- has inputs for `runs-on` (default `ubuntu-latest`), `timeout-minutes`
+  (default 70, above the default `pass_deadline`, so buggrit always has time
+  to publish) and `version`.
+
+The App token is all it posts with; it uses no `GITHUB_TOKEN` permission
+beyond `contents: read`. A repo on the `GITHUB_TOKEN` fallback ("Identity"
+below) writes its own job around the composite action instead, with
+`pull-requests: write` (and `checks: write` for the gate, §8).
+
+- **Packaging:** a composite action (`action.yml`) that downloads a
+  prebuilt release binary for the runner's OS and architecture, checks it
+  against the release's `checksums.txt`, and runs `buggrit review`. It
+  doesn't use a Docker container action, because self-hosted runners may
+  have no Docker and macOS runners can't run container actions. The runner
+  needs `gh`, `tar` and `sha256sum` or `shasum`, as GitHub's hosted runners
+  have. The reusable workflow above wraps it, so a consuming repo needs only
+  one `uses:` line.
+  - **Releases:** pushing an immutable `vX.Y.Z` tag runs
+    `.github/workflows/release.yml`. goreleaser builds linux and darwin, on
+    amd64 and arm64, with `main.version` set to the tag, and uploads plain
+    archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. The moving
+    major tag (`v0`) then moves to the release, but only for a final
+    release that is the newest of its major, so a patch to an older line
+    never moves it backward.
+  - **Which binary:** the action installs the newest release tag on the
+    commit it was used at. So `@v0` runs the release `v0` points at, and an
+    action pinned by a release's SHA runs that release. A ref with no
+    release tag on its commit is an error. The `version` input overrides
+    this. A reusable workflow can't learn the ref it was called at, so
+    `review.yml` uses the action at `@v0`; a caller that pins the workflow
+    by SHA should also pass `version` to pin the binary.
+  - **Private repo:** while buggrit's repository is private, the action and
+    the reusable workflow need its Actions access set to "accessible from
+    repositories in the organization", and its release assets need an
+    authenticated download. The App must be installed on buggrit for the
+    download token. If the repository goes public, nothing else changes.
 - **Network:** self-hosted models usually require self-hosted runners, or an
   authenticated public endpoint.
 - **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
@@ -216,9 +225,11 @@ passes secrets.
   will look up the head again.
 - **Dogfooding:** this repo's own workflow (`.github/workflows/buggrit.yml`)
   builds buggrit from `main`, never from the PR, and skips with a notice
-  when `main` has no config (as it did until PR #5 added one). Until build
-  step 7 it builds from source. It has the triggers and the bot-event
-  concurrency group and job name shown above.
+  when `main` has no config (as it did until PR #5 added one). It keeps
+  building from source after step 7, so it's the canary: each merge runs
+  here before a release carries it anywhere else. It has the triggers, the
+  bot-event concurrency group and the job name shown above, with the login
+  written literally.
 - **Bot events:** with the App token, buggrit's own reviews and replies
   trigger workflow events. A job-level `if` would skip them, but the run
   would still enter the PR's concurrency group and replace a pending run
@@ -235,10 +246,11 @@ passes secrets.
   name rather than `ignored bot event`, and so does a draft's skipped run.
   That's untidy, but it's a different name from `review`, which is all the
   fix needs. Running the job for bot events just to get a tidy name would
-  cost a runner start for every comment buggrit posts. The expressions name the login literally, so all three must match
-  `identity.bot_login` (§4): a differently named App, or
-  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, needs them all
-  edited. Otherwise buggrit's own comments count as human events.
+  cost a runner start for every comment buggrit posts. The expressions read the login from the
+  variable `BUGGRIT_BOT_LOGIN`, defaulting to `buggrit-bot[bot]`, so it
+  must match `identity.bot_login` (§4): a differently named App, or
+  `github-actions[bot]` with the `GITHUB_TOKEN` fallback, sets the variable
+  and the config. Otherwise buggrit's own comments count as human events.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -792,7 +804,8 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 
 ### Completion signal
 - The job's `review` check run tells the agent the pass is finished
-  (`gh pr checks --watch`). Runs skipped for buggrit's own events report
+  (`gh pr checks --watch`). In a repo on the reusable workflow it shows as
+  `buggrit / review` (§3). Runs skipped for buggrit's own events report
   under another name, so they don't stand in for it (§3 "Bot events").
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
@@ -973,7 +986,13 @@ merge gate is the control for those.
    agents. Measures precision, recall and passes to convergence per model.
 
 **Status (October 2026):** steps 1–4 are done (PRs #2–#5, #9 and #16), and
-buggrit reviews its own PRs. Step 4 took two PRs. #9 added the verifier, the
+buggrit reviews its own PRs. Step 7's packaging (#12) was pulled ahead of
+steps 5 and 6, so other SnapdragonPartners repos can pilot buggrit on a
+pinned release instead of copying the dogfood workflow, which changes with
+every merge to `main`. The release workflow, the composite action and the
+reusable workflow (§3) are in; running in morris alongside Copilot is
+still to come. A wide rollout waits for step 5 and for a rate limit shared
+across repos. Step 4 took two PRs. #9 added the verifier, the
 §6 state machine, transitions, and resolve, unresolve and repair. #16 added
 the reply-triggered runs and the bot-event concurrency group (§3) to the
 dogfood workflow. Reopening a fixed finding that comes back as
