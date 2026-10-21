@@ -1,0 +1,31 @@
+# Release binaries for the composite action (docs/design.md §3, §12 step 7).
+# .github/workflows/release.yml runs this on each vX.Y.Z tag; for a local dry
+# run, use make release-snapshot.
+version: 2
+
+builds:
+  - main: ./cmd/buggrit
+    binary: buggrit
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+
+archives:
+  # Version-free names, so the action builds the asset name from the runner's
+  # OS and architecture alone.
+  - formats: [tar.gz]
+    name_template: buggrit_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  # A tag with a pre-release suffix (v0.2.0-rc.1) makes a pre-release.
+  prerelease: auto

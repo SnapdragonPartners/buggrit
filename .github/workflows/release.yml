@@ -1,0 +1,78 @@
+name: release
+
+# Publishes the binaries the composite action downloads (docs/design.md §3,
+# §12 step 7). Push an immutable vX.Y.Z tag from main; goreleaser builds and
+# uploads the archives and checksums.txt, then the moving major tag (v0)
+# follows the newest published release of its major version.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # One group per tag. A shared group keeps only one pending run, so a
+    # third overlapping tag would drop the second's release.
+    concurrency:
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Clients pin @v0. This job doesn't move a tag to this run's release; for
+  # every major, it moves the major tag to that major's newest published
+  # final release, read fresh. So a patch to an older line never moves a
+  # tag backward, and if the shared group drops a pending run, the run that
+  # replaced it arrived later and reconciles every major from releases
+  # published before it. A tag pushed with GITHUB_TOKEN doesn't start
+  # another workflow run.
+  major:
+    needs: publish
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-major
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Move the major tags
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          finals=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+                     --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName' |
+                   { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V)
+          for major in $(sed 's/\..*//' <<< "$finals" | sort -u); do
+            newest=$(grep -E "^${major}\." <<< "$finals" | tail -n1)
+            target=$(git rev-list -n1 "refs/tags/$newest")
+            if [ "$(git rev-list -n1 "refs/tags/$major" 2>/dev/null || true)" = "$target" ]; then
+              echo "$major already points at $newest."
+              continue
+            fi
+            git tag -f "$major" "$target"
+            git push -f origin "refs/tags/$major"
+            echo "::notice::$major now points at $newest."
+          done

@@ -1,6 +1,6 @@
 module github.com/SnapdragonPartners/buggrit
 
-go 1.26.9
+go 1.26.10
 
 require github.com/SnapdragonPartners/maestro-llms v0.11.0
 

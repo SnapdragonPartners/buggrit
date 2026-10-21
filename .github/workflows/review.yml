@@ -1,0 +1,109 @@
+name: buggrit review
+
+# The reusable workflow other repos call (docs/design.md §3, §12 step 7):
+#
+#   jobs:
+#     buggrit:
+#       uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
+#       secrets: inherit
+#
+# The caller keeps its triggers and its concurrency group, since both have to
+# be on the calling workflow (design §3, "Bot events"); README.md has the
+# full snippet. This job is the one buggrit.yml runs, except that it installs
+# a release binary through the composite action instead of building main.
+#
+# buggrit's login comes from the variable BUGGRIT_BOT_LOGIN, defaulting to
+# buggrit-bot[bot]. It must match the caller's concurrency group and
+# identity.bot_login in .github/buggrit.json.
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner label; it must be able to reach the model endpoint
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: Job timeout; keep it above limits.pass_deadline so buggrit has time to publish
+        type: number
+        default: 70
+      version:
+        description: buggrit release to run (v0.1.0); defaults to the release v0 points at
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    # Events caused by buggrit's own comments report under their own check
+    # name, so their skipped runs never hide the real review (design §3,
+    # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
+    # skipped job's name, so those runs show this expression's text.
+    name: >-
+      ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
+           github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
+          && 'ignored bot event' || 'review' }}
+    # Skip drafts, and skip events caused by buggrit's own comments.
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.comment.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') &&
+      github.event.review.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]')
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+
+      # While buggrit's repository is private, its release assets need an
+      # authenticated download. This token reads buggrit's contents and
+      # nothing else, so the review token stays scoped to the caller's repo.
+      - name: Mint release download token
+        id: download
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+          owner: SnapdragonPartners
+          repositories: buggrit
+          permission-contents: read
+
+      # The PR's head now, not the event's (design §2).
+      - name: Look up the PR head
+        id: head
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          sha=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the PR head
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.head.outputs.sha }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      # buggrit reads .github/buggrit.json from the base branch and stops
+      # with a notice if there is none (design §4).
+      - name: Review
+        uses: SnapdragonPartners/buggrit@v0
+        env:
+          # The model key, under the name api_key_env gives. These are the
+          # two names this workflow passes through.
+          LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
+          BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          download-token: ${{ steps.download.outputs.token }}
+          pr: ${{ github.event.pull_request.number || github.event.inputs.pr }}
+          workspace: ${{ github.workspace }}/pr
+          version: ${{ inputs.version }}

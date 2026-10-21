@@ -4,8 +4,9 @@ name: buggrit
 #
 # It runs the buggrit built from main, not from the PR, and reads
 # .github/buggrit.json from the base branch, so nothing the PR changes runs
-# with the App token or the LunaRoute key (design §4, §10). Until build
-# step 7 ships the composite action, it builds from source.
+# with the App token or the LunaRoute key (design §4, §10). It builds from
+# source rather than using a release, so it's the canary for each merge;
+# other repos call the reusable review.yml instead (design §3).
 #
 # Replies and reviews trigger runs too (design §3). A run at a head that
 # already has a complete pass only reconciles: it verifies open findings and
