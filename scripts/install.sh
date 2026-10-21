@@ -54,10 +54,17 @@ by_precedence() {
 }
 
 # has_assets reports whether tag has a published release (drafts aren't
-# found by tag) carrying this runner's archive and checksums.txt.
+# found by tag) carrying this runner's archive and checksums.txt. Only a 404
+# means "no release"; any other failure (a bad token, a rate limit, a 5xx)
+# stops the install rather than quietly falling back to an older release.
 has_assets() {
   local names
-  names=$(gh api "repos/$REPO/releases/tags/$1" --jq '.assets[].name' 2>/dev/null) || return 1
+  if ! names=$(gh api "repos/$REPO/releases/tags/$1" --jq '.assets[].name' 2>&1); then
+    case "$names" in
+      *"(HTTP 404)"*) return 1 ;;
+      *) echo "buggrit: reading the release for $1 failed: $names" >&2; exit 1 ;;
+    esac
+  fi
   grep -qxF "$asset" <<< "$names" && grep -qxF checksums.txt <<< "$names"
 }
 
@@ -93,9 +100,15 @@ echo "Installing buggrit $tag ($os/$arch) from $REPO"
 gh release download "$tag" --repo "$REPO" --dir "$work" \
   --pattern "$asset" --pattern checksums.txt
 
-line=$(grep -E "[[:space:]]\*?$asset\$" "$work/checksums.txt" || true)
+# Exactly one line naming the asset, compared literally (sha256sum's binary
+# mode marks the name with a leading *).
+line=$(awk -v a="$asset" '$2 == a || $2 == "*" a' "$work/checksums.txt")
 if [ -z "$line" ]; then
   echo "buggrit: $asset is not in the checksums of $tag" >&2
+  exit 1
+fi
+if [ "$(wc -l <<< "$line")" -ne 1 ]; then
+  echo "buggrit: $asset appears more than once in the checksums of $tag" >&2
   exit 1
 fi
 if command -v sha256sum >/dev/null; then

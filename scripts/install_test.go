@@ -19,7 +19,8 @@ import (
 // fakeGH answers the gh calls install.sh makes from files under $FAKE_GH:
 // commits/<ref> holds the ref's SHA, tags lists "<name> <sha>" lines, and
 // releases/<tag>/ holds a published release's assets. A tag with no
-// releases/<tag>/ has no published release.
+// releases/<tag>/ has no published release (a 404), and releases/<tag>.error
+// makes reading that release fail with the file's text.
 const fakeGH = `#!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >> "$FAKE_GH/calls"
@@ -30,7 +31,8 @@ if [ "$1" = api ]; then
     */commits/*) cat "$FAKE_GH/commits/${1##*/}" ;;
     */releases/tags/*)
       dir="$FAKE_GH/releases/${1##*/}"
-      [ -d "$dir" ] || { echo "Not Found" >&2; exit 1; }
+      [ -f "$dir.error" ] && { cat "$dir.error" >&2; exit 1; }
+      [ -d "$dir" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
       ls "$dir" ;;
     */tags*)
       sha=$(sed -n 's/.*select(.commit.sha == "\([0-9a-f]*\)").*/\1/p' <<< "$3")
@@ -242,6 +244,46 @@ func TestInstallSkipsReleaseWithoutThisRunnersAsset(t *testing.T) {
 	out, got, err := f.run("REPO=o/buggrit", "REF=v0")
 	if err != nil || got != "v0.1.0" {
 		t.Fatalf("installed %q, err %v, want v0.1.0\n%s", got, err, out)
+	}
+}
+
+func TestInstallStopsOnReleaseLookupError(t *testing.T) {
+	f := newFixture(t)
+	f.release("v0.1.0", shaA)
+	f.release("v0.1.1", shaA)
+	f.write("releases/v0.1.1.error", "gh: API rate limit exceeded (HTTP 403)\n", 0o644)
+	f.tag("v0", shaA)
+	out, got, err := f.run("REPO=o/buggrit", "REF=v0")
+	if err == nil || !strings.Contains(out, "reading the release for v0.1.1 failed: gh: API rate limit exceeded") {
+		t.Fatalf("err = %v, output:\n%s", err, out)
+	}
+	if got != "" {
+		t.Errorf("installed %q instead of stopping", got)
+	}
+}
+
+func TestInstallMatchesChecksumNameLiterally(t *testing.T) {
+	f := newFixture(t)
+	f.release("v0.1.0", shaA)
+	sums := mustRead(t, filepath.Join(f.root, "releases/v0.1.0/checksums.txt"))
+	// A name that would match if the dots were wildcards, or a suffix allowed.
+	lookalike := strings.Replace(f.asset, ".tar.gz", "xtarxgz", 1)
+	f.write("releases/v0.1.0/checksums.txt",
+		strings.Repeat("0", 64)+"  "+lookalike+"\n"+strings.Repeat("0", 64)+"  "+f.asset+".sbom\n"+sums, 0o644)
+	out, got, err := f.run("REPO=o/buggrit", "REF=v0.1.0")
+	if err != nil || got != "v0.1.0" {
+		t.Fatalf("installed %q, err %v\n%s", got, err, out)
+	}
+}
+
+func TestInstallRejectsDuplicateChecksum(t *testing.T) {
+	f := newFixture(t)
+	f.release("v0.1.0", shaA)
+	sums := mustRead(t, filepath.Join(f.root, "releases/v0.1.0/checksums.txt"))
+	f.write("releases/v0.1.0/checksums.txt", sums+strings.Repeat("0", 64)+" *"+f.asset+"\n", 0o644)
+	out, _, err := f.run("REPO=o/buggrit", "REF=v0.1.0")
+	if err == nil || !strings.Contains(out, "more than once") {
+		t.Fatalf("err = %v, output:\n%s", err, out)
 	}
 }
 
