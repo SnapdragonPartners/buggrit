@@ -73,7 +73,7 @@ and a minimal `.github/buggrit.json`:
 buggrit reads the config from the PR's base branch, so it starts reviewing once the config is merged. Check a config with `buggrit config validate`; [design §4](docs/design.md#4-configuration) has every field.
 
 - **Pinning:** `@v0` follows the newest v0 release. For a fixed release, pass `with: { version: v0.1.0 }`, or pin both the workflow and `version`.
-- **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
+- **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint, and a self-hosted one needs Actions Runner v2.327.1 or later, plus `NODE_USE_ENV_PROXY=1` behind a proxy) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
 - **A different bot login:** set the variable `BUGGRIT_BOT_LOGIN` and `identity.bot_login` in the config to the same value.
 - **The check** to wait on is `buggrit / review`.
 

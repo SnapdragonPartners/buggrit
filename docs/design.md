@@ -219,7 +219,10 @@ below) writes its own job around the composite action instead, with
     authenticated download. The App must be installed on buggrit for the
     download token. If the repository goes public, nothing else changes.
 - **Network:** self-hosted models usually require self-hosted runners, or an
-  authenticated public endpoint.
+  authenticated public endpoint. A self-hosted runner needs Actions Runner
+  v2.327.1 or later, because `actions/create-github-app-token@v3` runs on
+  Node 24. Behind an HTTP proxy, set `NODE_USE_ENV_PROXY=1` alongside
+  `HTTP_PROXY`/`HTTPS_PROXY`, since v3 dropped its own proxy handling.
 - **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
   from the PR at startup. The checkout, the diff, line anchors and markers all
   refer to that commit. GitHub's synthetic merge commit is never used. The
