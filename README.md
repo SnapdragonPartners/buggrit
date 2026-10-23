@@ -6,11 +6,14 @@ An automated pull-request reviewer that runs as a GitHub Action. Like Copilot co
 - re-verifies its earlier findings on every push and reply, and resolves, reopens or escalates their threads;
 - is built to make the review → fix → review loop with a coding agent end in an explicit final state.
 
-**Status:** early development. The design is in [docs/design.md](docs/design.md). Contributor workflow is in [CLAUDE.md](CLAUDE.md).
+> [!WARNING]
+> **Pre-release: not ready for general use.** buggrit is in early development and is being piloted on a few SnapdragonPartners repositories. Its behavior, configuration and workflow interface may change without notice between `v0` releases, and the convergence controls the design depends on (build step 5) aren't built yet. It assumes private, trusted repositories ([design §1](docs/design.md#1-goals-and-context)): on a public repository, anyone who can comment counts as a human reviewer. We aren't taking outside issues or contributions yet.
+
+The design is in [docs/design.md](docs/design.md). Contributor workflow is in [CLAUDE.md](CLAUDE.md).
 
 ## Using buggrit in a repository
 
-For SnapdragonPartners repositories, while buggrit is private and in pilot.
+For SnapdragonPartners repositories, while buggrit is in pilot.
 
 **Once per org** (done for SnapdragonPartners):
 
@@ -90,3 +93,7 @@ Check a config file:
 ```sh
 go run ./cmd/buggrit config validate path/to/buggrit.json
 ```
+
+## License
+
+[MIT](LICENSE)
