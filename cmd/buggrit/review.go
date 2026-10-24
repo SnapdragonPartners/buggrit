@@ -142,7 +142,7 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 	gh := github.NewClient(a.token, github.WithBaseURL(a.apiURL))
 	// The verifier and the finder run at once and both log.
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
-	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
+	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, team: review.NewTeam(gh, repo), stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
 	if a.stepSummary != "" && summary != "" {
 		if err := appendFile(a.stepSummary, summary); err != nil {
@@ -153,9 +153,11 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 }
 
 type reviewer struct {
-	args   *reviewArgs
-	deps   reviewDeps
-	gh     *github.Client
+	args *reviewArgs
+	deps reviewDeps
+	gh   *github.Client
+	// team is the run's Team, shared by the event check and the engine.
+	team   *review.Team
 	stdout io.Writer
 	stderr io.Writer
 	repo   github.Repo
@@ -204,7 +206,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: head}
 	say(r.stderr, "buggrit: reviewing %s#%d at %s with %s\n", r.repo, pr.Number, short(head), cfg.Stage(config.StageFind).Model)
-	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool}
+	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool, Team: r.team}
 	res, err := review.Review(ctx, ref, ws, r.gh, opts)
 	if errors.Is(err, github.ErrHeadMoved) {
 		return r.stop(err.Error())

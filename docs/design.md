@@ -330,6 +330,12 @@ below) writes its own job around the composite action instead, with
   `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
   unresolving is refused, buggrit keeps the state in markers, lists the
   affected threads in the summary as "resolve manually", and carries on.
+  A rate limit isn't a refusal (§9): it fails the pass, and the next one
+  repairs the thread.
+  On a public repository buggrit also reads commenters' permission (§6),
+  which GitHub documents as needing only **Metadata: Read**, a permission
+  every App has. A refusal there fails the run, so a missing permission
+  can't pass for "outside the team".
 - **App credentials** are set once at the org level: the variable
   `BUGGRIT_APP_ID` and the secret `BUGGRIT_APP_PRIVATE_KEY`, both visible to
   the repos buggrit runs in. The App's installation needs those repos too.
@@ -578,10 +584,11 @@ History is read with GraphQL `pullRequest.reviewThreads`, which gives
 their `authorAssociation`. That covers our findings plus human or agent
 replies. When a comment's association doesn't place its author on the team,
 buggrit reads the author's permission once per run (`GET
-/repos/{owner}/{repo}/collaborators/{login}/permission`). A 404, or a 403
-that isn't a rate limit, leaves the author outside; any other error,
-including a rate limit buggrit can't wait out, fails the run rather than
-drop what may be a teammate's reply.
+/repos/{owner}/{repo}/collaborators/{login}/permission`), shared by the
+front end's event check (§3 "Outside events") and the engine. A 404 (no
+such user) leaves the author outside. Any other error fails the run rather
+than drop what may be a teammate's reply: a 403 is about the token, not the
+author, and a rate limit buggrit can't wait out is temporary.
 
 Threads started by **other reviewers** (Copilot, humans) are also read.
 buggrit doesn't manage them, but it treats them as already-raised issues:
@@ -972,8 +979,11 @@ enforce lane limits (for example LunaRoute) or limits shared across runs,
 reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
 and circuit-breaker policy come from the `maestro-llms` recommended chain.
 
-GitHub calls retry rate limits (429, or 403 with `Retry-After` or an
-exhausted quota) for every method, waiting up to 60 seconds. Longer waits
+GitHub calls retry rate limits (429; 403 with `Retry-After` or an exhausted
+`X-RateLimit-Remaining`; or a 403 whose message says "rate limit", as the
+secondary limit's sometimes does alone) for every method, waiting up to 60
+seconds. A rate limit is never a refusal: a throttled resolve fails the
+pass rather than being listed as "resolve manually" (§3). Longer waits
 fail the call, so the pass reports itself incomplete. Server errors and
 transport failures are retried only for reads, including GraphQL queries.
 A mutation that fails that way may still have landed, and the next pass's

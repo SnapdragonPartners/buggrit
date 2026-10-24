@@ -49,10 +49,10 @@ func NewTeam(gh PermissionReader, repo github.Repo) *Team {
 // on the team. Bots are, since only an admin can install an App on the
 // repository, and so is buggrit itself. Anyone else is if their
 // association says so, or else if their permission on the repository is
-// write or admin. A deleted ("ghost") author, with no login, isn't. When
-// GitHub refuses to say (a 404, or a 403 that isn't a rate limit), the
-// author isn't; any other error is returned, so the caller fails rather
-// than drop a teammate's reply.
+// write or admin. A deleted ("ghost") author, with no login, isn't, and
+// neither is one GitHub doesn't know (a 404). Any other error is returned,
+// so the caller fails rather than drop a teammate's reply: a 403 is about
+// the token, not the author, and a rate limit passes.
 func (t *Team) Has(ctx context.Context, login, association string) (bool, error) {
 	switch {
 	case login == "":
@@ -66,7 +66,7 @@ func (t *Team) Has(ctx context.Context, login, association string) (bool, error)
 	}
 	perm, err := t.gh.Permission(ctx, t.repo, login)
 	switch {
-	case github.IsNotFound(err), github.IsForbidden(err):
+	case github.IsNotFound(err):
 		perm = ""
 	case err != nil:
 		return false, fmt.Errorf("check whether %s is on the team: %w", login, err)
@@ -83,11 +83,10 @@ func (t *Team) Has(ctx context.Context, login, association string) (bool, error)
 //
 // On a private repository everyone who can comment is on the team (§1), so
 // nothing is dropped.
-func screen(ctx context.Context, gh GitHub, repo github.Repo, private bool, threads []github.Thread) ([]github.Thread, []Ignored, error) {
+func screen(ctx context.Context, team *Team, private bool, threads []github.Thread) ([]github.Thread, []Ignored, error) {
 	if private {
 		return threads, nil, nil
 	}
-	team := NewTeam(gh, repo)
 	var ignored []Ignored
 	out := make([]github.Thread, 0, len(threads))
 	for i := range threads {

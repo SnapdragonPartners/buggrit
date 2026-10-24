@@ -39,13 +39,13 @@ func TestScreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept, ignored, perr := screen(context.Background(), gh, ref.Repo, true, threads); perr != nil || len(ignored) != 0 || len(kept) != 2 || len(kept[0].Comments) != 8 || len(kept[1].Comments) != 2 {
+	if kept, ignored, perr := screen(context.Background(), NewTeam(gh, ref.Repo), true, threads); perr != nil || len(ignored) != 0 || len(kept) != 2 || len(kept[0].Comments) != 8 || len(kept[1].Comments) != 2 {
 		t.Errorf("on a private repository: kept = %d threads, ignored = %+v, err = %v; want nothing dropped", len(kept), ignored, perr)
 	}
 	if lookups != 0 {
 		t.Errorf("permission lookups on a private repository = %d", lookups)
 	}
-	kept, ignored, err := screen(context.Background(), gh, ref.Repo, false, threads)
+	kept, ignored, err := screen(context.Background(), NewTeam(gh, ref.Repo), false, threads)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,41 +78,38 @@ func TestScreen(t *testing.T) {
 	}
 }
 
-func TestScreenGhostAndForbidden(t *testing.T) {
-	fake, gh, ref := engineSetup(t)
+// A deleted author is outside, with no lookup.
+func TestScreenGhost(t *testing.T) {
+	_, gh, ref := engineSetup(t)
 	threads := []github.Thread{{ID: "T1", Comments: []github.Comment{
 		{Author: githubtest.DefaultLogin, Association: "NONE"},
 		{Author: "", Association: "NONE"},
-		{Author: "someone", Association: "CONTRIBUTOR"},
 	}}}
-	fake.OnRequest = func(op string) int {
-		if op == "GET permission" {
-			return http.StatusForbidden
-		}
-		return 0
-	}
-	kept, ignored, err := screen(context.Background(), gh, ref.Repo, false, threads)
+	kept, ignored, err := screen(context.Background(), NewTeam(gh, ref.Repo), false, threads)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kept) != 1 || len(kept[0].Comments) != 1 || len(ignored) != 2 {
+	if len(kept) != 1 || len(kept[0].Comments) != 1 || len(ignored) != 1 {
 		t.Errorf("kept = %+v, ignored = %+v", kept, ignored)
 	}
 }
 
-// An error other than a refusal fails the pass rather than drop what may be
-// a teammate's reply.
+// A lookup that fails for any reason but "no such user" fails the pass
+// rather than drop what may be a teammate's reply. A 403 is the token's
+// problem, not the author's.
 func TestScreenLookupError(t *testing.T) {
-	fake, gh, ref := engineSetup(t)
-	threads := []github.Thread{{ID: "T1", Comments: []github.Comment{{Author: "someone", Association: "CONTRIBUTOR"}}}}
-	fake.OnRequest = func(op string) int {
-		if op == "GET permission" {
-			return http.StatusUnprocessableEntity
+	for _, status := range []int{http.StatusForbidden, http.StatusUnprocessableEntity} {
+		fake, gh, ref := engineSetup(t)
+		threads := []github.Thread{{ID: "T1", Comments: []github.Comment{{Author: "someone", Association: "CONTRIBUTOR"}}}}
+		fake.OnRequest = func(op string) int {
+			if op == "GET permission" {
+				return status
+			}
+			return 0
 		}
-		return 0
-	}
-	if _, _, err := screen(context.Background(), gh, ref.Repo, false, threads); err == nil {
-		t.Fatal("screen succeeded despite the failed lookup")
+		if _, _, err := screen(context.Background(), NewTeam(gh, ref.Repo), false, threads); err == nil {
+			t.Errorf("HTTP %d: screen succeeded despite the failed lookup", status)
+		}
 	}
 }
 
@@ -176,15 +173,46 @@ func (p permissionErr) Permission(context.Context, github.Repo, string) (string,
 	return "", p.err
 }
 
-// A rate limit isn't a refusal: it fails the check rather than put the
-// author outside the team.
-func TestTeamRateLimited(t *testing.T) {
-	team := NewTeam(permissionErr{&github.APIError{Status: http.StatusForbidden, Message: "API rate limit exceeded", RateLimited: true}}, engineRepo)
-	if _, err := team.Has(context.Background(), "someone", "CONTRIBUTOR"); err == nil {
-		t.Error("a rate-limited lookup put the author outside the team")
+// Only "no such user" puts the author outside; a rate limit or a refusal
+// fails the check.
+func TestTeamLookupErrors(t *testing.T) {
+	for _, e := range []*github.APIError{
+		{Status: http.StatusForbidden, Message: "API rate limit exceeded", RateLimited: true},
+		{Status: http.StatusForbidden, Message: "Resource not accessible by integration"},
+	} {
+		if _, err := NewTeam(permissionErr{e}, engineRepo).Has(context.Background(), "someone", "CONTRIBUTOR"); err == nil {
+			t.Errorf("%v: no error", e)
+		}
 	}
-	team = NewTeam(permissionErr{&github.APIError{Status: http.StatusForbidden, Message: "Resource not accessible by integration"}}, engineRepo)
-	if ok, err := team.Has(context.Background(), "someone", "CONTRIBUTOR"); ok || err != nil {
-		t.Errorf("a refused lookup: ok = %v, err = %v; want outside, no error", ok, err)
+	ok, err := NewTeam(permissionErr{&github.APIError{Status: http.StatusNotFound, Message: "Not Found"}}, engineRepo).Has(context.Background(), "someone", "NONE")
+	if ok || err != nil {
+		t.Errorf("no such user: ok = %v, err = %v; want outside, no error", ok, err)
+	}
+}
+
+// One Team serves the whole run: a front end's check and the engine read
+// an author's permission once between them.
+func TestReviewSharesTeam(t *testing.T) {
+	fake, gh, ref := engineSetup(t)
+	fake.SetAssociation("private-member", "CONTRIBUTOR")
+	fake.SetPermission("private-member", "write")
+	fake.AddThread(7, "private-member", "internal/cache/cache.go", 2, "Consider a constructor.")
+	lookups := 0
+	fake.OnRequest = func(op string) int {
+		if op == "GET permission" {
+			lookups++
+		}
+		return 0
+	}
+	opts := engineOptions(submitting(`{"coverage": "complete", "findings": []}`))
+	opts.Team = NewTeam(gh, ref.Repo)
+	if ok, err := opts.Team.Has(context.Background(), "private-member", "CONTRIBUTOR"); !ok || err != nil {
+		t.Fatalf("Has = %v, %v", ok, err)
+	}
+	if _, err := Review(context.Background(), ref, testWorkspace(), gh, opts); err != nil {
+		t.Fatal(err)
+	}
+	if lookups != 1 {
+		t.Errorf("permission lookups = %d, want 1", lookups)
 	}
 }

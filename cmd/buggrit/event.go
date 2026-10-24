@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
-	"github.com/SnapdragonPartners/buggrit/internal/review"
 )
 
 // eventAuthor is who caused a review-comment or review event, read from
@@ -71,7 +69,7 @@ func (r *reviewer) outsideEvent(ctx context.Context) (string, error) {
 	if err != nil || a == nil || a.Private {
 		return "", err
 	}
-	ok, err := review.NewTeam(r.gh, r.repo).Has(ctx, a.Login, a.Association)
+	ok, err := r.team.Has(ctx, a.Login, a.Association)
 	if err != nil || ok {
 		return "", err //nolint:wrapcheck // Has names the author
 	}

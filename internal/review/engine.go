@@ -46,6 +46,9 @@ type Options struct {
 	// OnToolCall, if set, observes each tool call, with the stage that made
 	// it. With both stages running, it's called from both, concurrently.
 	OnToolCall func(config.Stage, toolloop.ToolCallEvent)
+	// Team, if set, is the run's Team, so a front end that already checked
+	// who started the run shares its permission lookups; nil makes one.
+	Team *Team
 }
 
 // Result is a pass's outcome, ready to publish.
@@ -184,7 +187,11 @@ func (p *pass) load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("review: %w", err)
 	}
-	if p.threads, p.res.Ignored, err = screen(ctx, p.gh, p.ref.Repo, pr.Private, threads); err != nil {
+	team := p.opts.Team
+	if team == nil {
+		team = NewTeam(p.gh, p.ref.Repo)
+	}
+	if p.threads, p.res.Ignored, err = screen(ctx, team, pr.Private, threads); err != nil {
 		return err
 	}
 	p.tracked = state.Replay(p.threads, p.cfg.Identity.BotLogin)
