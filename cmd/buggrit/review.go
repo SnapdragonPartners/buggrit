@@ -77,14 +77,19 @@ func (l modelLog) Observe(e middleware.Event) {
 // a GitHub Action provides, so the workflow needs none of them.
 type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
-	pr                                                      int
-	dryRun                                                  bool
+	// eventName and eventPath are the Actions event that started the run.
+	eventName, eventPath string
+	pr                   int
+	dryRun               bool
 }
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	a := &reviewArgs{token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY")}
+	a := &reviewArgs{
+		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
+		eventName: getenv("GITHUB_EVENT_NAME"), eventPath: getenv("GITHUB_EVENT_PATH"),
+	}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
 	fs.IntVar(&a.pr, "pr", pr, "pull request number (default $BUGGRIT_PR)")
@@ -137,7 +142,7 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 	gh := github.NewClient(a.token, github.WithBaseURL(a.apiURL))
 	// The verifier and the finder run at once and both log.
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
-	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
+	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, team: review.NewTeam(gh, repo), stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
 	if a.stepSummary != "" && summary != "" {
 		if err := appendFile(a.stepSummary, summary); err != nil {
@@ -148,9 +153,11 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 }
 
 type reviewer struct {
-	args   *reviewArgs
-	deps   reviewDeps
-	gh     *github.Client
+	args *reviewArgs
+	deps reviewDeps
+	gh   *github.Client
+	// team is the run's Team, shared by the event check and the engine.
+	team   *review.Team
 	stdout io.Writer
 	stderr io.Writer
 	repo   github.Repo
@@ -172,6 +179,13 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if head != pr.HeadSHA {
 		return r.stop(fmt.Sprintf("the checkout is at %s but the PR head is now %s; a newer run will review it", short(head), short(pr.HeadSHA)))
 	}
+	why, err := r.outsideEvent(ctx)
+	if err != nil {
+		return r.fail(err)
+	}
+	if why != "" {
+		return r.stop(why)
+	}
 
 	cfg, err := r.loadConfig(ctx, pr)
 	if errors.Is(err, errNoConfig) {
@@ -192,7 +206,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: head}
 	say(r.stderr, "buggrit: reviewing %s#%d at %s with %s\n", r.repo, pr.Number, short(head), cfg.Stage(config.StageFind).Model)
-	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool}
+	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool, Team: r.team}
 	res, err := review.Review(ctx, ref, ws, r.gh, opts)
 	if errors.Is(err, github.ErrHeadMoved) {
 		return r.stop(err.Error())
@@ -206,6 +220,10 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 // finish publishes the pass, or prints it for a dry run, and reports it.
 func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Result, cfg *config.Config) (int, string) {
+	for i := range res.Ignored {
+		c := &res.Ignored[i]
+		say(r.stderr, "buggrit: ignored a comment from %s, who has no write access: %s\n", c.Author, c.URL)
+	}
 	var manual []publish.Manual
 	if r.args.dryRun {
 		r.print(res)
@@ -355,6 +373,13 @@ func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual)
 	}
 	if len(manual) > 0 {
 		b.WriteString(publish.ManualList(manual))
+		b.WriteByte('\n')
+	}
+	if len(res.Ignored) > 0 {
+		b.WriteString("Ignored comments from people without write access to the repository:\n\n")
+		for i := range res.Ignored {
+			fmt.Fprintf(&b, "- %s: %s\n", res.Ignored[i].Author, res.Ignored[i].URL)
+		}
 		b.WriteByte('\n')
 	}
 	if res.Find == nil && res.Verify == nil {

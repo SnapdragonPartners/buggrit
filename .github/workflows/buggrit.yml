@@ -45,14 +45,32 @@ jobs:
     # Events caused by buggrit's own comments report under their own check
     # name, so their skipped runs never hide the real review (design §3,
     # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
-    # skipped job's name, so those runs show this expression's text.
+    # skipped job's name, so those runs, like every other skipped run,
+    # show this expression's text. On a public repository, a comment or
+    # review by a person whose author association doesn't put them on the
+    # team runs as "outside event", so a run that stops for an outsider
+    # doesn't hide the real review either (design §3, "Outside events").
     name: >-
       ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
            github.event.review.user.login == 'buggrit-bot[bot]')
-          && 'ignored bot event' || 'review' }}
-    # Skip drafts, and skip events caused by buggrit's own comments.
+          && 'ignored bot event'
+          || (!github.event.repository.private &&
+              ((github.event_name == 'pull_request_review_comment' &&
+                github.event.comment.user.type != 'Bot' &&
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+               (github.event_name == 'pull_request_review' &&
+                github.event.review.user.type != 'Bot' &&
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
+          && 'outside event' || 'review' }}
+    # Skip drafts, fork PRs (they get no secrets) and events caused by
+    # buggrit's own comments. Comments from outside the team can't be told
+    # apart here, since a teammate whose org membership is private may show
+    # any association; buggrit checks the author's write access and stops
+    # before the model (design §3, "Outside events").
     if: >-
       !github.event.pull_request.draft &&
+      (!github.event.pull_request ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
       github.event.comment.user.login != 'buggrit-bot[bot]' &&
       github.event.review.user.login != 'buggrit-bot[bot]'
     runs-on: ubuntu-latest

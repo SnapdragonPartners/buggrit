@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
+	"github.com/SnapdragonPartners/buggrit/internal/review"
 )
 
 // TestLive is the build-step-2 live check (docs/design.md §3, §12): with a
@@ -25,6 +26,8 @@ import (
 //	BUGGRIT_LIVE_PR     pull request number
 //	BUGGRIT_LIVE_TOKEN  the token under test
 //	BUGGRIT_LIVE_LOGIN  optional: the login the token should post as
+//	BUGGRIT_LIVE_MEMBER optional: a teammate the token should see as one,
+//	                    by association or by write permission (design §1)
 //
 // .github/workflows/livecheck.yml runs it with the Actions and App tokens.
 func TestLive(t *testing.T) {
@@ -113,6 +116,9 @@ func TestLive(t *testing.T) {
 	if want := os.Getenv("BUGGRIT_LIVE_LOGIN"); want != "" && !strings.EqualFold(author, want) {
 		t.Errorf("posted as %q, want %q", author, want)
 	}
+	if member := os.Getenv("BUGGRIT_LIVE_MEMBER"); member != "" {
+		checkMember(ctx, t, c, repo, threads, member)
+	}
 
 	if _, err := c.Reply(ctx, repo, number, lineRootID, note+" [reply]"); err != nil {
 		t.Fatalf("reply: %v", err)
@@ -198,4 +204,32 @@ func firstAddedLine(d *github.Diff) (github.Anchor, bool) {
 		}
 	}
 	return github.Anchor{}, false
+}
+
+// checkMember checks that the token sees a teammate as one, by the rule the
+// engine applies (design §1, "Public repositories"): the association on
+// their comments, or else their permission. Both are logged.
+func checkMember(ctx context.Context, t *testing.T, c *github.Client, repo github.Repo, threads []github.Thread, member string) {
+	t.Helper()
+	association := ""
+	for i := range threads {
+		for _, cm := range threads[i].Comments {
+			if association == "" && strings.EqualFold(cm.Author, member) {
+				association = cm.Association
+			}
+		}
+	}
+	t.Logf("%s's comments show association %q", member, association)
+	if perm, err := c.Permission(ctx, repo, member); err != nil {
+		t.Logf("%s's permission: %v", member, err)
+	} else {
+		t.Logf("%s's permission: %s", member, perm)
+	}
+	ok, err := review.NewTeam(c, repo).Has(ctx, member, association)
+	switch {
+	case err != nil:
+		t.Errorf("check %s: %v", member, err)
+	case !ok:
+		t.Errorf("buggrit would count %s as outside the team and ignore their replies", member)
+	}
 }

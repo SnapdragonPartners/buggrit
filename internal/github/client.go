@@ -100,6 +100,9 @@ type APIError struct {
 	// empty for REST errors.
 	Type   string
 	Status int
+	// RateLimited marks a 403 or 429 that is GitHub's rate limit, not a
+	// refusal: the request may succeed later, so it isn't IsForbidden.
+	RateLimited bool
 }
 
 func (e *APIError) Error() string {
@@ -117,7 +120,7 @@ func (e *APIError) Error() string {
 // by integration", design §3). Callers fall back rather than fail the pass.
 func IsForbidden(err error) bool {
 	var e *APIError
-	if !errors.As(err, &e) {
+	if !errors.As(err, &e) || e.RateLimited {
 		return false
 	}
 	return e.Status == http.StatusForbidden || e.Type == "FORBIDDEN" ||
@@ -206,7 +209,8 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 		return resp, nil, fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return resp, body, &APIError{Status: resp.StatusCode, Message: errorMessage(body)}
+		msg := errorMessage(body)
+		return resp, body, &APIError{Status: resp.StatusCode, Message: msg, RateLimited: rateLimited(resp, msg)}
 	}
 	if r.out != nil && len(body) > 0 {
 		if err := json.Unmarshal(body, r.out); err != nil {
@@ -225,10 +229,7 @@ func retryAfter(resp *http.Response, err error, idempotent bool) (time.Duration,
 	const maxWait = 60 * time.Second
 	// Rate-limit headers decide first, even if the body was then cut off:
 	// the request was rejected, so retrying is safe for every method.
-	limited := resp != nil && (resp.StatusCode == http.StatusTooManyRequests ||
-		(resp.StatusCode == http.StatusForbidden &&
-			(resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0")))
-	if !limited {
+	if resp == nil || !rateLimited(resp, errorMessageOf(err)) {
 		// No response, or a body cut off mid-read, is a transport failure.
 		if resp == nil || errors.Is(err, errBodyRead) {
 			return 2 * time.Second, idempotent && !errors.Is(err, context.Canceled) &&
@@ -251,6 +252,25 @@ func retryAfter(resp *http.Response, err error, idempotent bool) (time.Duration,
 		return 0, false
 	}
 	return max(wait, 0), true
+}
+
+// rateLimited reports whether a failed response is GitHub's rate limit: a
+// 429, or a 403 with Retry-After, no remaining quota, or the secondary rate
+// limit's message.
+func rateLimited(resp *http.Response, msg string) bool {
+	return resp.StatusCode == http.StatusTooManyRequests ||
+		(resp.StatusCode == http.StatusForbidden &&
+			(resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0" ||
+				strings.Contains(strings.ToLower(msg), "rate limit")))
+}
+
+// errorMessageOf is an *APIError's message, or "".
+func errorMessageOf(err error) string {
+	var e *APIError
+	if errors.As(err, &e) {
+		return e.Message
+	}
+	return ""
 }
 
 func errorMessage(body []byte) string {

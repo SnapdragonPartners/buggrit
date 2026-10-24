@@ -31,9 +31,12 @@ const (
 type Comment struct {
 	CreatedAt time.Time
 	Author    string
-	Body      string
-	CommitSHA string
-	NodeID    string
+	// Association is what GraphQL reports as authorAssociation, taken from
+	// SetAssociation when the comment is made.
+	Association string
+	Body        string
+	CommitSHA   string
+	NodeID      string
 	// DiffHunk is what GraphQL reports as the comment's diffHunk. The fake
 	// doesn't compute it; tests set it where it matters.
 	DiffHunk   string
@@ -90,15 +93,21 @@ type Server struct {
 	files map[string]map[string]string
 	// compares maps "base...head" to a stored comparison.
 	compares map[string]Comparison
-	owner    string
-	repo     string
-	mu       sync.Mutex
-	nextID   int64
+	// associations and permissions are set by SetAssociation and
+	// SetPermission.
+	associations map[string]string
+	permissions  map[string]string
+	owner        string
+	repo         string
+	mu           sync.Mutex
+	nextID       int64
 	// ThreadsPageSize and CommentsPageSize force GraphQL pagination.
 	ThreadsPageSize  int
 	CommentsPageSize int
 	// IssuePageSize forces REST pagination of issue comments.
 	IssuePageSize int
+	// Private makes the repository private; the fake's is public by default.
+	Private bool
 	// ForbidResolve makes resolve and unresolve fail the way GitHub does for
 	// some integration tokens.
 	ForbidResolve bool
@@ -117,6 +126,8 @@ func New(t testing.TB, repo string) *Server {
 		prs:              map[int]*PR{},
 		files:            map[string]map[string]string{},
 		compares:         map[string]Comparison{},
+		associations:     map[string]string{},
+		permissions:      map[string]string{},
 		tokens:           map[string]string{DefaultToken: DefaultLogin},
 		nextID:           1000,
 		ThreadsPageSize:  50,
@@ -190,6 +201,23 @@ func (s *Server) SetCompare(base, head string, c Comparison) {
 	s.compares[base+"..."+head] = c
 }
 
+// SetAssociation sets the author association GraphQL reports on login's
+// later comments. Unset, a bot is NONE and anyone else MEMBER.
+func (s *Server) SetAssociation(login, association string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.associations[login] = association
+}
+
+// SetPermission sets what the collaborator permission endpoint reports for
+// login. Unset, it is "read", as on a public repository; "" makes the
+// endpoint 404.
+func (s *Server) SetPermission(login, permission string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.permissions[login] = permission
+}
+
 // PR returns the stored PR itself, not a copy. Read it only while no request
 // is in flight.
 func (s *Server) PR(number int) *PR {
@@ -244,13 +272,22 @@ func (s *Server) newNodeID(prefix string) string {
 
 func (s *Server) newComment(author, body, sha string) *Comment {
 	s.nextID++
+	association, ok := s.associations[author]
+	switch {
+	case ok:
+	case strings.HasSuffix(author, "[bot]"):
+		association = "NONE"
+	default:
+		association = "MEMBER"
+	}
 	return &Comment{
-		DatabaseID: s.nextID,
-		NodeID:     fmt.Sprintf("PRRC_%d", s.nextID),
-		Author:     author,
-		Body:       body,
-		CommitSHA:  sha,
-		CreatedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Second),
+		DatabaseID:  s.nextID,
+		NodeID:      fmt.Sprintf("PRRC_%d", s.nextID),
+		Author:      author,
+		Association: association,
+		Body:        body,
+		CommitSHA:   sha,
+		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Second),
 	}
 }
 
@@ -276,6 +313,7 @@ func (s *Server) routes() http.Handler {
 	handle("GET /issues/{number}/comments", "GET issue comments", s.listIssueComments)
 	handle("POST /issues/{number}/comments", "POST issue comment", s.postIssueComment)
 	handle("PATCH /issues/comments/{id}", "PATCH issue comment", s.patchIssueComment)
+	handle("GET /collaborators/{login}/permission", "GET permission", s.getPermission)
 	mux.HandleFunc("POST /graphql", s.wrap("graphql", s.graphql))
 	return mux
 }
@@ -351,7 +389,7 @@ func (s *Server) getPull(r *http.Request, _ string) (int, any) {
 		"number": pr.Number, "state": "open", "title": "fake PR", "node_id": fmt.Sprintf("PR_%d", pr.Number),
 		"user": map[string]string{"login": "dratner"},
 		"head": map[string]string{"sha": pr.HeadSHA, "ref": "feature"},
-		"base": map[string]string{"sha": pr.BaseSHA, "ref": "main"},
+		"base": map[string]any{"sha": pr.BaseSHA, "ref": "main", "repo": map[string]any{"private": s.Private}},
 	}
 }
 
@@ -575,6 +613,18 @@ func (s *Server) deleteReviewComment(r *http.Request, login string) (int, any) {
 		return http.StatusNoContent, rawBody("")
 	}
 	return http.StatusNotFound, msg("Not Found")
+}
+
+func (s *Server) getPermission(r *http.Request, _ string) (int, any) {
+	login := r.PathValue("login")
+	permission, ok := s.permissions[login]
+	if !ok {
+		permission = "read"
+	}
+	if permission == "" {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	return http.StatusOK, map[string]any{"permission": permission, "user": map[string]string{"login": login}}
 }
 
 func (s *Server) listIssueComments(r *http.Request, _ string) (int, any) {
