@@ -290,9 +290,11 @@ below) writes its own job around the composite action instead, with
   - Such a run's job is named `outside event` rather than `review` when
     the author is a person whose association alone doesn't place them on
     the team (anything but `OWNER`, `MEMBER` or `COLLABORATOR`). Its quick
-    success then can't hide a failing `review` (§8 "Completion signal").
-    A teammate whose private membership shows as `CONTRIBUTOR` or `NONE`
-    gets a real run under that name; only the name is off.
+    success then can't hide a failing `review`, though it can hide an
+    earlier `outside event`, so that name isn't a completion signal (§8
+    "Completion signal"). A teammate whose private membership shows as
+    `CONTRIBUTOR` or `NONE` gets a real run under that name; only the name
+    is off.
   - It shares the PR's concurrency group, since it may be a teammate's. So
     an outsider who comments while a run is in flight replaces a pending
     teammate run, and that teammate's reply waits for the next run (any
@@ -886,10 +888,16 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   `COLLABORATOR`, reports as `outside event` instead (`buggrit / outside
   event`), whether it stops for an outsider or reviews for a teammate
   with write access (§3 "Outside events"). A run started by a bot,
-  Copilot included, keeps the name `review`. `gh pr checks --watch`
-  waits on every check, so it covers both; an agent that waits on one
-  check by name accepts either, since it can't easily tell which
-  association GitHub reports for it.
+  Copilot included, keeps the name `review`.
+- `review` is the only completion signal. A green `outside event` says
+  nothing about whether a pass ran: it is also the name of an outsider's
+  "nothing to do" stop, and since the panel shows only the newest run per
+  name, a later stop can hide an earlier `outside event` that failed. An
+  outsider's event can also replace a teammate's pending run (§3), so a
+  reply can end with an `outside event` and no run of its own. An agent
+  whose reply was followed only by `outside event` reads that run's job
+  summary: a stop names the outsider it stopped for, and then the agent
+  pushes or dispatches again rather than take it as its pass.
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
   to make required, rather than `review`. `review` reports only the run's
