@@ -894,10 +894,13 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   "nothing to do" stop, and since the panel shows only the newest run per
   name, a later stop can hide an earlier `outside event` that failed. An
   outsider's event can also replace a teammate's pending run (§3), so a
-  reply can end with an `outside event` and no run of its own. An agent
-  whose reply was followed only by `outside event` reads that run's job
-  summary: a stop names the outsider it stopped for, and then the agent
-  pushes or dispatches again rather than take it as its pass.
+  reply can end with an `outside event` and no run of its own. So an
+  agent whose reply was followed only by `outside event` doesn't take it
+  as its pass: it dispatches the workflow (or pushes) to get a `review`.
+  A dispatch at a head with a complete pass only reconciles (§2), so it's
+  cheap even when the earlier run was real. Re-running the `outside
+  event` job doesn't help: it replays the same event, so it keeps that
+  name and, for an outsider, stops again.
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
   to make required, rather than `review`. `review` reports only the run's
