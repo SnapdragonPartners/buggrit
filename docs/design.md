@@ -289,10 +289,10 @@ below) writes its own job around the composite action instead, with
   check. Two consequences:
   - Such a run's job is named `outside event` rather than `review` when
     the author is a person whose association alone doesn't place them on
-    the team (anything but `OWNER`, `MEMBER`, `COLLABORATOR` or
-    `CONTRIBUTOR`, the last because private members can show as one). Its quick success then can't
-    hide a failing `review` (§8 "Completion signal"). A teammate who shows
-    as `NONE` gets a real run under that name.
+    the team (anything but `OWNER`, `MEMBER` or `COLLABORATOR`). Its quick
+    success then can't hide a failing `review` (§8 "Completion signal").
+    A teammate whose private membership shows as `CONTRIBUTOR` or `NONE`
+    gets a real run under that name; only the name is off.
   - It shares the PR's concurrency group, since it may be a teammate's. So
     an outsider who comments while a run is in flight replaces a pending
     teammate run, and that teammate's reply waits for the next run (any

@@ -51,10 +51,10 @@ jobs:
           || (!github.event.repository.private &&
               ((github.event_name == 'pull_request_review_comment' &&
                 github.event.comment.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.comment.author_association)) ||
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
                (github.event_name == 'pull_request_review' &&
                 github.event.review.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.review.author_association))))
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
           && 'outside event' || 'review' }}
     # Skip drafts, fork PRs (they get no secrets) and events caused by
     # buggrit's own comments. Comments from outside the team can't be told
