@@ -38,16 +38,11 @@ on:
         description: Pull request number to review
         required: true
 concurrency:
-  # buggrit's own comments, and on a public repo comments from outside the
-  # team, get a throwaway group, so they never replace a run queued by a
-  # teammate. The login must match identity.bot_login.
+  # buggrit's own comments get a throwaway group, so they never replace a
+  # run queued by a human. The login must match identity.bot_login.
   group: >-
     ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-         (github.event_name == 'pull_request_review_comment' && !github.event.repository.private &&
-          !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.comment.author_association)) ||
-         (github.event_name == 'pull_request_review' && !github.event.repository.private &&
-          !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.review.author_association)))
+         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
         && format('buggrit-ignored-{0}', github.run_id)
         || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

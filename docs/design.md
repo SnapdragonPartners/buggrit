@@ -51,10 +51,10 @@ install an App. Everyone else's comments are left out before anything reads
 the threads: they don't count as replies, don't settle a `needs_human`
 finding, never reach the verifier or the finder, and are listed in the job
 summary. On a private repo everyone who can comment is on the team anyway,
-so buggrit drops nothing there and the workflows don't test associations;
-that also spares private repos any doubt about how GitHub reports private
-members. The workflows skip fork PRs everywhere, and outsiders' events on
-public repos (§3 "Outside events"). Agents never merging is still the
+so buggrit drops nothing there and doesn't check who started a run; that
+also spares private repos any doubt about how GitHub reports private
+members. The workflows skip fork PRs everywhere, and on public repos a run
+an outsider started stops before the model (§3 "Outside events"). Agents never merging is still the
 integrity control.
 
 ### Non-goals (for now)
@@ -160,16 +160,11 @@ on:
   workflow_dispatch:
     inputs: { pr: { required: true } }
 concurrency:
-  # Events caused by buggrit's own comments, or by comments from outside
-  # the team, get a throwaway group, so they never replace a pending run
-  # (§3 "Bot events", "Outside events").
+  # Events caused by buggrit's own comments get a throwaway group, so they
+  # never replace a pending run (§3 "Bot events").
   group: >-
     ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-         (github.event_name == 'pull_request_review_comment' && !github.event.repository.private &&
-          !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.comment.author_association)) ||
-         (github.event_name == 'pull_request_review' && !github.event.repository.private &&
-          !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.review.author_association)))
+         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
         && format('buggrit-ignored-{0}', github.run_id)
         || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
   # pushes cancel an in-flight pass; comment-triggered runs wait their turn
@@ -187,9 +182,10 @@ The triggers and the concurrency group stay in the calling workflow,
 because a run enters its group before any job starts. Everything else is
 in the reusable workflow, `.github/workflows/review.yml`, whose one job:
 
-- is named `review` and skips drafts, fork PRs, buggrit's own events (the
-  same login test, §3 "Bot events") and, on a public repository,
-  outsiders' events (§3 "Outside events"). Through a reusable workflow the check
+- is named `review` and skips drafts, fork PRs and buggrit's own events,
+  with the same login test (§3 "Bot events"). On a public repository a
+  run for a possible outsider is named `outside event` (§3 "Outside
+  events"). Through a reusable workflow the check
   shows as `buggrit / review`, the caller's job name first;
 - mints the App installation token for the calling repo, and a second
   token that can only read buggrit's contents, for the release download
@@ -282,21 +278,35 @@ below) writes its own job around the composite action instead, with
   `github-actions[bot]` with the `GITHUB_TOKEN` fallback, sets the variable
   and the config. Otherwise buggrit's own comments count as human events.
 - **Outside events:** on a public repository anyone can trigger a
-  `pull_request_review_comment` or `pull_request_review` run, which would
-  use the model's capacity and could take a teammate's place in the queue.
-  So on a public repository (`github.event.repository.private` is false)
-  the concurrency group sends those events to the throwaway group, and the
-  job `if` skips them, unless the comment's or review's
-  `author_association` is `OWNER`, `MEMBER`, `COLLABORATOR` or
-  `CONTRIBUTOR`. `CONTRIBUTOR` passes because an org member whose
-  membership is private can show up as one in the event; the engine then
-  checks each reply's author by permission (§1 "Public repositories"), so
-  the workflow test is only a cost control. On a public repository
-  Copilot's reviews show as `NONE`, so they no longer start a run; they
-  never replied in buggrit's threads. The `if` also skips fork PRs
-  (`pull_request.head.repo.full_name` differs from the repository), which
-  get no secrets anyway. A manual dispatch has no PR in its event and
-  always runs, since only writers can dispatch.
+  `pull_request_review_comment` or `pull_request_review` run. The workflow
+  can't tell an outsider from a teammate: a teammate whose org membership
+  is private may show any `author_association`, and an expression can't
+  read their permission. So the run starts, and `buggrit review` reads the
+  event's author from the payload (`GITHUB_EVENT_PATH`) and applies the
+  team rule in §1, association or else write access. For someone outside
+  the team it stops with "nothing to do" before the model runs, at the cost
+  of a runner start and the binary install. Private repositories skip the
+  check. Two consequences:
+  - Such a run's job is named `outside event` rather than `review` when
+    the author is a person whose association alone doesn't place them on
+    the team (anything but `OWNER`, `MEMBER`, `COLLABORATOR` or
+    `CONTRIBUTOR`, the last because private members can show as one). Its quick success then can't
+    hide a failing `review` (§8 "Completion signal"). A teammate who shows
+    as `NONE` gets a real run under that name.
+  - It shares the PR's concurrency group, since it may be a teammate's. So
+    an outsider who comments while a run is in flight replaces a pending
+    teammate run, and that teammate's reply waits for the next run (any
+    push, reply or dispatch). Pushes aren't affected, since a push cancels
+    the run in flight rather than waiting. Routing these events to the
+    throwaway group instead would let a teammate's run publish alongside
+    another one.
+
+  Bots count as the team (the payload's `user.type` is `Bot`; Copilot's
+  login there is just `Copilot`), so Copilot's reviews still start
+  reconcile runs under `review`, as before. The job `if` skips fork PRs (`pull_request.head.repo.full_name`
+  differs from the repository), which get no secrets anyway. A manual
+  dispatch has no PR in its event and always runs, since only writers can
+  dispatch.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -568,9 +578,10 @@ History is read with GraphQL `pullRequest.reviewThreads`, which gives
 their `authorAssociation`. That covers our findings plus human or agent
 replies. When a comment's association doesn't place its author on the team,
 buggrit reads the author's permission once per run (`GET
-/repos/{owner}/{repo}/collaborators/{login}/permission`). A 404 or 403
-leaves the author outside; any other error fails the run rather than drop
-what may be a teammate's reply.
+/repos/{owner}/{repo}/collaborators/{login}/permission`). A 404, or a 403
+that isn't a rate limit, leaves the author outside; any other error,
+including a rate limit buggrit can't wait out, fails the run rather than
+drop what may be a teammate's reply.
 
 Threads started by **other reviewers** (Copilot, humans) are also read.
 buggrit doesn't manage them, but it treats them as already-raised issues:
@@ -990,8 +1001,8 @@ people who already have write access to the repo (§1).
   endpoint.
 - No PR code is run, and `pull_request_target` is never used.
 - **On public repositories**, only the team's comments count (§1 "Public
-  repositories"), fork PRs are skipped, and outsiders' events don't start a
-  run (§3 "Outside events"). An outsider can't rebut a finding, settle one,
+  repositories"), fork PRs are skipped, and a run an outsider started stops
+  before the model (§3 "Outside events"). An outsider can't rebut a finding, settle one,
   or put text in front of the models.
 - Tokens get the minimum permissions listed in §3. The App's Contents
   write access, needed only to resolve threads, could push code; it's

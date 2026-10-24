@@ -40,27 +40,33 @@ jobs:
     # name, so their skipped runs never hide the real review (design §3,
     # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
     # skipped job's name, so those runs, like every other skipped run,
-    # show this expression's text.
+    # show this expression's text. On a public repository, a comment or
+    # review by a person whose author association doesn't put them on the
+    # team runs as "outside event", so a run that stops for an outsider
+    # doesn't hide the real review either (design §3, "Outside events").
     name: >-
       ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
            github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
-          && 'ignored bot event' || 'review' }}
-    # Skip drafts, fork PRs (they get no secrets), events caused by
-    # buggrit's own comments, and, on a public repository, comments and
-    # reviews from outside the team (design §3, "Outside events").
-    # CONTRIBUTOR passes because an org member whose membership is private
-    # can show as one; the engine checks each reply's author again, by
-    # permission, so this test only saves the runner and the model capacity.
+          && 'ignored bot event'
+          || (!github.event.repository.private &&
+              ((github.event_name == 'pull_request_review_comment' &&
+                github.event.comment.user.type != 'Bot' &&
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.comment.author_association)) ||
+               (github.event_name == 'pull_request_review' &&
+                github.event.review.user.type != 'Bot' &&
+                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.review.author_association))))
+          && 'outside event' || 'review' }}
+    # Skip drafts, fork PRs (they get no secrets) and events caused by
+    # buggrit's own comments. Comments from outside the team can't be told
+    # apart here, since a teammate whose org membership is private may show
+    # any association; buggrit checks the author's write access and stops
+    # before the model (design §3, "Outside events").
     if: >-
       !github.event.pull_request.draft &&
       (!github.event.pull_request ||
        github.event.pull_request.head.repo.full_name == github.repository) &&
       github.event.comment.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') &&
-      github.event.review.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') &&
-      (github.event_name != 'pull_request_review_comment' || github.event.repository.private ||
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.comment.author_association)) &&
-      (github.event_name != 'pull_request_review' || github.event.repository.private ||
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.review.author_association))
+      github.event.review.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]')
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:

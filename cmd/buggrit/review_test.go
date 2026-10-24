@@ -295,3 +295,55 @@ func TestModelLogReportsReasoning(t *testing.T) {
 		t.Errorf("log = %q, want %q", b.String(), want)
 	}
 }
+
+// A run started by a comment from outside the team, on a public repository,
+// stops before the model (design §3, "Outside events"). A teammate whose
+// association doesn't say so, but who has write access, gets a run; so does
+// anyone on a private repository.
+func TestReviewOutsideEvent(t *testing.T) {
+	write := func(t *testing.T, payload string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "event.json")
+		if err := os.WriteFile(p, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	tests := []struct {
+		name, event, payload string
+		stops                bool
+	}{
+		{name: "outsider comment", event: "pull_request_review_comment", stops: true,
+			payload: `{"comment": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": false}}`},
+		{name: "outsider review", event: "pull_request_review", stops: true,
+			payload: `{"review": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": false}}`},
+		{name: "private member with write access", event: "pull_request_review_comment",
+			payload: `{"comment": {"user": {"login": "private-member"}, "author_association": "NONE"}, "repository": {"private": false}}`},
+		{name: "member", event: "pull_request_review",
+			payload: `{"review": {"user": {"login": "dan"}, "author_association": "MEMBER"}, "repository": {"private": false}}`},
+		{name: "private repository", event: "pull_request_review_comment",
+			payload: `{"comment": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": true}}`},
+		{name: "push", event: "pull_request", payload: `{}`},
+		{name: "Copilot review", event: "pull_request_review",
+			payload: `{"review": {"user": {"login": "Copilot", "type": "Bot"}, "author_association": "NONE"}, "repository": {"private": false}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := setupReview(t, submit(finding))
+			e.fake.SetPermission("private-member", "write")
+			e.env["GITHUB_EVENT_NAME"], e.env["GITHUB_EVENT_PATH"] = tt.event, write(t, tt.payload)
+			code, out, errOut := e.run(t)
+			stopped := strings.Contains(out, "nothing to do: the run was started by outsider, who has no write access")
+			if code != 0 || stopped != tt.stops || (len(e.model.Calls()) == 0) != tt.stops {
+				t.Errorf("exit %d, stopped %v, model calls %d\nstdout: %s\nstderr: %s", code, stopped, len(e.model.Calls()), out, errOut)
+			}
+		})
+	}
+	t.Run("unreadable payload", func(t *testing.T) {
+		e := setupReview(t, submit(finding))
+		e.env["GITHUB_EVENT_NAME"], e.env["GITHUB_EVENT_PATH"] = "pull_request_review", write(t, `{"review": null}`)
+		if code, _, errOut := e.run(t); code != 1 || !strings.Contains(errOut, "has no author") {
+			t.Errorf("exit %d, %s", code, errOut)
+		}
+	})
+}

@@ -168,3 +168,22 @@ func TestReviewIgnoresOutsiderReplies(t *testing.T) {
 		t.Errorf("transitions = %+v, want the teammate's reply to settle the finding", res.Transitions)
 	}
 }
+
+type permissionErr struct{ err error }
+
+func (p permissionErr) Permission(context.Context, github.Repo, string) (string, error) {
+	return "", p.err
+}
+
+// A rate limit isn't a refusal: it fails the check rather than put the
+// author outside the team.
+func TestTeamRateLimited(t *testing.T) {
+	team := NewTeam(permissionErr{&github.APIError{Status: http.StatusForbidden, Message: "API rate limit exceeded", RateLimited: true}}, engineRepo)
+	if _, err := team.Has(context.Background(), "someone", "CONTRIBUTOR"); err == nil {
+		t.Error("a rate-limited lookup put the author outside the team")
+	}
+	team = NewTeam(permissionErr{&github.APIError{Status: http.StatusForbidden, Message: "Resource not accessible by integration"}}, engineRepo)
+	if ok, err := team.Has(context.Background(), "someone", "CONTRIBUTOR"); ok || err != nil {
+		t.Errorf("a refused lookup: ok = %v, err = %v; want outside, no error", ok, err)
+	}
+}

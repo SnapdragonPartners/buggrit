@@ -77,14 +77,19 @@ func (l modelLog) Observe(e middleware.Event) {
 // a GitHub Action provides, so the workflow needs none of them.
 type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
-	pr                                                      int
-	dryRun                                                  bool
+	// eventName and eventPath are the Actions event that started the run.
+	eventName, eventPath string
+	pr                   int
+	dryRun               bool
 }
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	a := &reviewArgs{token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY")}
+	a := &reviewArgs{
+		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
+		eventName: getenv("GITHUB_EVENT_NAME"), eventPath: getenv("GITHUB_EVENT_PATH"),
+	}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
 	fs.IntVar(&a.pr, "pr", pr, "pull request number (default $BUGGRIT_PR)")
@@ -171,6 +176,13 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	}
 	if head != pr.HeadSHA {
 		return r.stop(fmt.Sprintf("the checkout is at %s but the PR head is now %s; a newer run will review it", short(head), short(pr.HeadSHA)))
+	}
+	why, err := r.outsideEvent(ctx)
+	if err != nil {
+		return r.fail(err)
+	}
+	if why != "" {
+		return r.stop(why)
 	}
 
 	cfg, err := r.loadConfig(ctx, pr)

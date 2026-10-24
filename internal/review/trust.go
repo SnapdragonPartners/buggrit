@@ -27,6 +27,54 @@ type Ignored struct {
 	URL    string
 }
 
+// Team decides who is on the team (design §1, "Public repositories"),
+// reading each author's permission at most once.
+type Team struct {
+	gh        PermissionReader
+	permitted map[string]bool
+	repo      github.Repo
+}
+
+// PermissionReader reads a user's permission on a repository.
+type PermissionReader interface {
+	Permission(ctx context.Context, repo github.Repo, login string) (string, error)
+}
+
+// NewTeam returns a Team for repo.
+func NewTeam(gh PermissionReader, repo github.Repo) *Team {
+	return &Team{gh: gh, repo: repo, permitted: map[string]bool{}}
+}
+
+// Has reports whether login, whose author association is association, is
+// on the team. Bots are, since only an admin can install an App on the
+// repository, and so is buggrit itself. Anyone else is if their
+// association says so, or else if their permission on the repository is
+// write or admin. A deleted ("ghost") author, with no login, isn't. When
+// GitHub refuses to say (a 404, or a 403 that isn't a rate limit), the
+// author isn't; any other error is returned, so the caller fails rather
+// than drop a teammate's reply.
+func (t *Team) Has(ctx context.Context, login, association string) (bool, error) {
+	switch {
+	case login == "":
+		return false, nil
+	case strings.HasSuffix(login, "[bot]"), trustedAssociation(association):
+		return true, nil
+	}
+	key := strings.ToLower(login)
+	if ok, seen := t.permitted[key]; seen {
+		return ok, nil
+	}
+	perm, err := t.gh.Permission(ctx, t.repo, login)
+	switch {
+	case github.IsNotFound(err), github.IsForbidden(err):
+		perm = ""
+	case err != nil:
+		return false, fmt.Errorf("check whether %s is on the team: %w", login, err)
+	}
+	t.permitted[key] = trustedPermission(perm)
+	return t.permitted[key], nil
+}
+
 // screen drops every comment from an author outside the team from threads,
 // before anything reads them: replay, the verifier and the finder's notes
 // see only the team's comments, and a thread an outsider started is gone
@@ -34,39 +82,11 @@ type Ignored struct {
 //
 // On a private repository everyone who can comment is on the team (§1), so
 // nothing is dropped.
-//
-// Bots count as the team, since only an admin can install an App on the
-// repository, and so does buggrit itself. Anyone else is on the team if
-// their association says so, or else if their permission on the repository
-// is write or admin. A deleted ("ghost") author isn't. When GitHub won't
-// say (a 404 or 403), the author isn't on the team; any other error fails
-// the pass rather than drop a teammate's reply.
 func screen(ctx context.Context, gh GitHub, repo github.Repo, private bool, threads []github.Thread) ([]github.Thread, []Ignored, error) {
 	if private {
 		return threads, nil, nil
 	}
-	permitted := map[string]bool{}
-	trusted := func(c *github.Comment) (bool, error) {
-		switch {
-		case c.Author == "":
-			return false, nil
-		case strings.HasSuffix(c.Author, "[bot]"), trustedAssociation(c.Association):
-			return true, nil
-		}
-		login := strings.ToLower(c.Author)
-		if ok, seen := permitted[login]; seen {
-			return ok, nil
-		}
-		perm, err := gh.Permission(ctx, repo, c.Author)
-		switch {
-		case github.IsNotFound(err), github.IsForbidden(err):
-			perm = ""
-		case err != nil:
-			return false, fmt.Errorf("review: %w", err)
-		}
-		permitted[login] = trustedPermission(perm)
-		return permitted[login], nil
-	}
+	team := NewTeam(gh, repo)
 	var ignored []Ignored
 	out := make([]github.Thread, 0, len(threads))
 	for i := range threads {
@@ -74,9 +94,9 @@ func screen(ctx context.Context, gh GitHub, repo github.Repo, private bool, thre
 		kept := make([]github.Comment, 0, len(t.Comments))
 		for j := range t.Comments {
 			c := &t.Comments[j]
-			ok, err := trusted(c)
+			ok, err := team.Has(ctx, c.Author, c.Association)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, fmt.Errorf("review: %w", err)
 			}
 			if !ok {
 				ignored = append(ignored, Ignored{Author: c.Author, URL: c.URL})
