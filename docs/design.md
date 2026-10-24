@@ -881,6 +881,13 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   (`gh pr checks --watch`). In a repo on the reusable workflow it shows as
   `buggrit / review` (§3). Runs skipped for buggrit's own events report
   under another name, so they don't stand in for it (§3 "Bot events").
+  On a public repository, a run started by a reply or review whose author
+  association isn't `OWNER`, `MEMBER` or `COLLABORATOR` reports as
+  `outside event` instead (`buggrit / outside event`), whether it stops
+  for an outsider or reviews for a teammate with write access (§3
+  "Outside events"). `gh pr checks --watch` waits on every check, so it
+  covers both; an agent that waits on one check by name accepts either,
+  since it can't easily tell which association GitHub reports for it.
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
   to make required, rather than `review`. `review` reports only the run's
