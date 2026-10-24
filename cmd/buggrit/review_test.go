@@ -261,6 +261,15 @@ func TestJobSummaryScope(t *testing.T) {
 	}
 }
 
+// The job summary lists comments the pass ignored (design §1).
+func TestJobSummaryIgnored(t *testing.T) {
+	cfg := config.Defaults()
+	res := &review.Result{HeadSHA: head, Pass: 1, Skipped: true, Ignored: []review.Ignored{{Author: "outsider", URL: "https://example/2"}}}
+	if got := jobSummary(res, &cfg, nil); !strings.Contains(got, "without write access to the repository:\n\n- outsider: https://example/2\n") {
+		t.Errorf("summary without the ignored comment:\n%s", got)
+	}
+}
+
 // The usage table shows cached input, which maestro-llms counts inside
 // InputTokens.
 func TestJobSummaryUsage(t *testing.T) {

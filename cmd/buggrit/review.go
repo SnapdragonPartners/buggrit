@@ -206,6 +206,10 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 // finish publishes the pass, or prints it for a dry run, and reports it.
 func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Result, cfg *config.Config) (int, string) {
+	for i := range res.Ignored {
+		c := &res.Ignored[i]
+		say(r.stderr, "buggrit: ignored a comment from %s, who has no write access: %s\n", c.Author, c.URL)
+	}
 	var manual []publish.Manual
 	if r.args.dryRun {
 		r.print(res)
@@ -355,6 +359,13 @@ func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual)
 	}
 	if len(manual) > 0 {
 		b.WriteString(publish.ManualList(manual))
+		b.WriteByte('\n')
+	}
+	if len(res.Ignored) > 0 {
+		b.WriteString("Ignored comments from people without write access to the repository:\n\n")
+		for i := range res.Ignored {
+			fmt.Fprintf(&b, "- %s: %s\n", res.Ignored[i].Author, res.Ignored[i].URL)
+		}
 		b.WriteByte('\n')
 	}
 	if res.Find == nil && res.Verify == nil {

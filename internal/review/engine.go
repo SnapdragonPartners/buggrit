@@ -26,6 +26,7 @@ type GitHub interface {
 	Reviews(ctx context.Context, repo github.Repo, number int) ([]github.ReviewSummary, error)
 	CompareStatus(ctx context.Context, repo github.Repo, base, head string) (string, error)
 	CompareDiff(ctx context.Context, repo github.Repo, base, head string) (*github.Diff, error)
+	Permission(ctx context.Context, repo github.Repo, login string) (string, error)
 }
 
 // PRRef names the pull request to review and the head the caller checked
@@ -71,7 +72,10 @@ type Result struct {
 	// Unverified lists the checks the verifier didn't reach. They keep
 	// their state, and the next run selects them again (§6).
 	Unverified []string
-	Elapsed    time.Duration
+	// Ignored are the comments the pass left out because their authors
+	// aren't on the team (design §1).
+	Ignored []Ignored
+	Elapsed time.Duration
 	// Pass is this pass's number (design §6).
 	Pass int
 	// Duplicates and BelowThreshold count findings dropped by reconcile.
@@ -176,8 +180,12 @@ func (p *pass) load(ctx context.Context) error {
 	}
 	p.baseline = state.ReadBaseline(reviews, p.cfg.Identity.BotLogin)
 	p.res.Pass = p.baseline.LastPass + 1
-	if p.threads, err = p.gh.ReviewThreads(ctx, p.ref.Repo, p.ref.Number); err != nil {
+	threads, err := p.gh.ReviewThreads(ctx, p.ref.Repo, p.ref.Number)
+	if err != nil {
 		return fmt.Errorf("review: %w", err)
+	}
+	if p.threads, p.res.Ignored, err = screen(ctx, p.gh, p.ref.Repo, pr.Private, threads); err != nil {
+		return err
 	}
 	p.tracked = state.Replay(p.threads, p.cfg.Identity.BotLogin)
 	return nil

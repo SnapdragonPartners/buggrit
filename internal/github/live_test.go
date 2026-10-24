@@ -25,6 +25,8 @@ import (
 //	BUGGRIT_LIVE_PR     pull request number
 //	BUGGRIT_LIVE_TOKEN  the token under test
 //	BUGGRIT_LIVE_LOGIN  optional: the login the token should post as
+//	BUGGRIT_LIVE_MEMBER optional: a teammate the token should see as one,
+//	                    by association or by write permission (design §1)
 //
 // .github/workflows/livecheck.yml runs it with the Actions and App tokens.
 func TestLive(t *testing.T) {
@@ -113,6 +115,9 @@ func TestLive(t *testing.T) {
 	if want := os.Getenv("BUGGRIT_LIVE_LOGIN"); want != "" && !strings.EqualFold(author, want) {
 		t.Errorf("posted as %q, want %q", author, want)
 	}
+	if member := os.Getenv("BUGGRIT_LIVE_MEMBER"); member != "" {
+		checkMember(ctx, t, c, repo, threads, member)
+	}
 
 	if _, err := c.Reply(ctx, repo, number, lineRootID, note+" [reply]"); err != nil {
 		t.Fatalf("reply: %v", err)
@@ -198,4 +203,28 @@ func firstAddedLine(d *github.Diff) (github.Anchor, bool) {
 		}
 	}
 	return github.Anchor{}, false
+}
+
+// checkMember logs how the token sees a teammate: the association on their
+// comments, and their permission, which the engine falls back on when the
+// association doesn't say (design §1, "Public repositories").
+func checkMember(ctx context.Context, t *testing.T, c *github.Client, repo github.Repo, threads []github.Thread, member string) {
+	t.Helper()
+	for i := range threads {
+		for _, cm := range threads[i].Comments {
+			if strings.EqualFold(cm.Author, member) {
+				t.Logf("%s's comments show association %s", member, cm.Association)
+				break
+			}
+		}
+	}
+	perm, err := c.Permission(ctx, repo, member)
+	if err != nil {
+		t.Errorf("read %s's permission: %v", member, err)
+		return
+	}
+	t.Logf("%s's permission: %s", member, perm)
+	if perm != "admin" && perm != "write" {
+		t.Errorf("%s's permission = %q; buggrit would ignore their replies unless their association is OWNER, MEMBER or COLLABORATOR", member, perm)
+	}
 }
