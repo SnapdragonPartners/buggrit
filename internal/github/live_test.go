@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
+	"github.com/SnapdragonPartners/buggrit/internal/review"
 )
 
 // TestLive is the build-step-2 live check (docs/design.md §3, §12): with a
@@ -205,26 +206,30 @@ func firstAddedLine(d *github.Diff) (github.Anchor, bool) {
 	return github.Anchor{}, false
 }
 
-// checkMember logs how the token sees a teammate: the association on their
-// comments, and their permission, which the engine falls back on when the
-// association doesn't say (design §1, "Public repositories").
+// checkMember checks that the token sees a teammate as one, by the rule the
+// engine applies (design §1, "Public repositories"): the association on
+// their comments, or else their permission. Both are logged.
 func checkMember(ctx context.Context, t *testing.T, c *github.Client, repo github.Repo, threads []github.Thread, member string) {
 	t.Helper()
+	association := ""
 	for i := range threads {
 		for _, cm := range threads[i].Comments {
-			if strings.EqualFold(cm.Author, member) {
-				t.Logf("%s's comments show association %s", member, cm.Association)
-				break
+			if association == "" && strings.EqualFold(cm.Author, member) {
+				association = cm.Association
 			}
 		}
 	}
-	perm, err := c.Permission(ctx, repo, member)
-	if err != nil {
-		t.Errorf("read %s's permission: %v", member, err)
-		return
+	t.Logf("%s's comments show association %q", member, association)
+	if perm, err := c.Permission(ctx, repo, member); err != nil {
+		t.Logf("%s's permission: %v", member, err)
+	} else {
+		t.Logf("%s's permission: %s", member, perm)
 	}
-	t.Logf("%s's permission: %s", member, perm)
-	if perm != "admin" && perm != "write" {
-		t.Errorf("%s's permission = %q; buggrit would ignore their replies unless their association is OWNER, MEMBER or COLLABORATOR", member, perm)
+	ok, err := review.NewTeam(c, repo).Has(ctx, member, association)
+	switch {
+	case err != nil:
+		t.Errorf("check %s: %v", member, err)
+	case !ok:
+		t.Errorf("buggrit would count %s as outside the team and ignore their replies", member)
 	}
 }

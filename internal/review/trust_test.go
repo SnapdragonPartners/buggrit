@@ -25,7 +25,8 @@ func TestScreen(t *testing.T) {
 	for _, who := range []string{"dan", "private-member", "reader", "outsider", "copilot-pull-request-reviewer[bot]", "outsider", "newcomer"} {
 		fake.Reply(7, own, who, "from "+who)
 	}
-	fake.AddThread(7, "outsider", "internal/cache/cache.go", 2, "an outsider's thread")
+	theirs := fake.AddThread(7, "outsider", "internal/cache/cache.go", 2, "an outsider's thread")
+	fake.Reply(7, theirs, "dan", "This is not an issue.")
 	lookups := 0
 	fake.OnRequest = func(op string) int {
 		if op == "GET permission" {
@@ -38,7 +39,7 @@ func TestScreen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kept, ignored, perr := screen(context.Background(), gh, ref.Repo, true, threads); perr != nil || len(ignored) != 0 || len(kept) != 2 || len(kept[0].Comments) != 8 {
+	if kept, ignored, perr := screen(context.Background(), gh, ref.Repo, true, threads); perr != nil || len(ignored) != 0 || len(kept) != 2 || len(kept[0].Comments) != 8 || len(kept[1].Comments) != 2 {
 		t.Errorf("on a private repository: kept = %d threads, ignored = %+v, err = %v; want nothing dropped", len(kept), ignored, perr)
 	}
 	if lookups != 0 {

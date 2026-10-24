@@ -77,8 +77,9 @@ func (t *Team) Has(ctx context.Context, login, association string) (bool, error)
 
 // screen drops every comment from an author outside the team from threads,
 // before anything reads them: replay, the verifier and the finder's notes
-// see only the team's comments, and a thread an outsider started is gone
-// entirely. It returns the dropped comments.
+// see only the team's comments. A thread an outsider started is gone
+// entirely, replies and all, since keeping the replies would make the first
+// of them the thread's root. It returns the dropped comments.
 //
 // On a private repository everyone who can comment is on the team (§1), so
 // nothing is dropped.
@@ -92,14 +93,22 @@ func screen(ctx context.Context, gh GitHub, repo github.Repo, private bool, thre
 	for i := range threads {
 		t := threads[i]
 		kept := make([]github.Comment, 0, len(t.Comments))
+		rootOK := true
 		for j := range t.Comments {
 			c := &t.Comments[j]
 			ok, err := team.Has(ctx, c.Author, c.Association)
 			if err != nil {
 				return nil, nil, fmt.Errorf("review: %w", err)
 			}
+			if j == 0 {
+				rootOK = ok
+			}
 			if !ok {
 				ignored = append(ignored, Ignored{Author: c.Author, URL: c.URL})
+			}
+			if !ok || !rootOK {
+				// A teammate's reply in an outsider's thread goes with the
+				// thread; it isn't listed, since its author is on the team.
 				continue
 			}
 			kept = append(kept, *c)

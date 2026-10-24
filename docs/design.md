@@ -556,7 +556,7 @@ counts markers that pass the own-comment check in §3; marker text in anyone
 else's comment is ignored, and the comment counts as a human's. Comments
 from outside the team (§1 "Public repositories") are dropped before replay,
 so they count as nothing at all, and a thread an outsider started isn't
-read.
+read, nor are teammates' replies to it.
 
 - `kind` says why the transition happened, since several lead to the same
   state: `fixed`, `regressed`, `reopened` (resolved without a fix),
@@ -1117,9 +1117,11 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   `GitHub` interfaces (§2), so a local front end would provide a git-diff
   workspace and print findings instead of posting them. Don't put anything
   Action-specific (env vars, event payload parsing) inside the engine.
-- **Trust model** (§1): private, trusted repos. Anyone who can comment counts
-  as human, including an agent using a person's credentials. Agents never
-  merge, and that is the integrity control. Security work is limited to
+- **Trust model** (§1): trusted repos. On a private repo anyone who can
+  comment counts as human, including an agent using a person's
+  credentials; on a public repo only the team does (association, or else
+  write access), and fork PRs are skipped. Agents never merge, and that is
+  the integrity control. Security work is limited to
   cheap precautions (§10).
 - **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).

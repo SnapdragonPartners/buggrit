@@ -7,7 +7,7 @@ An automated pull-request reviewer that runs as a GitHub Action. Like Copilot co
 - is built to make the review → fix → review loop with a coding agent end in an explicit final state.
 
 > [!WARNING]
-> **Pre-release: not ready for general use.** buggrit is in early development and is being piloted on a few SnapdragonPartners repositories. Its behavior, configuration and workflow interface may change without notice between `v0` releases, and the convergence controls the design depends on (build step 5) aren't built yet. It assumes private, trusted repositories ([design §1](docs/design.md#1-goals-and-context)): on a public repository, anyone who can comment counts as a human reviewer. We aren't taking outside issues or contributions yet.
+> **Pre-release: not ready for general use.** buggrit is in early development and is being piloted on a few SnapdragonPartners repositories. Its behavior, configuration and workflow interface may change without notice between `v0` releases, and the convergence controls the design depends on (build step 5) aren't built yet. It assumes trusted repositories ([design §1](docs/design.md#1-goals-and-context)). On a private repository anyone who can comment counts as a human reviewer; on a public one only the team does (members, collaborators and anyone with write access), and fork PRs are skipped. We aren't taking outside issues or contributions yet.
 
 The design is in [docs/design.md](docs/design.md). Contributor workflow is in [CLAUDE.md](CLAUDE.md).
 
