@@ -157,19 +157,40 @@ func verifyOpening(in *VerifyInput) string {
 	b.WriteString(fileList(in.Diff, nil, 0, maxPromptFileList))
 	b.WriteString("\nCall get_diff for any file's changes.\n\n")
 
+	// Like the finder's diff, findings are added only while the whole
+	// message fits, and those that don't are named (design §5).
 	fmt.Fprintf(&b, "## Findings to verify (%d)\n\n", len(in.Checks))
-	start := b.Len()
+	var skipped []string
 	for i := range in.Checks {
-		if b.Len()-start > maxPromptDiffBytes/2 {
-			fmt.Fprintf(&b, "(%d more findings not shown for space; read each with get_thread: %s)\n\n",
-				len(in.Checks)-i, strings.Join(checkIDs(in.Checks[i:]), ", "))
-			break
+		var cb strings.Builder
+		writeCheck(&cb, &in.Checks[i], in.MaxRebuttals)
+		if b.Len()+cb.Len() > maxPromptDiffBytes-maxDeferredList {
+			skipped = append(skipped, in.Checks[i].Tracked.ID)
+			continue
 		}
-		writeCheck(&b, &in.Checks[i], in.MaxRebuttals)
+		b.WriteString(cb.String())
 	}
-	b.WriteString("Verify every finding above, then call submit_verdicts once with a verdict for each.\n")
+	if len(skipped) > 0 {
+		b.WriteString("Not shown, for space; read each with get_thread: ")
+		for i, id := range skipped {
+			if b.Len() > maxPromptDiffBytes-maxVerifyClosing {
+				fmt.Fprintf(&b, "(and %d more; submit_verdicts names any you leave out)", len(skipped)-i)
+				break
+			}
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(id)
+		}
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Verify every finding, then call submit_verdicts once with a verdict for each.\n")
 	return b.String()
 }
+
+// maxVerifyClosing is held back from the list of findings not shown, for
+// the lines that close the opening message.
+const maxVerifyClosing = 1 << 10
 
 func checkIDs(checks []Check) []string {
 	ids := make([]string, len(checks))
@@ -180,8 +201,12 @@ func checkIDs(checks []Check) []string {
 }
 
 // maxCheckText bounds one finding's text, and each reply, in the opening
-// message; get_thread has the rest.
-const maxCheckText = 6 << 10
+// message, and maxPendingShown the number of replies it shows; get_thread
+// has the rest.
+const (
+	maxCheckText    = 6 << 10
+	maxPendingShown = 5
+)
 
 func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
 	t := c.Tracked
@@ -203,6 +228,10 @@ func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
 	if len(t.Pending) > 0 {
 		b.WriteString("New replies to judge:\n\n")
 		for i := range t.Pending {
+			if i == maxPendingShown {
+				fmt.Fprintf(b, "- (%d more not shown: get_thread %s)\n", len(t.Pending)-i, t.ID)
+				break
+			}
 			fmt.Fprintf(b, "- %s: %s\n", t.Pending[i].Author, truncate(strings.TrimSpace(t.Pending[i].Body), maxCheckText))
 		}
 		if t.Blocking() {
@@ -282,8 +311,10 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	}
 	b.WriteString("\n\n")
 	if h := strings.TrimSpace(t.Root.DiffHunk); h != "" {
-		fmt.Fprintf(&b, "Diff excerpt:\n%s\n\n", h)
+		fmt.Fprintf(&b, "Diff excerpt:\n%s\n\n", truncate(h, maxThreadComment))
 	}
+	// Each comment is truncated, and added only if it fits, so the result
+	// stays within maxResultBytes.
 	for i := range t.Thread.Comments {
 		c := &t.Thread.Comments[i]
 		who := c.Author
@@ -293,14 +324,18 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 		case slices.ContainsFunc(t.Pending, func(p github.Comment) bool { return p.DatabaseID == c.DatabaseID }):
 			who += " (new reply)"
 		}
-		fmt.Fprintf(&b, "--- %s\n%s\n\n", who, strings.TrimSpace(state.Strip(c.Body)))
-		if b.Len() > maxResultBytes {
-			b.WriteString("[thread truncated]\n")
+		entry := fmt.Sprintf("--- %s\n%s\n\n", who, truncate(strings.TrimSpace(state.Strip(c.Body)), maxThreadComment))
+		if b.Len()+len(entry) > maxResultBytes {
+			fmt.Fprintf(&b, "[thread truncated: %d more %s not shown]\n", len(t.Thread.Comments)-i, plural(len(t.Thread.Comments)-i, "comment"))
 			break
 		}
+		b.WriteString(entry)
 	}
 	return ok(b.String())
 }
+
+// maxThreadComment bounds each comment, and the diff excerpt, in get_thread.
+const maxThreadComment = 16 << 10
 
 // maxReason bounds a verdict's reason, which is posted as a reply.
 const maxReason = 4000

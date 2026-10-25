@@ -699,7 +699,9 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   non-empty `evidence_files` list that includes the anchor file. The
   verifier runs as its own agentic stage (§5) with `get_thread` added to
   the read-only tools. It's given every selected finding with its anchor,
-  its text, the original snippet and its unhandled replies.
+  its text, the original snippet and its unhandled replies, within the
+  same 300 KiB opening bound (§5). A finding that doesn't fit is named, and
+  replies past the first five are left to `get_thread`.
 
 ### Review baseline
 Two SHAs are recorded in the summary marker and in each pass's review body:
