@@ -76,8 +76,8 @@ type Config struct {
 	Review      Review      `json:"review"`
 	Identity    Identity    `json:"identity"`
 	Gate        Gate        `json:"gate"`
-	Limits      Limits      `json:"limits"`
 	Convergence Convergence `json:"convergence"`
+	Limits      Limits      `json:"limits"`
 	Version     int         `json:"version"`
 }
 
@@ -147,8 +147,10 @@ type Review struct {
 
 // Convergence holds the loop-ending knobs (§7).
 type Convergence struct {
-	MaxRebuttals  int `json:"max_rebuttals"`
-	WarnAfterPass int `json:"warn_after_pass"`
+	// MaxRebuttals is no longer used: buggrit doesn't judge replies (§6). A
+	// version 1 config may still set it; Warnings says it's ignored.
+	MaxRebuttals  *int `json:"max_rebuttals,omitempty"`
+	WarnAfterPass int  `json:"warn_after_pass"`
 }
 
 // Gate configures the optional findings check run (§8).
@@ -195,7 +197,7 @@ func Defaults() Config {
 			Exclude:          []string{"**/*.lock", "go.sum", "**/*.pb.go", "vendor/**", "**/*_gen.go"},
 			InstructionFiles: []string{"CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md"},
 		},
-		Convergence: Convergence{MaxRebuttals: 1, WarnAfterPass: 5},
+		Convergence: Convergence{WarnAfterPass: 5},
 		Gate:        Gate{FailOn: GateNone},
 		Identity:    Identity{BotLogin: "buggrit-bot[bot]"},
 	}
@@ -263,6 +265,16 @@ func (c *Config) override(s Stage) *ModelOverride {
 	return nil
 }
 
+// Warnings lists settings the config sets that buggrit accepts but no
+// longer uses.
+func (c *Config) Warnings() []string {
+	var out []string
+	if c.Convergence.MaxRebuttals != nil {
+		out = append(out, "convergence.max_rebuttals is ignored: buggrit no longer judges replies; resolving a thread settles its finding")
+	}
+	return out
+}
+
 // Validate reports every problem in the config at once, so a user fixes the
 // file in one round rather than one error per run.
 func (c *Config) Validate() error {
@@ -290,9 +302,6 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.Limits.validate()...)
 	errs = append(errs, c.Review.validate()...)
 
-	if c.Convergence.MaxRebuttals < 0 {
-		add("convergence.max_rebuttals must be >= 0")
-	}
 	if c.Convergence.WarnAfterPass < 1 {
 		add("convergence.warn_after_pass must be >= 1")
 	}

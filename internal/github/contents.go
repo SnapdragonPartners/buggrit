@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // FileContent reads a file from the repository at ref (a branch, tag or
@@ -30,10 +31,11 @@ func (c *Client) FileContent(ctx context.Context, repo Repo, path, ref string) (
 // ReviewSummary is a submitted review on a PR. buggrit's pass markers live in
 // its review bodies (design §6, "Review baseline").
 type ReviewSummary struct {
-	Author    string
-	Body      string
-	CommitSHA string
-	ID        int64
+	SubmittedAt time.Time
+	Author      string
+	Body        string
+	CommitSHA   string
+	ID          int64
 }
 
 // Reviews lists a PR's reviews, oldest first.
@@ -42,17 +44,18 @@ func (c *Client) Reviews(ctx context.Context, repo Repo, number int) ([]ReviewSu
 	next := c.rest(repo.segments("pulls", strconv.Itoa(number), "reviews")...) + "?per_page=100"
 	for next != "" {
 		var page []struct {
-			User     restUser `json:"user"`
-			Body     string   `json:"body"`
-			CommitID string   `json:"commit_id"`
-			ID       int64    `json:"id"`
+			SubmittedAt time.Time `json:"submitted_at"`
+			User        restUser  `json:"user"`
+			Body        string    `json:"body"`
+			CommitID    string    `json:"commit_id"`
+			ID          int64     `json:"id"`
 		}
 		resp, _, err := c.do(ctx, &request{method: http.MethodGet, url: next, out: &page})
 		if err != nil {
 			return nil, fmt.Errorf("list reviews on %s#%d: %w", repo, number, err)
 		}
 		for i := range page {
-			out = append(out, ReviewSummary{ID: page[i].ID, Author: page[i].User.Login, Body: page[i].Body, CommitSHA: page[i].CommitID})
+			out = append(out, ReviewSummary{SubmittedAt: page[i].SubmittedAt, ID: page[i].ID, Author: page[i].User.Login, Body: page[i].Body, CommitSHA: page[i].CommitID})
 		}
 		next = nextLink(resp.Header.Get("Link"))
 	}

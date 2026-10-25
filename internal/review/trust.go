@@ -51,7 +51,7 @@ func NewTeam(gh PermissionReader, repo github.Repo) *Team {
 // association says so, or else if their permission on the repository is
 // write or admin. A deleted ("ghost") author, with no login, isn't, and
 // neither is one GitHub doesn't know (a 404). Any other error is returned,
-// so the caller fails rather than drop a teammate's reply: a 403 is about
+// so the caller fails rather than drop a teammate's comment: a 403 is about
 // the token, not the author, and a rate limit passes.
 func (t *Team) Has(ctx context.Context, login, association string) (bool, error) {
 	switch {
@@ -76,10 +76,11 @@ func (t *Team) Has(ctx context.Context, login, association string) (bool, error)
 }
 
 // screen drops every comment from an author outside the team from threads,
-// before anything reads them: replay, the verifier and the finder's notes
-// see only the team's comments. A thread an outsider started is gone
-// entirely, replies and all, since keeping the replies would make the first
-// of them the thread's root. It returns the dropped comments.
+// before anything reads them: replay and the finder's notes see only the
+// team's comments, and the verifier sees only buggrit's own (design §6). A
+// thread an outsider started is gone entirely, replies and all, since
+// keeping the replies would make the first of them the thread's root. It
+// returns the dropped comments.
 //
 // On a private repository everyone who can comment is on the team (§1), so
 // nothing is dropped.

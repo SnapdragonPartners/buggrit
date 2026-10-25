@@ -55,6 +55,9 @@ type Thread struct {
 	Resolved     bool
 	Outdated     bool
 	FileLevel    bool
+	// ResolvedBy is who resolved the thread, in REST form; "" while it's
+	// unresolved, or for a resolver GitHub no longer reports.
+	ResolvedBy string
 }
 
 // PR is a stored pull request.
@@ -73,10 +76,11 @@ type PR struct {
 
 // Review is a stored review.
 type Review struct {
-	Author   string
-	Body     string
-	CommitID string
-	ID       int64
+	SubmittedAt time.Time
+	Author      string
+	Body        string
+	CommitID    string
+	ID          int64
 }
 
 // Server is the fake. Set its exported fields only while no request is in
@@ -235,11 +239,26 @@ func (s *Server) Reply(number int, threadID, author, body string) {
 	t.Comments = append(t.Comments, s.newComment(author, body, s.prs[number].HeadSHA))
 }
 
-// SetResolved resolves or unresolves a thread, as a human would.
+// SetResolved resolves or unresolves a thread, as a human would. A
+// resolution is credited to "dratner"; use ResolveAs for anyone else.
 func (s *Server) SetResolved(number int, threadID string, resolved bool) {
+	by := ""
+	if resolved {
+		by = "dratner"
+	}
+	s.ResolveAs(number, threadID, resolved, by)
+}
+
+// ResolveAs resolves or unresolves a thread and records the resolver, which
+// may be "" for one GitHub no longer reports.
+func (s *Server) ResolveAs(number int, threadID string, resolved bool, by string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.prs[number].thread(threadID).Resolved = resolved
+	t := s.prs[number].thread(threadID)
+	t.Resolved, t.ResolvedBy = resolved, by
+	if !resolved {
+		t.ResolvedBy = ""
+	}
 }
 
 // AddThread starts a thread from another reviewer and returns its ID.
@@ -270,6 +289,12 @@ func (s *Server) newNodeID(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, s.nextID)
 }
 
+// fakeTime is when the fake made the comment or review with id: ids
+// increase, so later items are later.
+func fakeTime(id int64) time.Time {
+	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(id) * time.Second)
+}
+
 func (s *Server) newComment(author, body, sha string) *Comment {
 	s.nextID++
 	association, ok := s.associations[author]
@@ -287,7 +312,7 @@ func (s *Server) newComment(author, body, sha string) *Comment {
 		Association: association,
 		Body:        body,
 		CommitSHA:   sha,
-		CreatedAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(s.nextID) * time.Second),
+		CreatedAt:   fakeTime(s.nextID),
 	}
 }
 
@@ -449,7 +474,7 @@ func (s *Server) postReview(r *http.Request, login string) (int, any) {
 	}
 	pr.Threads = append(pr.Threads, threads...)
 	s.nextID++
-	pr.Reviews = append(pr.Reviews, &Review{ID: s.nextID, Author: login, Body: in.Body, CommitID: in.CommitID})
+	pr.Reviews = append(pr.Reviews, &Review{ID: s.nextID, SubmittedAt: fakeTime(s.nextID), Author: login, Body: in.Body, CommitID: in.CommitID})
 	return http.StatusOK, map[string]any{"id": s.nextID, "state": "COMMENTED"}
 }
 
@@ -462,7 +487,8 @@ func (s *Server) listReviews(r *http.Request, _ string) (int, any) {
 	for _, rv := range pr.Reviews {
 		out = append(out, map[string]any{
 			"id": rv.ID, "body": rv.Body, "commit_id": rv.CommitID, "state": "COMMENTED",
-			"user": map[string]string{"login": rv.Author},
+			"submitted_at": rv.SubmittedAt.Format(time.RFC3339),
+			"user":         map[string]string{"login": rv.Author},
 		})
 	}
 	return http.StatusOK, out

@@ -3,7 +3,8 @@
 An automated pull-request reviewer that runs as a GitHub Action. Like Copilot code review, it posts each finding as its own review thread. Unlike Copilot, it:
 
 - works with any model [maestro-llms](https://github.com/SnapdragonPartners/maestro-llms) supports, including self-hosted and flat-rate models;
-- re-verifies its earlier findings on every push and reply, and resolves, reopens or escalates their threads;
+- re-verifies its earlier findings on every push, resolving their threads once they're fixed and reopening them if the defect comes back;
+- treats resolving a thread as settling its finding: who decides not to fix something, and why, is the author's business, and a person still approves the merge;
 - is built to make the review → fix → review loop with a coding agent end in an explicit final state.
 
 > [!WARNING]
@@ -28,24 +29,20 @@ name: buggrit
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
   workflow_dispatch:
     inputs:
       pr:
         description: Pull request number to review
         required: true
+      mode:
+        description: full (rerun the pass at the current head) or sync (re-read the threads, no model)
+        type: choice
+        options: [full, sync]
+        default: full
 concurrency:
-  # buggrit's own comments get a throwaway group, so they never replace a
-  # run queued by a human. The login must match identity.bot_login.
-  group: >-
-    ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-         github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
-        && format('buggrit-ignored-{0}', github.run_id)
-        || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Sync runs get their own group, so they never replace a pending push run.
+  group: ${{ inputs.mode == 'sync' && 'buggrit-sync' || 'buggrit' }}-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.mode == 'sync' }}
 permissions:
   contents: read
 jobs:
@@ -77,8 +74,10 @@ buggrit reads the config from the PR's base branch, so it starts reviewing once 
 
 - **Pinning:** `@v0` follows the newest v0 release. For a fixed release, pass `with: { version: v0.1.0 }`, or pin both the workflow and `version`.
 - **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint, and a self-hosted one needs Actions Runner v2.327.1 or later, plus `NODE_USE_ENV_PROXY=1` behind a proxy) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
-- **A different bot login:** set the variable `BUGGRIT_BOT_LOGIN` and `identity.bot_login` in the config to the same value.
-- **The check** to wait on is `buggrit / review`. On a public repository, a run started by a person's reply or review, when that person's association shows as anything but `OWNER`, `MEMBER` or `COLLABORATOR`, reports as `buggrit / outside event` instead, even when buggrit reviews for real because the author has write access. A run started by a bot, Copilot included, stays `buggrit / review`. Only `review` means a pass finished: `outside event` is also the name of the quick "nothing to do" stop for an outsider, so after a reply followed only by `outside event`, dispatch the workflow (`gh workflow run <workflow> -f pr=<number>`) or push to get a `review`. Re-running the `outside event` job replays the same event and doesn't help ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal").
+- **A different bot login:** set `identity.bot_login` in the config.
+- **The check** to wait on after a push is `buggrit / review`: it means that push's pass finished ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal"). Comments and reviews start no runs.
+- **Working with findings:** to fix one, push the fix and leave its thread open; buggrit checks on the next push and resolves the thread. Not fixing one? Resolve its thread: that settles it, whoever resolves it, and buggrit won't verify or raise it again. A reply is optional and carries no weight with buggrit. Unresolving a settled thread opens the finding again ([design §6](docs/design.md#6-history-and-state)).
+- **Sync runs:** `gh workflow run buggrit.yml -f pr=<number> -f mode=sync` re-reads the threads and repairs their resolutions, with no model and no checkout, and reports as `buggrit / sync`. The merge gate it will also refresh comes with build step 5 ([design §8](docs/design.md#8-what-the-agent-sees)).
 
 ## Development
 

@@ -37,7 +37,7 @@ func gqlError(typ, message string) (int, any) {
 
 func data(v any) (int, any) { return http.StatusOK, map[string]any{"data": v} }
 
-func (s *Server) graphql(r *http.Request, _ string) (int, any) {
+func (s *Server) graphql(r *http.Request, login string) (int, any) {
 	var req gqlRequest
 	if !decode(r, &req) {
 		return http.StatusBadRequest, msg("Problems parsing JSON")
@@ -70,12 +70,12 @@ func (s *Server) graphql(r *http.Request, _ string) (int, any) {
 		return data(map[string]any{"node": map[string]any{
 			"comments": s.commentPage(t, cursorStart(vars["after"])),
 		}})
-	case "ThreadResolved":
+	case "ThreadResolution":
 		t := s.findThread(vars["id"])
 		if t == nil {
 			return data(map[string]any{"node": nil})
 		}
-		return data(map[string]any{"node": map[string]any{"isResolved": t.Resolved}})
+		return data(map[string]any{"node": map[string]any{"isResolved": t.Resolved, "resolvedBy": resolver(t)}})
 	case "ResolveThread", "UnresolveThread":
 		if s.ForbidResolve {
 			return gqlError("FORBIDDEN", "Resource not accessible by integration")
@@ -84,7 +84,13 @@ func (s *Server) graphql(r *http.Request, _ string) (int, any) {
 		if t == nil {
 			return gqlError("NOT_FOUND", "Could not resolve to a node")
 		}
-		t.Resolved = req.OperationName == "ResolveThread"
+		resolved := req.OperationName == "ResolveThread"
+		if resolved != t.Resolved {
+			t.Resolved, t.ResolvedBy = resolved, ""
+			if resolved {
+				t.ResolvedBy = login
+			}
+		}
 		key := "resolveReviewThread"
 		if !t.Resolved {
 			key = "unresolveReviewThread"
@@ -123,6 +129,15 @@ func nullable(n int) any {
 	return n
 }
 
+// resolver renders a thread's resolvedBy. GitHub reports a bot resolver as
+// a User whose login keeps "[bot]".
+func resolver(t *Thread) any {
+	if !t.Resolved || t.ResolvedBy == "" {
+		return nil
+	}
+	return map[string]any{"__typename": "User", "login": t.ResolvedBy}
+}
+
 func (s *Server) threadNode(t *Thread) map[string]any {
 	subject := "LINE"
 	if t.FileLevel {
@@ -137,7 +152,7 @@ func (s *Server) threadNode(t *Thread) map[string]any {
 		side = nil
 	}
 	return map[string]any{
-		"id": t.ID, "isResolved": t.Resolved, "isOutdated": t.Outdated, "path": t.Path,
+		"id": t.ID, "isResolved": t.Resolved, "resolvedBy": resolver(t), "isOutdated": t.Outdated, "path": t.Path,
 		"line": line, "originalLine": nullable(t.OriginalLine), "startLine": nullable(t.StartLine),
 		"diffSide": side, "subjectType": subject,
 		"comments": s.commentPage(t, 0),

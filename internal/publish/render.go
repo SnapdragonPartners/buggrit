@@ -51,29 +51,24 @@ func findingText(c *review.Candidate, suggestion bool) string {
 		}
 		fmt.Fprintf(&b, "Also applies to: %s (same class: *%s*).\n\n", strings.Join(locs, ", "), c.Class)
 	}
-	weight, note := "advisory, non-blocking", advisoryNote
+	weight := "advisory, non-blocking"
 	if c.Blocking() {
-		weight, note = "blocking", actNote
+		weight = "blocking"
 	}
-	fmt.Fprintf(&b, "<sub>buggrit %s · %s · %s</sub>", c.ID, weight, note)
+	fmt.Fprintf(&b, "<sub>buggrit %s · %s · %s</sub>", c.ID, weight, actNote)
 	return b.String()
 }
 
 // actNote tells the reader of a finding how buggrit treats what they do
-// next (design §8).
-const actNote = "Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push or reply; " +
-	"resolving the thread without a fix will reopen it."
-
-// advisoryNote is actNote for an advisory finding, where any reasoned reply
-// dismisses it (§7 rule 4).
-const advisoryNote = "Fix it and reply with the commit, or reply with a reason, such as deferred or intentional, to dismiss it. " +
-	"buggrit checks on the next push or reply; resolving the thread without a fix will reopen it."
+// next (design §8): it checks the code on every push, and resolving the
+// thread settles the finding.
+const actNote = "To fix it, push the fix and leave this thread open: buggrit checks on the next push and resolves it. " +
+	"Not fixing it? Resolve the thread; that settles it, and buggrit won't raise it again."
 
 // TransitionBody renders the reply that records a transition of an earlier
 // finding, at head sha, ending with its transition marker (design §6).
-// leftResolved records that GitHub refused to unresolve a needs_human
-// thread before the reply.
-func TransitionBody(tr *review.Transition, sha string, leftResolved bool) (string, error) {
+// buggrit posts only two kinds: fixed and regressed.
+func TransitionBody(tr *review.Transition, sha string) (string, error) {
 	t := tr.Tracked
 	at := "`" + short(sha) + "`"
 	reason := strings.TrimSpace(tr.Reason)
@@ -85,34 +80,11 @@ func TransitionBody(tr *review.Transition, sha string, leftResolved bool) (strin
 	case state.KindRegressed:
 		lead = "**Regressed** at " + at + ", so this thread is reopened. " + reason
 		note = actNote
-	case state.KindReopened:
-		lead = "**Still present** at " + at + ", so this thread is reopened. " + reason
-		note = actNote
-	case state.KindRebutted:
-		lead = "**Still open** at " + at + ". " + reason
-		note = "Fix it, or reply again if you still disagree. buggrit argues a finding only a set number of times, then leaves it to a human."
-	case state.KindNeedsHuman:
-		lead = "**Needs a human.** " + reason
-		note = "buggrit won't argue further. The next reply or resolution, by anyone, settles this finding as dismissed."
-		if leftResolved {
-			// Replay ignores this thread's resolution, which GitHub
-			// wouldn't let buggrit undo (§6).
-			note = "buggrit won't argue further. The next reply, by anyone, settles this finding as dismissed."
-		}
-	case state.KindDismissed:
-		lead = "**Dismissed.** " + reason
-		note = "buggrit won't raise this again"
-	case state.KindSettled:
-		lead = "**Dismissed**, settled by resolving the thread."
-		if n := len(t.Pending); n > 0 {
-			lead = "**Dismissed**, settled by " + t.Pending[n-1].Author + "'s reply."
-		}
-		note = "buggrit won't raise this again"
 	default:
-		return "", fmt.Errorf("render %s: unknown transition %q", t.ID, tr.Kind)
+		return "", fmt.Errorf("render %s: buggrit doesn't post %q transitions", t.ID, tr.Kind)
 	}
 	text := fmt.Sprintf("%s\n\n<sub>buggrit %s · %s</sub>", strings.TrimSpace(lead), t.ID, note)
-	m := &state.Marker{ID: t.ID, To: tr.Kind.To(), Kind: tr.Kind, SHA: sha, Seen: tr.Seen, Evidence: tr.Evidence, LeftResolved: leftResolved}
+	m := &state.Marker{ID: t.ID, To: tr.Kind.To(), Kind: tr.Kind, SHA: sha, Evidence: tr.Evidence}
 	body, err := state.Append(capBody(text), m)
 	if err != nil {
 		return "", fmt.Errorf("render %s: %w", t.ID, err)
@@ -139,8 +111,15 @@ func codeFence(s string) string {
 // summary.
 func Status(res *review.Result) string {
 	at := short(res.HeadSHA)
-	if res.Skipped {
+	switch {
+	case res.Skipped:
 		return fmt.Sprintf("skipped at %s: %s", at, res.SkipReason)
+	case res.Sync:
+		e := earlier(res)
+		if e == "" {
+			e = "nothing to repair"
+		}
+		return fmt.Sprintf("synced at %s: %s", at, e)
 	}
 	var parts []string
 	if !res.ReconcileOnly && res.Complete {
@@ -172,13 +151,8 @@ func newFindings(res *review.Result) string {
 // kindLabel names a kind of transition in the status line; a step with no
 // kind is a repair.
 func kindLabel(k state.Kind) string {
-	switch k {
-	case "":
+	if k == "" {
 		return "repaired"
-	case state.KindNeedsHuman:
-		return "sent to a human"
-	case state.KindSettled:
-		return "dismissed"
 	}
 	return string(k)
 }
@@ -217,8 +191,9 @@ func earlier(res *review.Result) string {
 }
 
 // ReviewBody renders the pass's review body, ending with its pass marker
-// (design §6, "Review baseline"). manual lists threads GitHub wouldn't
-// resolve or reopen for buggrit (§3).
+// (design §6, "Review baseline"), which also records the fixed findings
+// the pass re-verified. manual lists threads GitHub wouldn't resolve or
+// reopen for buggrit (§3).
 func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**buggrit** pass %d\n\n", res.Pass)
@@ -249,20 +224,29 @@ func ReviewBody(res *review.Result, manual []Manual) (string, error) {
 	if len(dropped) > 0 {
 		fmt.Fprintf(&b, "\nNot posted: %s.\n", strings.Join(dropped, ", "))
 	}
-	if len(manual) > 0 {
-		b.WriteByte('\n')
-		b.WriteString(ManualList(manual))
-	}
+	writeLists(&b, res, manual)
 	status := state.PassComplete
 	if !res.Complete {
 		status = state.PassIncomplete
 	}
-	m := &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status}
+	m := &state.Marker{ID: fmt.Sprintf("pass-%d", res.Pass), Pass: res.Pass, SHA: res.HeadSHA, Status: status, Verified: res.Verified}
 	body, err := state.Append(capBody(b.String()), m)
 	if err != nil {
 		return "", fmt.Errorf("render review body: %w", err)
 	}
 	return body, nil
+}
+
+// writeLists adds the threads a person has to look at.
+func writeLists(b *strings.Builder, res *review.Result, manual []Manual) {
+	if len(manual) > 0 {
+		b.WriteByte('\n')
+		b.WriteString(ManualList(manual))
+	}
+	if len(res.UnknownResolver) > 0 {
+		b.WriteByte('\n')
+		b.WriteString(UnknownList(res))
+	}
 }
 
 // ManualList asks a person to make the resolution changes GitHub refused
@@ -280,14 +264,33 @@ func ManualList(manual []Manual) string {
 	return b.String()
 }
 
-// ManualBody is the review a reconcile-only run posts when GitHub refused a
-// resolution it needed. It carries a marker naming it, which replay and the
-// baseline ignore.
-func ManualBody(res *review.Result, manual []Manual) (string, error) {
-	text := fmt.Sprintf("**buggrit** at %s\n\n%s", short(res.HeadSHA), ManualList(manual))
-	body, err := state.Append(capBody(text), &state.Marker{ID: "manual", SHA: res.HeadSHA})
+// UnknownList asks a person about open findings whose threads are resolved
+// by an account GitHub no longer reports, so buggrit can't tell whether
+// they're settled (§6).
+func UnknownList(res *review.Result) string {
+	var b strings.Builder
+	b.WriteString("These open findings' threads are resolved, but GitHub doesn't say by whom, so buggrit can't tell whether they're settled. " +
+		"Resolve each again to settle it, or reopen it to keep it open:\n")
+	for _, t := range res.UnknownResolver {
+		fmt.Fprintf(&b, "- %s %s\n", t.ID, t.Root.URL)
+	}
+	return b.String()
+}
+
+// ReconcileBody is the review a run that posts no pass review posts when it
+// has something to record (§3, §6): the fixed findings it re-verified, in
+// its marker, and the resolutions GitHub refused it. The marker carries no
+// pass status, so the baseline doesn't count it as a pass.
+func ReconcileBody(res *review.Result, manual []Manual) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "**buggrit** at %s\n", short(res.HeadSHA))
+	if n := len(res.Verified); n > 0 {
+		fmt.Fprintf(&b, "\nRe-checked %d fixed %s whose files changed; still fixed.\n", n, plural(n, "finding"))
+	}
+	writeLists(&b, res, manual)
+	body, err := state.Append(capBody(b.String()), &state.Marker{ID: "reconcile", SHA: res.HeadSHA, Verified: res.Verified})
 	if err != nil {
-		return "", fmt.Errorf("render manual list: %w", err)
+		return "", fmt.Errorf("render reconcile review: %w", err)
 	}
 	return body, nil
 }

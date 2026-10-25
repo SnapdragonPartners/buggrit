@@ -17,5 +17,5 @@ func (c *Cache) Put(k string, v int) {
 
 Also applies to: `lru.go:88`, `ttl.go` (same class: *uninitialized map on constructor path*).
 
-<sub>buggrit f-7f3a2c · blocking · Fix it and reply with the commit, or reply explaining why not. buggrit checks on the next push or reply; resolving the thread without a fix will reopen it.</sub>
+<sub>buggrit f-7f3a2c · blocking · To fix it, push the fix and leave this thread open: buggrit checks on the next push and resolves it. Not fixing it? Resolve the thread; that settles it, and buggrit won't raise it again.</sub>
 <!-- buggrit:v1 {"id":"f-7f3a2c","fp":"7f3a2c0011223344","sev":"P1","sha":"1111111111111111111111111111111111111111","pass":2} -->

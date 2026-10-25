@@ -77,25 +77,30 @@ func (l modelLog) Observe(e middleware.Event) {
 // a GitHub Action provides, so the workflow needs none of them.
 type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
-	// eventName and eventPath are the Actions event that started the run.
-	eventName, eventPath string
-	pr                   int
-	dryRun               bool
+	// mode is "full" (the default) or "sync" (design §2).
+	mode   string
+	pr     int
+	dryRun bool
 }
+
+// Run modes (design §2): a full pass runs the models; a sync run re-reads
+// the threads and repairs them, with no model and no checkout.
+const (
+	modeFull = "full"
+	modeSync = "sync"
+)
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	a := &reviewArgs{
-		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
-		eventName: getenv("GITHUB_EVENT_NAME"), eventPath: getenv("GITHUB_EVENT_PATH"),
-	}
+	a := &reviewArgs{token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY")}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
 	fs.IntVar(&a.pr, "pr", pr, "pull request number (default $BUGGRIT_PR)")
 	fs.StringVar(&a.workspace, "workspace", orDefault(getenv("GITHUB_WORKSPACE"), "."), "checkout of the PR head (default $GITHUB_WORKSPACE)")
 	fs.StringVar(&a.apiURL, "api-url", orDefault(getenv("GITHUB_API_URL"), github.DefaultAPIURL), "GitHub API URL (default $GITHUB_API_URL)")
 	fs.StringVar(&a.configPath, "config", "", "read the config from this file instead of the base branch (for local runs)")
+	fs.StringVar(&a.mode, "mode", orDefault(getenv("BUGGRIT_MODE"), modeFull), "full (run the models) or sync (repair threads, no model) (default $BUGGRIT_MODE or full)")
 	fs.BoolVar(&a.dryRun, "dry-run", false, "print the findings instead of posting them")
 	if err := fs.Parse(args); err != nil {
 		return nil, err //nolint:wrapcheck // flag already printed it
@@ -109,6 +114,8 @@ func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer
 		return nil, errors.New("no repository: set --repo or GITHUB_REPOSITORY")
 	case a.pr <= 0:
 		return nil, errors.New("no pull request: set --pr or BUGGRIT_PR")
+	case a.mode != modeFull && a.mode != modeSync:
+		return nil, fmt.Errorf("unknown mode %q: want %s or %s", a.mode, modeFull, modeSync)
 	}
 	return a, nil
 }
@@ -142,7 +149,7 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 	gh := github.NewClient(a.token, github.WithBaseURL(a.apiURL))
 	// The verifier and the finder run at once and both log.
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
-	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, team: review.NewTeam(gh, repo), stdout: stdout, stderr: stderr}
+	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
 	if a.stepSummary != "" && summary != "" {
 		if err := appendFile(a.stepSummary, summary); err != nil {
@@ -153,11 +160,9 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 }
 
 type reviewer struct {
-	args *reviewArgs
-	deps reviewDeps
-	gh   *github.Client
-	// team is the run's Team, shared by the event check and the engine.
-	team   *review.Team
+	args   *reviewArgs
+	deps   reviewDeps
+	gh     *github.Client
 	stdout io.Writer
 	stderr io.Writer
 	repo   github.Repo
@@ -169,6 +174,9 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if err != nil {
 		return r.fail(err)
 	}
+	if r.args.mode == modeSync {
+		return r.sync(ctx, pr)
+	}
 	// Snapshot (design §3): the checkout must be the PR's current head. If
 	// it isn't, the head moved since the workflow looked it up, and the run
 	// the push queued will review it.
@@ -179,14 +187,6 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if head != pr.HeadSHA {
 		return r.stop(fmt.Sprintf("the checkout is at %s but the PR head is now %s; a newer run will review it", short(head), short(pr.HeadSHA)))
 	}
-	why, err := r.outsideEvent(ctx)
-	if err != nil {
-		return r.fail(err)
-	}
-	if why != "" {
-		return r.stop(why)
-	}
-
 	cfg, err := r.loadConfig(ctx, pr)
 	if errors.Is(err, errNoConfig) {
 		return r.stop(err.Error())
@@ -206,7 +206,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: head}
 	say(r.stderr, "buggrit: reviewing %s#%d at %s with %s\n", r.repo, pr.Number, short(head), cfg.Stage(config.StageFind).Model)
-	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool, Team: r.team}
+	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool}
 	res, err := review.Review(ctx, ref, ws, r.gh, opts)
 	if errors.Is(err, github.ErrHeadMoved) {
 		return r.stop(err.Error())
@@ -218,8 +218,33 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	return r.finish(ctx, ref, res, cfg)
 }
 
+// sync runs no model and needs no checkout: it re-reads the threads at the
+// PR's current head and repairs their resolutions (design §2).
+func (r *reviewer) sync(ctx context.Context, pr *github.PullRequest) (int, string) {
+	cfg, err := r.loadConfig(ctx, pr)
+	if errors.Is(err, errNoConfig) {
+		return r.stop(err.Error())
+	}
+	if err != nil {
+		return r.fail(err)
+	}
+	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: pr.HeadSHA}
+	say(r.stderr, "buggrit: syncing %s#%d at %s\n", r.repo, pr.Number, short(pr.HeadSHA))
+	res, err := review.Review(ctx, ref, nil, r.gh, &review.Options{Config: cfg, Sync: true})
+	if errors.Is(err, github.ErrHeadMoved) {
+		return r.stop(err.Error())
+	}
+	if err != nil {
+		return r.fail(err)
+	}
+	return r.finish(ctx, ref, res, cfg)
+}
+
 // finish publishes the pass, or prints it for a dry run, and reports it.
 func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Result, cfg *config.Config) (int, string) {
+	for _, w := range cfg.Warnings() {
+		say(r.stderr, "buggrit: warning: %s\n", w)
+	}
 	for i := range res.Ignored {
 		c := &res.Ignored[i]
 		say(r.stderr, "buggrit: ignored a comment from %s, who has no write access: %s\n", c.Author, c.URL)
@@ -311,7 +336,7 @@ func (r *reviewer) print(res *review.Result) {
 	for i := range res.Transitions {
 		r.printTransition(&res.Transitions[i], res.HeadSHA)
 	}
-	if res.ReconcileOnly {
+	if res.ReconcileOnly || res.Sync {
 		return
 	}
 	body, err := publish.ReviewBody(res, nil)
@@ -335,20 +360,18 @@ func (r *reviewer) print(res *review.Result) {
 }
 
 // printTransition shows a transition's steps in the order Publish takes
-// them: a needs_human thread is unresolved before its reply (§6).
+// them: the reply, then the resolution.
 func (r *reviewer) printTransition(tr *review.Transition, sha string) {
 	var steps []string
 	if tr.Kind != "" {
-		text, err := publish.TransitionBody(tr, sha, false)
+		text, err := publish.TransitionBody(tr, sha)
 		if err != nil {
 			say(r.stderr, "buggrit: %v\n", err)
 			return
 		}
 		steps = append(steps, text)
 	}
-	if tr.Kind == state.KindNeedsHuman {
-		steps = append([]string{"(first unresolve the thread; if GitHub refuses, the marker records left_resolved)"}, steps...)
-	} else if tr.Repair() {
+	if tr.Repair() {
 		action := "unresolve"
 		if tr.Want == state.Resolve {
 			action = "resolve"
@@ -362,17 +385,27 @@ func (r *reviewer) printTransition(tr *review.Transition, sha string) {
 // the threads GitHub wouldn't let buggrit resolve or reopen (§3).
 func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual) string {
 	var b strings.Builder
-	if res.ReconcileOnly {
+	switch {
+	case res.Sync:
+		fmt.Fprintf(&b, "## buggrit sync\n\n**%s**\n\n", publish.Status(res))
+	case res.ReconcileOnly:
 		fmt.Fprintf(&b, "## buggrit\n\n**%s**\n\n%s already had a complete pass; this run only reconciled earlier findings.\n\n",
 			publish.Status(res), short(res.HeadSHA))
-	} else {
+	default:
 		fmt.Fprintf(&b, "## buggrit pass %d\n\n**%s**\n\n", res.Pass, publish.Status(res))
+	}
+	for _, w := range cfg.Warnings() {
+		fmt.Fprintf(&b, "> [!WARNING]\n> %s\n\n", w)
 	}
 	if res.Scope != "" {
 		fmt.Fprintf(&b, "Scope: %s.\n\n", res.Scope)
 	}
 	if len(manual) > 0 {
 		b.WriteString(publish.ManualList(manual))
+		b.WriteByte('\n')
+	}
+	if len(res.UnknownResolver) > 0 {
+		b.WriteString(publish.UnknownList(res))
 		b.WriteByte('\n')
 	}
 	if len(res.Ignored) > 0 {

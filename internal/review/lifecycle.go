@@ -16,9 +16,6 @@ import (
 type Transition struct {
 	Tracked *state.Tracked
 	state.Step
-	// Seen is the newest human comment in the thread when the step was
-	// decided; the transition's marker records it.
-	Seen int64
 }
 
 // Mutates reports whether the transition changes anything on GitHub.
@@ -32,124 +29,148 @@ func (t *Transition) Repair() bool {
 
 // selectChecks picks the earlier findings to verify this pass (design §6,
 // "What gets verified each pass"):
-//   - every open finding, resolved or not, since resolving isn't proof;
-//   - every needs_human finding that no human has settled yet;
-//   - every fixed finding with a new reply, whose fix commit is no longer in
-//     the head's history (a force-push), or any of whose evidence files
-//     changed since the fix.
+//   - every open finding that isn't settled;
+//   - every fixed finding that isn't settled, if any of the files its
+//     evidence baseline relied on changed since that baseline's commit, or
+//     no baseline commit is still in the head's history (a force-push).
 //
-// Dismissed findings are terminal, and a settled needs_human finding is
-// dismissed without a model.
-func selectChecks(ctx context.Context, gh GitHub, ref PRRef, tracked []state.Tracked) []Check {
-	since := map[string]fixDelta{}
-	fixed := func(sha string) fixDelta {
-		d, ok := since[sha]
-		if !ok {
-			d = changedSince(ctx, gh, ref, sha)
-			since[sha] = d
-		}
-		return d
-	}
+// A settled finding is never verified, and neither is a dismissed one.
+func selectChecks(ctx context.Context, gh GitHub, ref PRRef, tracked []state.Tracked, b *state.Baseline) []Check {
+	h := &history{ctx: ctx, gh: gh, ref: ref, status: map[string]ancestry{}, diffs: map[string]fixDelta{}}
 	var out []Check
 	for i := range tracked {
 		t := &tracked[i]
-		if why := checkReason(t, fixed); why != "" {
+		if why := checkReason(t, b, h); why != "" {
 			out = append(out, Check{Tracked: t, Why: why})
 		}
 	}
 	return out
 }
 
-// checkReason says why t needs verifying, or "" if it doesn't. fixed reads
-// what changed since a fix commit.
-func checkReason(t *state.Tracked, fixed func(sha string) fixDelta) string {
+// checkReason says why t needs verifying, or "" if it doesn't.
+func checkReason(t *state.Tracked, b *state.Baseline, h *history) string {
 	switch {
-	case t.State == state.StateOpen && len(t.Pending) > 0:
-		return "it has a new reply"
-	case t.State == state.StateOpen && t.Thread.IsResolved:
-		return "it is open but its thread was resolved"
+	case t.Settled:
+		return ""
 	case t.State == state.StateOpen:
 		return "it is open"
-	case t.State == state.StateNeedsHuman && !t.NeedsSettling():
-		return "it is waiting for a human; check whether it has been fixed meanwhile"
-	case t.State == state.StateFixed && len(t.Pending) > 0:
-		return "it was fixed, and has a new reply"
 	case t.State == state.StateFixed:
-		return fixed(t.FixSHA).why(t)
+		return h.why(b.FixRecords(t))
 	}
 	return ""
 }
 
-// fixDelta is what changed between a fix commit and the head.
-type fixDelta struct {
-	changed map[string]bool
-	// unknown says why the changes couldn't be read; every finding fixed
-	// at that commit is then verified again.
-	unknown string
-	fix     string
+// history reads, and caches, how earlier commits relate to the head.
+type history struct {
+	ctx    context.Context //nolint:containedctx // scoped to one selectChecks call
+	gh     GitHub
+	status map[string]ancestry
+	diffs  map[string]fixDelta
+	ref    PRRef
 }
 
-// changedSince reads the files changed from fix to the head. Anything it
-// can't establish (a fix commit no longer in the head's history, an API
-// error, a diff too large to render) means verifying again, which is
-// always safe.
-func changedSince(ctx context.Context, gh GitHub, ref PRRef, fix string) fixDelta {
-	d := fixDelta{fix: fix, changed: map[string]bool{}}
-	if fix == ref.HeadSHA {
-		return d
+// ancestry is whether a commit is in the head's history; unknown says why
+// that couldn't be read.
+type ancestry struct {
+	unknown string
+	in      bool
+}
+
+func (h *history) ancestry(sha string) ancestry {
+	if a, ok := h.status[sha]; ok {
+		return a
 	}
-	status, err := gh.CompareStatus(ctx, ref.Repo, fix, ref.HeadSHA)
+	a := ancestry{in: sha == h.ref.HeadSHA}
+	if a.in {
+		h.status[sha] = a
+		return a
+	}
+	status, err := h.gh.CompareStatus(h.ctx, h.ref.Repo, sha, h.ref.HeadSHA)
 	switch {
 	case err != nil && github.IsNotFound(err):
-		d.unknown = "the commit it was fixed at, " + short(fix) + ", is gone from the repository (a force-push)"
-		return d
+		// The commit is gone from the repository: a force-push.
 	case err != nil:
-		d.unknown = "the changes since its fix at " + short(fix) + " could not be read"
-		return d
-	case status != github.CompareAhead && status != github.CompareIdentical:
-		d.unknown = "the commit it was fixed at, " + short(fix) + ", is no longer in the branch's history (a force-push or rebase)"
+		a.unknown = "the changes since " + short(sha) + " could not be read"
+	default:
+		a.in = status == github.CompareAhead || status == github.CompareIdentical
+	}
+	h.status[sha] = a
+	return a
+}
+
+// why says why a fixed finding needs verifying again, given its fix
+// records newest first, or "" if it doesn't. Its evidence baseline is the
+// newest record whose commit is in the head's history. If none of the
+// files that record relied on changed since, the verdict still holds at the
+// head (§6, "Why a late transition from an older head is safe").
+func (h *history) why(records []state.Record) string {
+	for i := range records {
+		r := &records[i]
+		a := h.ancestry(r.SHA)
+		switch {
+		case a.unknown != "":
+			return "it was fixed, but " + a.unknown
+		case !a.in:
+			continue
+		}
+		d := h.changed(r.SHA)
+		if d.unknown != "" {
+			return "it was fixed, but " + d.unknown
+		}
+		var changed []string
+		for _, p := range r.Files {
+			if d.changed[p] {
+				changed = append(changed, p)
+			}
+		}
+		if len(changed) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("it was last verified fixed at %s, and the files that verdict relied on have changed since: %s",
+			short(r.SHA), strings.Join(changed, ", "))
+	}
+	return "it was fixed, but no commit it was verified at is still in the branch's history (a force-push or rebase)"
+}
+
+// fixDelta is what changed between an earlier commit and the head.
+type fixDelta struct {
+	changed map[string]bool
+	// unknown says why the changes couldn't be read; the finding is then
+	// verified again.
+	unknown string
+}
+
+// changed reads the files changed from sha, which is in the head's
+// history, to the head. Anything it can't establish (an API error, a diff
+// too large to render) means verifying again, which is always safe.
+func (h *history) changed(sha string) fixDelta {
+	if d, ok := h.diffs[sha]; ok {
 		return d
 	}
-	diff, err := gh.CompareDiff(ctx, ref.Repo, fix, ref.HeadSHA)
-	if err != nil {
-		d.unknown = "the changes since its fix at " + short(fix) + " could not be read"
-		return d
-	}
-	for i := range diff.Files {
-		f := &diff.Files[i]
-		for _, p := range []string{f.OldPath, f.NewPath} {
-			if p != "" {
-				d.changed[p] = true
+	d := fixDelta{changed: map[string]bool{}}
+	if sha != h.ref.HeadSHA {
+		diff, err := h.gh.CompareDiff(h.ctx, h.ref.Repo, sha, h.ref.HeadSHA)
+		if err != nil {
+			d.unknown = "the changes since " + short(sha) + " could not be read"
+		} else {
+			for i := range diff.Files {
+				f := &diff.Files[i]
+				for _, p := range []string{f.OldPath, f.NewPath} {
+					if p != "" {
+						d.changed[p] = true
+					}
+				}
 			}
 		}
 	}
+	h.diffs[sha] = d
 	return d
-}
-
-// why says why a fixed finding needs verifying again, or "" if it doesn't:
-// none of the files its verdict relied on changed, so the verdict still
-// holds at the head (§6, "Why a late transition from an older head is
-// safe").
-func (d fixDelta) why(t *state.Tracked) string {
-	if d.unknown != "" {
-		return "it was fixed, but " + d.unknown
-	}
-	var changed []string
-	for _, p := range t.Evidence {
-		if d.changed[p] {
-			changed = append(changed, p)
-		}
-	}
-	if len(changed) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("it was fixed at %s, and the files that verdict relied on have changed since: %s", short(d.fix), strings.Join(changed, ", "))
 }
 
 // transitions applies the state machine to every earlier finding, given the
 // verdicts this pass reached (nil for none), and returns the ones that
 // change something on GitHub.
-func transitions(tracked []state.Tracked, checks []Check, verdicts map[string]*state.Verdict, maxRebuttals int) []Transition {
+func transitions(tracked []state.Tracked, checks []Check, verdicts map[string]*state.Verdict) []Transition {
 	var out []Transition
 	for i := range tracked {
 		t := &tracked[i]
@@ -157,7 +178,7 @@ func transitions(tracked []state.Tracked, checks []Check, verdicts map[string]*s
 		if slices.ContainsFunc(checks, func(c Check) bool { return c.Tracked == t }) {
 			v = verdicts[t.ID]
 		}
-		tr := Transition{Tracked: t, Step: state.Next(t, v, maxRebuttals), Seen: newestHuman(t)}
+		tr := Transition{Tracked: t, Step: state.Next(t, v)}
 		if tr.Mutates() {
 			out = append(out, tr)
 		}
@@ -165,12 +186,19 @@ func transitions(tracked []state.Tracked, checks []Check, verdicts map[string]*s
 	return out
 }
 
-// newestHuman is the database ID of the newest human comment in t's thread:
-// the latest seen by this pass, since the thread was read before deciding.
-func newestHuman(t *state.Tracked) int64 {
-	n := t.Seen
-	for i := range t.Pending {
-		n = max(n, t.Pending[i].DatabaseID)
+// reverified lists the fixed findings this pass verified as still fixed,
+// with the evidence files of that verdict. The pass marker records them,
+// since a still-fixed finding gets no reply (§6, "Evidence baseline").
+func reverified(checks []Check, verdicts map[string]*state.Verdict) map[string][]string {
+	out := map[string][]string{}
+	for i := range checks {
+		t := checks[i].Tracked
+		if v := verdicts[t.ID]; t.State == state.StateFixed && v != nil && v.State == state.StateFixed {
+			out[t.ID] = v.Evidence
+		}
 	}
-	return n
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

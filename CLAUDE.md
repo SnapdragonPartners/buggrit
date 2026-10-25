@@ -53,7 +53,7 @@ scripts/           # install.sh, the action's download and checksum step, and it
 - `make lint`: `go vet` + `golangci-lint run` (v1.64.8, pinned in CI)
 - `make vuln`: `govulncheck ./...`
 - `make check`: everything CI runs (lint, vuln, build, test)
-- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`
+- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`. **Before tagging, close every open issue labeled `release-blocker`** (`gh issue list --label release-blocker`); file one whenever a change needs work elsewhere before it ships
 - `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
 - `make deps`: check the required tools are installed
@@ -72,7 +72,7 @@ To develop against a local `../maestro-llms` checkout, use an uncommitted `go.wo
 6. Continue until Codex has no blocking findings, Dan overrides one, or a disputed finding is escalated to Dan.
 7. **Stop for Dan's approval to push.** Quote Codex's approval or its remaining findings.
 8. After approval, push and open the PR (see PR body conventions).
-9. Address every post-push review thread with a fix or a reasoned reply, push, reply on the thread with the fixing commit, resolve it, and check again for new feedback.
+9. Address every post-push review thread, then check again for new feedback after each push. **buggrit's threads:** to fix one, push the fix and leave the thread open; buggrit verifies it on the next push and resolves it. Not fixing one (a reasoned rejection, or a deferral with its issue): reply with the reason, then resolve the thread, which settles it (design §6). Don't resolve a buggrit thread you fixed: that settles it unverified. **Other reviewers' threads** (Copilot): fix or reply with a reason, reply with the fixing commit, and resolve.
 10. Dan merges. Claude never merges.
 
 ### Responding to findings

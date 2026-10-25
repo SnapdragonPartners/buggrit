@@ -128,9 +128,10 @@ func TestReviewDryRunPostsNothing(t *testing.T) {
 	}
 }
 
-// A reply to a finding brings a reconcile-only run at the same head: the
-// verifier judges it, and the dry run shows the reply it would post.
-func TestReviewReconcilesAReply(t *testing.T) {
+// A reply changes nothing: a run at the same head verifies the open
+// finding again and posts nothing. Resolving the thread settles the
+// finding, and then nothing needs verifying (design §6).
+func TestReviewResolvingSettles(t *testing.T) {
 	e := setupReview(t, submit(finding))
 	if code, out, errOut := e.run(t); code != 0 {
 		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
@@ -143,22 +144,71 @@ func TestReviewReconcilesAReply(t *testing.T) {
 	e.fake.Reply(7, th.ID, "dan", "This is intentional.")
 	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
 		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
-
-	code, out, errOut := e.run(t, "--dry-run")
-	if code != 0 || !strings.Contains(out, "=== reply on "+m.ID+" (cache.go)\n**Still open** at `1111111`. Nothing documents it.") ||
-		strings.Contains(out, "=== review body") || len(th.Comments) != 2 {
-		t.Fatalf("dry run: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	code, out, _ := e.run(t)
+	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 unchanged") || len(th.Comments) != 2 {
+		t.Fatalf("second run: exit %d, %s", code, out)
 	}
-
-	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
-		`{"verdicts": [{"id": "`+m.ID+`", "state": "open", "reason": "Nothing documents it."}]}`)}}
-	code, out, _ = e.run(t)
-	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 rebutted") || len(th.Comments) != 3 {
-		t.Fatalf("publish: exit %d, %s", code, out)
+	for _, msg := range e.verifier.Calls()[0].Messages {
+		for _, part := range msg.Content {
+			if strings.Contains(part.Text, "intentional") {
+				t.Error("the reply reached the verifier")
+			}
+		}
 	}
 	summary, err := os.ReadFile(e.summary)
 	if err != nil || !strings.Contains(string(summary), "| verify | glm-5.3 | 1 |") || !strings.Contains(string(summary), "only reconciled earlier findings") {
 		t.Errorf("job summary = %s, %v", summary, err)
+	}
+
+	e.fake.SetResolved(7, th.ID, true)
+	e.verifier = &testllm.FakeChatClient{Text: "not called"}
+	code, out, _ = e.run(t)
+	if code != 0 || !strings.Contains(out, "skipped at 1111111") || len(e.verifier.Calls()) != 0 || !e.fake.PR(7).Threads[0].Resolved {
+		t.Fatalf("settled run: exit %d, %s", code, out)
+	}
+}
+
+// A sync run uses no model and no checkout: it repairs thread resolutions
+// at the PR's head (design §2).
+func TestReviewSync(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, out, errOut := e.run(t); code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	th := e.fake.PR(7).Threads[0]
+	// An open finding's thread buggrit resolved: a run killed between its
+	// regressed reply and its unresolve.
+	e.fake.ResolveAs(7, th.ID, true, githubtest.DefaultLogin)
+	calls := len(e.model.Calls())
+	e.deps.head = func(string) (string, error) { t.Error("sync read the checkout"); return head, nil }
+	e.deps.clients = func(*config.Config, modelObserver) (*llm.Clients, error) {
+		t.Error("sync made model clients")
+		return &llm.Clients{}, nil
+	}
+	e.env["BUGGRIT_MODE"] = "sync"
+	code, out, errOut := e.run(t)
+	if code != 0 || !strings.Contains(out, "synced at 1111111: earlier findings: 1 repaired") || th.Resolved || len(e.model.Calls()) != calls {
+		t.Fatalf("sync: exit %d, resolved %v\n%s\n%s", code, th.Resolved, out, errOut)
+	}
+	if code, out, _ = e.run(t); code != 0 || !strings.Contains(out, "synced at 1111111: nothing to repair") {
+		t.Errorf("second sync: exit %d, %s", code, out)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "## buggrit sync") {
+		t.Errorf("job summary = %s, %v", summary, err)
+	}
+}
+
+// A config that still sets convergence.max_rebuttals runs, with a warning.
+func TestReviewWarnsAboutMaxRebuttals(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	e.fake.SetFile("main", config.Path, `{"version": 1, "models": {"default": {"provider": "openai-compatible", "base_url": "https://llm.example/v1", "model": "glm-5.3"}},
+	  "convergence": {"max_rebuttals": 1}}`)
+	code, _, errOut := e.run(t)
+	summary, err := os.ReadFile(e.summary)
+	if code != 0 || !strings.Contains(errOut, "warning: convergence.max_rebuttals is ignored") || err != nil ||
+		!strings.Contains(string(summary), "> [!WARNING]\n> convergence.max_rebuttals is ignored") {
+		t.Errorf("exit %d\n%s\n%s", code, errOut, summary)
 	}
 }
 
@@ -169,8 +219,6 @@ func TestReviewUnverifiedExitsNonZero(t *testing.T) {
 	if code, _, _ := e.run(t); code != 0 {
 		t.Fatal("first run failed")
 	}
-	th := e.fake.PR(7).Threads[0]
-	e.fake.Reply(7, th.ID, "dan", "Disagree.")
 	e.verifier = &testllm.FakeChatClient{Text: "just chatting"}
 	code, out, _ := e.run(t)
 	if code != 1 || !strings.Contains(out, "incomplete at 1111111: verification: the model stopped without calling submit_verdicts; 1 of 1 earlier finding not verified") {
@@ -231,6 +279,7 @@ func TestReviewArgs(t *testing.T) {
 		"no repo":  func() { delete(e.env, "GITHUB_REPOSITORY") },
 		"no pr":    func() { delete(e.env, "BUGGRIT_PR") },
 		"bad repo": func() { e.env["GITHUB_REPOSITORY"] = "nope" },
+		"bad mode": func() { e.env["BUGGRIT_MODE"] = "reconcile" },
 	} {
 		saved := map[string]string{}
 		for k, v := range e.env {
@@ -294,56 +343,4 @@ func TestModelLogReportsReasoning(t *testing.T) {
 	if b.String() != want {
 		t.Errorf("log = %q, want %q", b.String(), want)
 	}
-}
-
-// A run started by a comment from outside the team, on a public repository,
-// stops before the model (design §3, "Outside events"). A teammate whose
-// association doesn't say so, but who has write access, gets a run; so does
-// anyone on a private repository.
-func TestReviewOutsideEvent(t *testing.T) {
-	write := func(t *testing.T, payload string) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "event.json")
-		if err := os.WriteFile(p, []byte(payload), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	tests := []struct {
-		name, event, payload string
-		stops                bool
-	}{
-		{name: "outsider comment", event: "pull_request_review_comment", stops: true,
-			payload: `{"comment": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": false}}`},
-		{name: "outsider review", event: "pull_request_review", stops: true,
-			payload: `{"review": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": false}}`},
-		{name: "private member with write access", event: "pull_request_review_comment",
-			payload: `{"comment": {"user": {"login": "private-member"}, "author_association": "NONE"}, "repository": {"private": false}}`},
-		{name: "member", event: "pull_request_review",
-			payload: `{"review": {"user": {"login": "dan"}, "author_association": "MEMBER"}, "repository": {"private": false}}`},
-		{name: "private repository", event: "pull_request_review_comment",
-			payload: `{"comment": {"user": {"login": "outsider"}, "author_association": "NONE"}, "repository": {"private": true}}`},
-		{name: "push", event: "pull_request", payload: `{}`},
-		{name: "Copilot review", event: "pull_request_review",
-			payload: `{"review": {"user": {"login": "Copilot", "type": "Bot"}, "author_association": "NONE"}, "repository": {"private": false}}`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			e := setupReview(t, submit(finding))
-			e.fake.SetPermission("private-member", "write")
-			e.env["GITHUB_EVENT_NAME"], e.env["GITHUB_EVENT_PATH"] = tt.event, write(t, tt.payload)
-			code, out, errOut := e.run(t)
-			stopped := strings.Contains(out, "nothing to do: the run was started by outsider, who has no write access")
-			if code != 0 || stopped != tt.stops || (len(e.model.Calls()) == 0) != tt.stops {
-				t.Errorf("exit %d, stopped %v, model calls %d\nstdout: %s\nstderr: %s", code, stopped, len(e.model.Calls()), out, errOut)
-			}
-		})
-	}
-	t.Run("unreadable payload", func(t *testing.T) {
-		e := setupReview(t, submit(finding))
-		e.env["GITHUB_EVENT_NAME"], e.env["GITHUB_EVENT_PATH"] = "pull_request_review", write(t, `{"review": null}`)
-		if code, _, errOut := e.run(t); code != 1 || !strings.Contains(errOut, "has no author") {
-			t.Errorf("exit %d, %s", code, errOut)
-		}
-	})
 }

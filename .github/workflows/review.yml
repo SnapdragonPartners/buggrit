@@ -8,13 +8,12 @@ name: buggrit review
 #       secrets: inherit
 #
 # The caller keeps its triggers and its concurrency group, since both have to
-# be on the calling workflow (design §3, "Bot events"); README.md has the
-# full snippet. This job is the one buggrit.yml runs, except that it installs
-# a release binary through the composite action instead of building main.
+# be on the calling workflow (design §3); README.md has the full snippet.
+# This job is the one buggrit.yml runs, except that it installs a release
+# binary through the composite action instead of building main.
 #
-# buggrit's login comes from the variable BUGGRIT_BOT_LOGIN, defaulting to
-# buggrit-bot[bot]. It must match the caller's concurrency group and
-# identity.bot_login in .github/buggrit.json.
+# A push runs a full pass; a dispatch runs the mode it names: full (the
+# default) or sync, which re-reads the threads and runs no model (design §2).
 on:
   workflow_call:
     inputs:
@@ -36,37 +35,19 @@ permissions:
 
 jobs:
   review:
-    # Events caused by buggrit's own comments report under their own check
-    # name, so their skipped runs never hide the real review (design §3,
-    # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
-    # skipped job's name, so those runs, like every other skipped run,
-    # show this expression's text. On a public repository, a comment or
-    # review by a person whose author association doesn't put them on the
-    # team runs as "outside event", so a run that stops for an outsider
-    # doesn't hide the real review either (design §3, "Outside events").
-    name: >-
-      ${{ (github.event.comment.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') ||
-           github.event.review.user.login == (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]'))
-          && 'ignored bot event'
-          || (!github.event.repository.private &&
-              ((github.event_name == 'pull_request_review_comment' &&
-                github.event.comment.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
-               (github.event_name == 'pull_request_review' &&
-                github.event.review.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
-          && 'outside event' || 'review' }}
-    # Skip drafts, fork PRs (they get no secrets) and events caused by
-    # buggrit's own comments. Comments from outside the team can't be told
-    # apart here, since a teammate whose org membership is private may show
-    # any association; buggrit checks the author's write access and stops
-    # before the model (design §3, "Outside events").
+    # review is the completion signal for a push's pass (design §8); a sync
+    # run reports under its own name, so it can't hide a failing review.
+    # The mode is the caller's dispatch input.
+    name: ${{ github.event.inputs.mode == 'sync' && 'sync' || 'review' }}
+    # Only pushes and dispatches run. A caller that still sends comment or
+    # review events gets a skipped run, whose name GitHub doesn't evaluate,
+    # so it doesn't show as review either. Skip drafts and fork PRs, which
+    # get no secrets.
     if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
       !github.event.pull_request.draft &&
       (!github.event.pull_request ||
-       github.event.pull_request.head.repo.full_name == github.repository) &&
-      github.event.comment.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]') &&
-      github.event.review.user.login != (vars.BUGGRIT_BOT_LOGIN || 'buggrit-bot[bot]')
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ inputs.runs-on }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
@@ -102,7 +83,9 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # A sync run reads no files.
       - name: Check out the PR head
+        if: github.event.inputs.mode != 'sync'
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.head.outputs.sha }}
@@ -124,4 +107,5 @@ jobs:
           download-token: ${{ steps.download.outputs.token }}
           pr: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           workspace: ${{ github.workspace }}/pr
+          mode: ${{ github.event.inputs.mode }}
           version: ${{ inputs.version }}

@@ -8,71 +8,45 @@ name: buggrit
 # source rather than using a release, so it's the canary for each merge;
 # other repos call the reusable review.yml instead (design §3).
 #
-# Replies and reviews trigger runs too (design §3). A run at a head that
-# already has a complete pass only reconciles: it verifies open findings and
-# answers replies, without a new full pass (design §2, step 0).
+# A push runs a full pass. Comments and reviews trigger nothing: a finding is
+# settled by resolving its thread, and Actions has no trigger for that, so
+# after resolving threads the agent dispatches a sync run, which runs no
+# model (design §2, §3).
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted]
   workflow_dispatch:
     inputs:
       pr:
         description: Pull request number to review
         required: true
+      mode:
+        description: full (rerun the pass at the current head) or sync (re-read the threads, no model)
+        type: choice
+        options: [full, sync]
+        default: full
 
 concurrency:
-  # Events caused by buggrit's own reviews and replies get a throwaway group,
-  # so they never replace a pending run queued by a human (design §3, "Bot
-  # events"). The job-level if then skips them.
-  group: >-
-    ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
-         github.event.review.user.login == 'buggrit-bot[bot]')
-        && format('buggrit-ignored-{0}', github.run_id)
-        || format('buggrit-{0}', github.event.pull_request.number || inputs.pr) }}
-  # A push cancels the pass in flight; the new head gets its own.
-  # Reply-triggered runs wait their turn.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Sync runs have a group of their own, so they never replace a pending
+  # push run (design §3, "Concurrency").
+  group: ${{ inputs.mode == 'sync' && 'buggrit-sync' || 'buggrit' }}-${{ github.event.pull_request.number || inputs.pr }}
+  # A push cancels the pass in flight; the new head gets its own. A newer
+  # sync replaces one in flight. A full dispatch waits its turn.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.mode == 'sync' }}
 
 permissions:
   contents: read
 
 jobs:
   review:
-    # Events caused by buggrit's own comments report under their own check
-    # name, so their skipped runs never hide the real review (design §3,
-    # "Bot events"; §8, "Completion signal"). GitHub doesn't evaluate a
-    # skipped job's name, so those runs, like every other skipped run,
-    # show this expression's text. On a public repository, a comment or
-    # review by a person whose author association doesn't put them on the
-    # team runs as "outside event", so a run that stops for an outsider
-    # doesn't hide the real review either (design §3, "Outside events").
-    name: >-
-      ${{ (github.event.comment.user.login == 'buggrit-bot[bot]' ||
-           github.event.review.user.login == 'buggrit-bot[bot]')
-          && 'ignored bot event'
-          || (!github.event.repository.private &&
-              ((github.event_name == 'pull_request_review_comment' &&
-                github.event.comment.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
-               (github.event_name == 'pull_request_review' &&
-                github.event.review.user.type != 'Bot' &&
-                !contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))))
-          && 'outside event' || 'review' }}
-    # Skip drafts, fork PRs (they get no secrets) and events caused by
-    # buggrit's own comments. Comments from outside the team can't be told
-    # apart here, since a teammate whose org membership is private may show
-    # any association; buggrit checks the author's write access and stops
-    # before the model (design §3, "Outside events").
+    # review is the completion signal for a push's pass (design §8); a sync
+    # run reports under its own name, so it can't hide a failing review.
+    name: ${{ inputs.mode == 'sync' && 'sync' || 'review' }}
+    # Skip drafts and fork PRs, which get no secrets.
     if: >-
       !github.event.pull_request.draft &&
       (!github.event.pull_request ||
-       github.event.pull_request.head.repo.full_name == github.repository) &&
-      github.event.comment.user.login != 'buggrit-bot[bot]' &&
-      github.event.review.user.login != 'buggrit-bot[bot]'
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     # Above limits.pass_deadline (55m), so buggrit always has time to publish.
     timeout-minutes: 70
@@ -116,8 +90,9 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # A sync run reads no files.
       - name: Check out the PR head
-        if: steps.configured.outputs.ok == 'true'
+        if: steps.configured.outputs.ok == 'true' && inputs.mode != 'sync'
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.head.outputs.sha }}
@@ -140,5 +115,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           BUGGRIT_PR: ${{ github.event.pull_request.number || inputs.pr }}
+          BUGGRIT_MODE: ${{ inputs.mode }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
         run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'

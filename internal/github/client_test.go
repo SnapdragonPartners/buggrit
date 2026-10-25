@@ -211,8 +211,8 @@ func TestReplyResolveUnresolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := readThread(t, c, th.ID)
-	if !got.IsResolved || len(got.Comments) != 3 {
-		t.Fatalf("after resolve: resolved=%v comments=%d", got.IsResolved, len(got.Comments))
+	if !got.IsResolved || len(got.Comments) != 3 || got.ResolvedBy != "buggrit-bot[bot]" {
+		t.Fatalf("after resolve: resolved=%v by %q, comments=%d", got.IsResolved, got.ResolvedBy, len(got.Comments))
 	}
 	if a := got.Comments[1].Author; a != "dratner" {
 		t.Errorf("human reply author = %q", a)
@@ -220,8 +220,23 @@ func TestReplyResolveUnresolve(t *testing.T) {
 	if err := c.UnresolveThread(ctx, th.ID); err != nil {
 		t.Fatal(err)
 	}
-	if readThread(t, c, th.ID).IsResolved {
-		t.Error("thread still resolved after unresolve")
+	if got := readThread(t, c, th.ID); got.IsResolved || got.ResolvedBy != "" {
+		t.Errorf("after unresolve: resolved=%v by %q", got.IsResolved, got.ResolvedBy)
+	}
+	// A person's resolution is theirs; a deleted account's reads as "".
+	fake.SetResolved(7, th.ID, true)
+	if got := readThread(t, c, th.ID); got.ResolvedBy != "dratner" {
+		t.Errorf("resolved by %q, want dratner", got.ResolvedBy)
+	}
+	if r, err := c.ThreadResolution(ctx, th.ID); err != nil || !r.Resolved || r.By != "dratner" {
+		t.Errorf("ThreadResolution = %+v, %v", r, err)
+	}
+	fake.ResolveAs(7, th.ID, true, "")
+	if got := readThread(t, c, th.ID); !got.IsResolved || got.ResolvedBy != "" {
+		t.Errorf("ghost resolver: resolved=%v by %q", got.IsResolved, got.ResolvedBy)
+	}
+	if r, err := c.ThreadResolution(ctx, th.ID); err != nil || !r.Resolved || r.By != "" {
+		t.Errorf("ghost ThreadResolution = %+v, %v", r, err)
 	}
 }
 

@@ -48,6 +48,10 @@ type Thread struct {
 	IsResolved   bool
 	IsOutdated   bool
 	FileLevel    bool
+	// ResolvedBy is the REST-form login of whoever resolved the thread, or
+	// "" if it's unresolved or GitHub doesn't say (a deleted account).
+	// buggrit settles a finding by who resolved its thread (design §6).
+	ResolvedBy string
 }
 
 // Root is the thread's first comment, or nil for an empty thread.
@@ -66,6 +70,7 @@ const threadsQuery = `query ReviewThreads($owner: String!, $name: String!, $numb
         nodes {
           id
           isResolved
+          resolvedBy { __typename login }
           isOutdated
           path
           line
@@ -114,13 +119,29 @@ type gqlPageInfo struct {
 	HasNextPage bool   `json:"hasNextPage"`
 }
 
+// gqlActor is a comment's author or a thread's resolver.
+type gqlActor struct {
+	Typename string `json:"__typename"`
+	Login    string `json:"login"`
+}
+
+// login is the actor's login in REST form. GraphQL gives a bot's login
+// without the "[bot]" suffix REST uses, which is what config's
+// identity.bot_login holds. A nil actor is a deleted ("ghost") user.
+func (a *gqlActor) login() string {
+	if a == nil {
+		return ""
+	}
+	if a.Typename == "Bot" && !strings.HasSuffix(a.Login, "[bot]") {
+		return a.Login + "[bot]"
+	}
+	return a.Login
+}
+
 type gqlComment struct {
 	CreatedAt time.Time `json:"createdAt"`
-	Author    *struct {
-		Typename string `json:"__typename"`
-		Login    string `json:"login"`
-	} `json:"author"`
-	Commit *struct {
+	Author    *gqlActor `json:"author"`
+	Commit    *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
 	ID          string `json:"id"`
@@ -137,6 +158,7 @@ type gqlComments struct {
 }
 
 type gqlThread struct {
+	ResolvedBy   *gqlActor   `json:"resolvedBy"`
 	Line         *int        `json:"line"`
 	OriginalLine *int        `json:"originalLine"`
 	StartLine    *int        `json:"startLine"`
@@ -158,15 +180,7 @@ func (g *gqlComment) comment() Comment {
 		URL:         g.URL,
 		DiffHunk:    g.DiffHunk,
 		CreatedAt:   g.CreatedAt,
-	}
-	if g.Author != nil { // nil for deleted ("ghost") users
-		c.Author = g.Author.Login
-		// GraphQL gives a bot's login without the "[bot]" suffix REST
-		// uses. Normalize to the REST form, which is what config's
-		// identity.bot_login holds.
-		if g.Author.Typename == "Bot" && !strings.HasSuffix(c.Author, "[bot]") {
-			c.Author += "[bot]"
-		}
+		Author:      g.Author.login(),
 	}
 	if g.Commit != nil {
 		c.CommitSHA = g.Commit.OID
@@ -234,6 +248,9 @@ func (c *Client) thread(ctx context.Context, g *gqlThread) (Thread, error) {
 		IsOutdated:   g.IsOutdated,
 		FileLevel:    g.SubjectType == "FILE",
 	}
+	if g.IsResolved {
+		t.ResolvedBy = g.ResolvedBy.login()
+	}
 	comments := g.Comments
 	for {
 		for i := range comments.Nodes {
@@ -259,26 +276,39 @@ func (c *Client) thread(ctx context.Context, g *gqlThread) (Thread, error) {
 	}
 }
 
-const threadResolvedQuery = `query ThreadResolved($id: ID!) {
-  node(id: $id) { ... on PullRequestReviewThread { isResolved } }
+const threadResolutionQuery = `query ThreadResolution($id: ID!) {
+  node(id: $id) { ... on PullRequestReviewThread { isResolved resolvedBy { __typename login } } }
 }`
 
-// ThreadResolved reads whether one review thread is resolved now. Publishing
-// uses it when GitHub refuses to change a thread, to learn whether the
-// change was needed at all.
-func (c *Client) ThreadResolved(ctx context.Context, threadID string) (bool, error) {
+// Resolution is whether a review thread is resolved now, and by whom: the
+// REST-form login, or "" if it's unresolved or GitHub doesn't say.
+type Resolution struct {
+	By       string
+	Resolved bool
+}
+
+// ThreadResolution reads one review thread's resolution now. Publishing
+// reads it before changing a thread, so it never undoes a resolution made
+// since the threads were read, and after GitHub refuses a change, to learn
+// whether the change was needed at all.
+func (c *Client) ThreadResolution(ctx context.Context, threadID string) (Resolution, error) {
 	var data struct {
 		Node *struct {
-			IsResolved bool `json:"isResolved"`
+			ResolvedBy *gqlActor `json:"resolvedBy"`
+			IsResolved bool      `json:"isResolved"`
 		} `json:"node"`
 	}
-	if err := c.graphQL(ctx, "ThreadResolved", threadResolvedQuery, map[string]any{"id": threadID}, &data); err != nil {
-		return false, fmt.Errorf("read thread %s: %w", threadID, err)
+	if err := c.graphQL(ctx, "ThreadResolution", threadResolutionQuery, map[string]any{"id": threadID}, &data); err != nil {
+		return Resolution{}, fmt.Errorf("read thread %s: %w", threadID, err)
 	}
 	if data.Node == nil {
-		return false, fmt.Errorf("read thread %s: %w", threadID, &APIError{Type: "NOT_FOUND", Message: "thread not found"})
+		return Resolution{}, fmt.Errorf("read thread %s: %w", threadID, &APIError{Type: "NOT_FOUND", Message: "thread not found"})
 	}
-	return data.Node.IsResolved, nil
+	r := Resolution{Resolved: data.Node.IsResolved}
+	if r.Resolved {
+		r.By = data.Node.ResolvedBy.login()
+	}
+	return r, nil
 }
 
 const resolveMutation = `mutation ResolveThread($id: ID!) {
