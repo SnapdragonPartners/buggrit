@@ -8,10 +8,9 @@ name: buggrit
 # source rather than using a release, so it's the canary for each merge;
 # other repos call the reusable review.yml instead (design §3).
 #
-# A push runs a full pass. Comments and reviews trigger nothing: a finding is
-# settled by resolving its thread, and Actions has no trigger for that, so
-# after resolving threads the agent dispatches a sync run, which runs no
-# model (design §2, §3).
+# A push runs a full pass, and so does a dispatch, at the PR's current head.
+# Comments and reviews trigger nothing: a finding is settled by resolving its
+# thread, which needs no run (design §2, §3).
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -20,28 +19,20 @@ on:
       pr:
         description: Pull request number to review
         required: true
-      mode:
-        description: full (rerun the pass at the current head) or sync (re-read the threads, no model)
-        type: choice
-        options: [full, sync]
-        default: full
 
 concurrency:
-  # Sync runs have a group of their own, so they never replace a pending
-  # push run (design §3, "Concurrency").
-  group: ${{ inputs.mode == 'sync' && 'buggrit-sync' || 'buggrit' }}-${{ github.event.pull_request.number || inputs.pr }}
-  # A push cancels the pass in flight; the new head gets its own. A newer
-  # sync replaces one in flight. A full dispatch waits its turn.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.mode == 'sync' }}
+  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  # A push cancels the pass in flight; the new head gets its own. A dispatch
+  # waits its turn.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   review:
-    # review is the completion signal for a push's pass (design §8); a sync
-    # run reports under its own name, so it can't hide a failing review.
-    name: ${{ inputs.mode == 'sync' && 'sync' || 'review' }}
+    # review is the completion signal for a push's pass (design §8).
+    name: review
     # Skip drafts and fork PRs, which get no secrets.
     if: >-
       !github.event.pull_request.draft &&
@@ -90,9 +81,8 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      # A sync run reads no files.
       - name: Check out the PR head
-        if: steps.configured.outputs.ok == 'true' && inputs.mode != 'sync'
+        if: steps.configured.outputs.ok == 'true'
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.head.outputs.sha }}
@@ -115,6 +105,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           BUGGRIT_PR: ${{ github.event.pull_request.number || inputs.pr }}
-          BUGGRIT_MODE: ${{ inputs.mode }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
         run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'

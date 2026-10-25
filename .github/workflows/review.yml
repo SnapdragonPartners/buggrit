@@ -12,8 +12,8 @@ name: buggrit review
 # This job is the one buggrit.yml runs, except that it installs a release
 # binary through the composite action instead of building main.
 #
-# A push runs a full pass; a dispatch runs the mode it names: full (the
-# default) or sync, which re-reads the threads and runs no model (design §2).
+# A push runs a full pass, and so does a dispatch, at the PR's current head
+# (design §2).
 on:
   workflow_call:
     inputs:
@@ -35,14 +35,11 @@ permissions:
 
 jobs:
   review:
-    # review is the completion signal for a push's pass (design §8); a sync
-    # run reports under its own name, so it can't hide a failing review.
-    # The mode is the caller's dispatch input.
-    name: ${{ github.event.inputs.mode == 'sync' && 'sync' || 'review' }}
-    # Only pushes and dispatches run. A caller that still sends comment or
-    # review events gets a skipped run, whose name GitHub doesn't evaluate,
-    # so it doesn't show as review either. Skip drafts and fork PRs, which
-    # get no secrets.
+    # review is the completion signal for a push's pass (design §8).
+    name: review
+    # Only pushes and dispatches run; a caller that still sends comment or
+    # review events gets a skipped run (design §3, "Callers"). Skip drafts
+    # and fork PRs, which get no secrets.
     if: >-
       (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
       !github.event.pull_request.draft &&
@@ -83,9 +80,7 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve PR head" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      # A sync run reads no files.
       - name: Check out the PR head
-        if: github.event.inputs.mode != 'sync'
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.head.outputs.sha }}
@@ -107,5 +102,4 @@ jobs:
           download-token: ${{ steps.download.outputs.token }}
           pr: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           workspace: ${{ github.workspace }}/pr
-          mode: ${{ github.event.inputs.mode }}
           version: ${{ inputs.version }}

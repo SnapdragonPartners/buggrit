@@ -1,5 +1,6 @@
-# Build artifacts
+# Build artifacts (`go build ./cmd/...` writes /buggrit)
 bin/
+/buggrit
 dist/
 
 # Test artifacts

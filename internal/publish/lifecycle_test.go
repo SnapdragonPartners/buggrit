@@ -297,8 +297,8 @@ func TestLifecycleResolveNeedsFreshRead(t *testing.T) {
 }
 
 // A run killed between a regressed reply and its unresolve leaves an open
-// finding on a thread buggrit resolved. The next run, even a sync, reopens
-// it without a second reply (§6).
+// finding on a thread buggrit resolved. The next run reopens it without a
+// second reply (§6).
 func TestLifecycleRepairsKilledRegression(t *testing.T) {
 	w := newWorld(t)
 	th, id := w.raise("P1")
@@ -318,16 +318,11 @@ func TestLifecycleRepairsKilledRegression(t *testing.T) {
 	}
 	w.fake.OnRequest = nil
 	comments := len(th.Comments)
-	pref := review.PRRef{Repo: ref.Repo, Number: 7, HeadSHA: w.head()}
-	res, err := review.Review(context.Background(), pref, nil, w.gh, &review.Options{Config: &w.cfg, Sync: true})
-	if err != nil {
-		t.Fatal(err)
+	p := w.pass("", verdict(id, "open", "The initialization is still gone."))
+	if p.err != nil || th.Resolved || len(th.Comments) != comments || p.posted.Unresolved != 1 {
+		t.Fatalf("repair: %+v, %v; resolved %v", p.posted, p.err, th.Resolved)
 	}
-	posted, err := Publish(context.Background(), w.gh, pref, res)
-	if err != nil || th.Resolved || len(th.Comments) != comments || posted.Unresolved != 1 || posted.ReviewID != 0 {
-		t.Fatalf("sync repair: %+v, %v; resolved %v", posted, err, th.Resolved)
-	}
-	if got := Status(res); got != "synced at 3333333: earlier findings: 1 repaired" {
+	if got := Status(p.res); !strings.Contains(got, "earlier findings: 1 repaired") {
 		t.Errorf("status = %s", got)
 	}
 }

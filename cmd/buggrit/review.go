@@ -77,18 +77,9 @@ func (l modelLog) Observe(e middleware.Event) {
 // a GitHub Action provides, so the workflow needs none of them.
 type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
-	// mode is "full" (the default) or "sync" (design §2).
-	mode   string
-	pr     int
-	dryRun bool
+	pr                                                      int
+	dryRun                                                  bool
 }
-
-// Run modes (design §2): a full pass runs the models; a sync run re-reads
-// the threads and repairs them, with no model and no checkout.
-const (
-	modeFull = "full"
-	modeSync = "sync"
-)
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
@@ -100,7 +91,6 @@ func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer
 	fs.StringVar(&a.workspace, "workspace", orDefault(getenv("GITHUB_WORKSPACE"), "."), "checkout of the PR head (default $GITHUB_WORKSPACE)")
 	fs.StringVar(&a.apiURL, "api-url", orDefault(getenv("GITHUB_API_URL"), github.DefaultAPIURL), "GitHub API URL (default $GITHUB_API_URL)")
 	fs.StringVar(&a.configPath, "config", "", "read the config from this file instead of the base branch (for local runs)")
-	fs.StringVar(&a.mode, "mode", orDefault(getenv("BUGGRIT_MODE"), modeFull), "full (run the models) or sync (repair threads, no model) (default $BUGGRIT_MODE or full)")
 	fs.BoolVar(&a.dryRun, "dry-run", false, "print the findings instead of posting them")
 	if err := fs.Parse(args); err != nil {
 		return nil, err //nolint:wrapcheck // flag already printed it
@@ -114,8 +104,6 @@ func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer
 		return nil, errors.New("no repository: set --repo or GITHUB_REPOSITORY")
 	case a.pr <= 0:
 		return nil, errors.New("no pull request: set --pr or BUGGRIT_PR")
-	case a.mode != modeFull && a.mode != modeSync:
-		return nil, fmt.Errorf("unknown mode %q: want %s or %s", a.mode, modeFull, modeSync)
 	}
 	return a, nil
 }
@@ -174,9 +162,6 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if err != nil {
 		return r.fail(err)
 	}
-	if r.args.mode == modeSync {
-		return r.sync(ctx, pr)
-	}
 	// Snapshot (design §3): the checkout must be the PR's current head. If
 	// it isn't, the head moved since the workflow looked it up, and the run
 	// the push queued will review it.
@@ -215,28 +200,6 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 		return r.fail(err)
 	}
 
-	return r.finish(ctx, ref, res, cfg)
-}
-
-// sync runs no model and needs no checkout: it re-reads the threads at the
-// PR's current head and repairs their resolutions (design §2).
-func (r *reviewer) sync(ctx context.Context, pr *github.PullRequest) (int, string) {
-	cfg, err := r.loadConfig(ctx, pr)
-	if errors.Is(err, errNoConfig) {
-		return r.stop(err.Error())
-	}
-	if err != nil {
-		return r.fail(err)
-	}
-	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: pr.HeadSHA}
-	say(r.stderr, "buggrit: syncing %s#%d at %s\n", r.repo, pr.Number, short(pr.HeadSHA))
-	res, err := review.Review(ctx, ref, nil, r.gh, &review.Options{Config: cfg, Sync: true})
-	if errors.Is(err, github.ErrHeadMoved) {
-		return r.stop(err.Error())
-	}
-	if err != nil {
-		return r.fail(err)
-	}
 	return r.finish(ctx, ref, res, cfg)
 }
 
@@ -336,7 +299,7 @@ func (r *reviewer) print(res *review.Result) {
 	for i := range res.Transitions {
 		r.printTransition(&res.Transitions[i], res.HeadSHA)
 	}
-	if res.ReconcileOnly || res.Sync {
+	if res.ReconcileOnly {
 		return
 	}
 	body, err := publish.ReviewBody(res, nil)
@@ -386,8 +349,6 @@ func (r *reviewer) printTransition(tr *review.Transition, sha string) {
 func jobSummary(res *review.Result, cfg *config.Config, manual []publish.Manual) string {
 	var b strings.Builder
 	switch {
-	case res.Sync:
-		fmt.Fprintf(&b, "## buggrit sync\n\n**%s**\n\n", publish.Status(res))
 	case res.ReconcileOnly:
 		fmt.Fprintf(&b, "## buggrit\n\n**%s**\n\n%s already had a complete pass; this run only reconciled earlier findings.\n\n",
 			publish.Status(res), short(res.HeadSHA))

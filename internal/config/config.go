@@ -67,15 +67,11 @@ const (
 	ConfidenceHigh   = "high"
 )
 
-// GateNone disables the gate check (§8).
-const GateNone = "none"
-
 // Config is the whole repository configuration.
 type Config struct {
 	Models      Models      `json:"models"`
 	Review      Review      `json:"review"`
 	Identity    Identity    `json:"identity"`
-	Gate        Gate        `json:"gate"`
 	Convergence Convergence `json:"convergence"`
 	Limits      Limits      `json:"limits"`
 	Version     int         `json:"version"`
@@ -153,11 +149,6 @@ type Convergence struct {
 	WarnAfterPass int  `json:"warn_after_pass"`
 }
 
-// Gate configures the optional findings check run (§8).
-type Gate struct {
-	FailOn string `json:"fail_on"`
-}
-
 // Identity says which GitHub login is buggrit's own. A comment is buggrit's
 // only if it carries the marker and is authored by this login (§3).
 type Identity struct {
@@ -198,7 +189,6 @@ func Defaults() Config {
 			InstructionFiles: []string{"CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md"},
 		},
 		Convergence: Convergence{WarnAfterPass: 5},
-		Gate:        Gate{FailOn: GateNone},
 		Identity:    Identity{BotLogin: "buggrit-bot[bot]"},
 	}
 }
@@ -304,11 +294,6 @@ func (c *Config) Validate() error {
 
 	if c.Convergence.WarnAfterPass < 1 {
 		add("convergence.warn_after_pass must be >= 1")
-	}
-	switch c.Gate.FailOn {
-	case GateNone, SeverityP0, SeverityP1:
-	default:
-		add("gate.fail_on must be one of none, P0, P1 (got %q)", c.Gate.FailOn)
 	}
 	if strings.TrimSpace(c.Identity.BotLogin) == "" {
 		add("identity.bot_login must not be empty")

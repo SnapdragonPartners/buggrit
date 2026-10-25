@@ -76,11 +76,10 @@ Agents never merging is still the integrity control.
 ```
 GitHub event
   pull_request: opened | synchronize | reopened | ready_for_review    (full pass)
-  workflow_dispatch  mode: full (default) | sync                       (manual rerun; sync, §3)
+  workflow_dispatch                                                    (manual rerun)
   └─ Action job (composite action → prebuilt buggrit binary)
        └─ buggrit review
-            0. Pick mode  sync: steps 1 and 5 only, no model and no checkout.
-                          Otherwise a full pass if HEAD has no completed pass yet,
+            0. Pick mode  a full pass if HEAD has no completed pass yet,
                           or else reconcile only
             1. Load       PR metadata, diff, checkout at HEAD, config (base branch), history
             2. Verify     open findings, fixed findings whose evidence changed (§6);
@@ -92,29 +91,27 @@ GitHub event
                           repairs, summary
 ```
 
-**A push runs the model; nothing else does.** A push runs a full pass. A
-`workflow_dispatch` with `mode: full` (the default) does the same at the
-current head, for example after a pass that hit its deadline. A **sync run**
-(`mode: sync`) runs no model: it re-reads the threads at the PR's head and
-repairs their resolutions (§6) in seconds. The merge gate it will also
-recompute is in §8. Comments and reviews start no runs: what matters to
-buggrit is whether a thread is resolved, and Actions has no trigger for that
-(`pull_request_review_thread` is webhook-only), so the agent dispatches
-sync after resolving threads.
+**Only a push runs buggrit.** A push runs a full pass. Rerunning that run,
+for example after a pass that hit its deadline, does the same at the
+current head, and so does a `workflow_dispatch`, though a dispatched run's
+check shows on the branch it was dispatched on, not on the PR (§8). Comments and reviews start no runs: what
+matters to buggrit is whether a thread is resolved, and resolving one needs
+no run. It settles the finding at once (§6), and a repository that blocks
+merges on findings does it through GitHub's own conversation-resolution
+rule (§8, "Blocking merges"). Resolutions buggrit owns that a killed run
+left wrong are repaired by the next push's run (§6, "Repair every pass").
 
 **Every run reviews the PR as it is now.** Every run:
 - looks up the PR's **current** head from the API before checking out, never
   the head in the event payload;
-- picks its mode from state, unless it's a sync run: a full pass if that
+- picks its mode from state: a full pass if that
   head has no completed pass, otherwise reconcile only (step 2 plus publish,
   no finder and no review). A reconcile-only run, say after a force-push
   back to a reviewed head, selects findings to verify by the same rules as
   a full pass (§6).
 
-This keeps an invariant: the last run to start in a PR's push group saw the
-latest head, so a pending run replaced by a newer one never loses work. Sync
-runs have a group of their own (§3, "Concurrency"), so they never replace a
-pending push run.
+This keeps an invariant: the last run to start in a PR's group saw the
+latest head, so a pending run replaced by a newer one never loses work.
 
 **Publishing is fenced to the reviewed head.** All model work happens in
 steps 2–4. Before publishing, and again before each state-changing mutation
@@ -150,7 +147,7 @@ publish.Publish(ctx, publish.GitHub, PRRef, *review.Result) (*publish.Posted, er
 The thread state machine itself (§6) is pure: `internal/state` replays a
 thread into a finding's state and decides each step from that state and the
 verifier's verdict, so it's tested without models or GitHub.
-`Workspace` is a read-only view of the checkout (a sync run has none), and
+`Workspace` is a read-only view of the checkout, and
 each `GitHub` is an interface over the calls that step makes, so the engine
 can be tested
 against fakes and reused by other front ends. A local front end would call
@@ -168,11 +165,9 @@ on:
   workflow_dispatch:
     inputs:
       pr: { required: true }
-      mode: { type: choice, options: [full, sync], default: full }
 concurrency:
-  # sync runs never replace a pending push run (§3 "Concurrency")
-  group: ${{ inputs.mode == 'sync' && 'buggrit-sync' || 'buggrit' }}-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.mode == 'sync' }}
+  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -186,18 +181,15 @@ The triggers and the concurrency group stay in the calling workflow,
 because a run enters its group before any job starts. Everything else is
 in the reusable workflow, `.github/workflows/review.yml`, whose one job:
 
-- is named `review`, or `sync` for a sync run, so a sync run's quick
-  success can't hide a failing `review` (§8 "Completion signal"). Through a
-  reusable workflow the check shows as `buggrit / review`, the caller's job
-  name first. It runs only for pushes and dispatches, and skips drafts and
-  fork PRs. A caller that still sends comment or review events gets a
-  skipped run; GitHub doesn't evaluate a skipped job's name, so it shows as
-  the expression's text, not `review`;
+- is named `review` (§8 "Completion signal"). Through a reusable workflow
+  the check shows as `buggrit / review`, the caller's job name first. It
+  runs only for pushes and dispatches, and skips drafts and fork PRs. A
+  caller that still sends comment or review events gets a skipped run;
 - mints the App installation token for the calling repo, and a second
   token that can only read buggrit's contents, for the release download
   ("Packaging" below);
-- looks up the PR's head now, not the event's (§2), and, except for a sync
-  run, checks it out with `fetch-depth: 0` and `persist-credentials: false`;
+- looks up the PR's head now, not the event's (§2), and checks it out with
+  `fetch-depth: 0` and `persist-credentials: false`;
 - runs the composite action (`SnapdragonPartners/buggrit@v0`), passing the
   model key from the `LUNAROUTE_API_KEY` or `BUGGRIT_LLM_API_KEY` secret
   (the config's `api_key_env` names one of them);
@@ -208,7 +200,7 @@ in the reusable workflow, `.github/workflows/review.yml`, whose one job:
 The App token is all it posts with; it uses no `GITHUB_TOKEN` permission
 beyond `contents: read`. A repo on the `GITHUB_TOKEN` fallback ("Identity"
 below) writes its own job around the composite action instead, with
-`pull-requests: write` (and `checks: write` for the gate, §8).
+`pull-requests: write`.
 
 - **Packaging:** a composite action (`action.yml`) that downloads a
   prebuilt release binary for the runner's OS and architecture, checks it
@@ -260,24 +252,16 @@ below) writes its own job around the composite action instead, with
   when `main` has no config (as it did until PR #5 added one). It keeps
   building from source after step 7, so it's the canary: each merge runs
   here before a release carries it anywhere else. It has the triggers, the
-  concurrency groups and the job name shown above.
-- **Concurrency:**
-
-  | Run | Group | `cancel-in-progress` |
-  |---|---|---|
-  | Push, or `mode: full` dispatch | `buggrit-<pr>` | true for `pull_request` (a push cancels the pass in flight), false for a dispatch |
-  | `mode: sync` dispatch | `buggrit-sync-<pr>` | true (latest wins) |
-
-  GitHub keeps one pending run per group, so a sync never bumps a waiting
-  push run. buggrit's own comments trigger nothing, so it needs no group
-  for its own events. Every run reads the threads fresh, and every write is
-  idempotent through the markers, so a sync racing a push run needs no
-  lock.
+  concurrency group and the job name shown above.
+- **Concurrency:** one group per PR, `buggrit-<pr>`. A push cancels the
+  pass in flight (`cancel-in-progress` for `pull_request`); a dispatch
+  waits its turn. GitHub keeps one pending run per group, and the last run
+  to start sees the latest head (§2). buggrit's own comments trigger
+  nothing.
 - **Callers** written for the earlier comment and review triggers must
-  drop them, and add the `mode` input and the sync group, before the
-  release that ships this model: a comment-triggered run in the push group
-  can replace a pending push run, and since the reusable job skips it, that
-  push's pass would wait for the next push or dispatch.
+  drop them before the release that ships this model: a comment-triggered
+  run in the group can replace a pending push run, and since the reusable
+  job skips it, that push's pass would wait for the next push or dispatch.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -296,8 +280,8 @@ below) writes its own job around the composite action instead, with
   | App, Contents: Read and write | yes | yes |
   | Actions `GITHUB_TOKEN`, `contents: read` | yes | no, same error |
 
-  So the App needs **Pull requests: Read and write**, **Contents: Read and
-  write**, and, for the gate check, **Checks: Read and write**. The Actions
+  So the App needs **Pull requests: Read and write** and **Contents: Read and
+  write**. The Actions
   `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
   unresolving is refused, buggrit keeps the state in markers, lists the
   affected threads in the summary as "resolve manually", and carries on.
@@ -359,7 +343,6 @@ error. Settings left out take defaults from code, and `version` is required.
   "convergence": {
     "warn_after_pass": 5
   },
-  "gate": { "fail_on": "none" },
   "identity": { "bot_login": "buggrit-bot[bot]" }
 }
 ```
@@ -399,8 +382,6 @@ Notes:
   error. buggrit sets no default, since the right level depends on the
   model. [buggrit#8](https://github.com/SnapdragonPartners/buggrit/issues/8)
   measured it for dogfooding (§13).
-- `gate.fail_on`: `none | P0 | P1` (§8). The gate fails only while a
-  finding at or above it is open, unresolved and unsettled.
 - `convergence.max_rebuttals` is no longer used, since buggrit doesn't judge
   replies (§6). Strict decoding would make it an error in existing version 1
   configs, so it's accepted, ignored, and warned about in the job log and
@@ -667,7 +648,7 @@ settled ── unresolved ─► its marker state again
   "post marker" and "resolve" or "unresolve". `fixed` threads, and earlier
   versions' `dismissed` ones, should be resolved, and an `open` finding's
   thread that buggrit resolved should be open. A settled thread is left alone, and so is a thread whose resolver
-  GitHub doesn't report. Sync runs repair too. Each transition posts its
+  GitHub doesn't report. Each transition posts its
   reply first and leaves the resolution to repair, so a run killed between
   the two leaves the marker for the next run. GitHub refuses by token, not
   by thread, so after any refusal buggrit reads the thread's current
@@ -858,7 +839,7 @@ reopened.". The verifier's reason follows. A `fixed` reply also names the
 evidence files buggrit will watch. When GitHub refuses a resolve or
 unresolve (§3), the pass's review body lists the threads to change by hand,
 and so does the job summary; so do open findings whose resolver GitHub
-doesn't report (§6). A reconcile-only or sync run posts no pass review. If
+doesn't report (§6). A reconcile-only run posts no pass review. If
 a transition it posted has its resolution refused, or it re-verified fixed
 findings (§6, "Evidence baseline"), it posts a short review with the list
 and the record. A repair that keeps being refused on later runs is listed
@@ -873,98 +854,44 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 ### Completion signal
 - The job's `review` check run tells the agent a push's pass is finished
   (`gh pr checks --watch`). In a repo on the reusable workflow it shows as
-  `buggrit / review` (§3). A sync run reports as `sync`, so its quick
-  success can't hide a failing `review`. `review` says the pass finished,
-  not that the PR is mergeable; the gate says that.
+  `buggrit / review` (§3). It says the pass finished, not that the PR is
+  mergeable; the PR's open threads say that.
 
-### The gate
+### Blocking merges
 
-The optional **gate check** (`gate.fail_on`) is a separate
-`buggrit/findings` check run on the head, created through the Checks API.
-It's the merge signal, and the check to make required, rather than
-`review`. It lands with build step 5 (§12,
-[#32](https://github.com/SnapdragonPartners/buggrit/issues/32)); this is its
-design. **Whether it blocks is the repository's choice, not buggrit's:** a
-repo makes it a required check, or not, and can give its maintainers a
-bypass in the ruleset. Once it's required, GitHub blocks on anything but
-success, including `in_progress` and a check that doesn't exist yet. So
-buggrit's only job is to report honestly: `in_progress` while a pass runs,
-then a conclusion.
+buggrit has no merge check of its own, and the review itself is always
+`COMMENT`. A repository that wants findings to block merges turns on
+**require conversation resolution** in the branch's ruleset. Under the
+thread model (§6), an unresolved buggrit thread is exactly a finding nobody
+has fixed or settled: buggrit resolves a thread once it verifies the fix,
+the author resolves one to settle it, and buggrit unresolves one when a
+fixed defect comes back. So "every conversation resolved" means "no open
+findings", and GitHub enforces it live: resolving the last thread unblocks
+the merge, with no run.
 
-**The gate is red only for findings someone can settle.** A red gate
-always has a workaround that needs no bypass: resolve the threads and
-dispatch sync. When buggrit can't do its job, the gate **fails green**, and
-the check's summary says why. Nobody will adopt a reviewer that blocks
-merges for its own failures. (An earlier design failed closed.)
+The trade-offs, accepted for the simplicity:
 
-The conclusion:
+- **Every thread counts**, advisory findings and other reviewers' threads
+  included, not only blocking ones. Settling an advisory finding takes one
+  resolve.
+- **It doesn't know a pass is running**, so a PR can be merged before
+  buggrit posts its findings. A repository that wants to wait also makes
+  `buggrit / review` a required check. That check fails when the pass is
+  incomplete or the run fails, and rerunning that run clears it: a rerun
+  keeps the PR event, so its check lands on the PR, and it looks up the
+  current head (§2). A dispatch doesn't clear it, since a dispatched run's
+  check belongs to the branch it was dispatched on.
 
-- **`failure`** if and only if some buggrit finding at or above `fail_on`
-  is open, unresolved and unsettled, counted from a fresh read of the
-  threads at write time.
-- **`success`** otherwise. The summary lists anything that weakened it:
-  - the pass at the head was incomplete (deadline), or there's no pass at
-    the head because the run failed;
-  - `fixed` findings whose evidence changed since their baseline (§6) and
-    that weren't re-verified at this head. They're selected again on the
-    next push;
-  - threads whose resolver GitHub doesn't report, or whose unresolve GitHub
-    refused. They're left out of the count and listed for a person.
-
-Who writes it:
-
-| When | What |
-|---|---|
-| A push run starts | Sets the gate on its head to `in_progress` |
-| A push run ends, however it ends (complete, incomplete, or an error buggrit caught) | Concludes it from the rule above |
-| The binary crashes or the job times out | A final `if: always()` step runs sync in **cleanup mode**: the active-run check below leaves out the containing run (`GITHUB_RUN_ID`), so the run concludes its own gate, while any other active run for the head still owns it. The summary says "not reviewed: the run failed". |
-| A sync run | Asks the Actions API whether a buggrit push or `mode: full` run for the head is queued or in progress. **If one is**, it leaves the gate alone: that run owns it, and it creates none if the head has none yet. **If none is**, it computes the conclusion by the same rule and writes it: it creates the gate if it's missing, or updates it otherwise, **even if it's already concluded**. That's how resolving a red gate's blocking threads and dispatching sync turns it green. If the head has no pass, the summary says "not reviewed". |
-
-The last row recovers every way a push run can end without concluding the
-gate: it failed before creating the gate (token minting, binary install);
-its runner was lost, so not even `always()` ran (GitHub marks the run
-failed once the runner stops responding); or a newer push cancelled it,
-and that push's run owns the new head. Even a recovered gate stays red
-while a blocking finding is open: a crashed run never turns findings green.
-Reading run status is an Actions concern, so it lives in `cmd/buggrit`,
-not the engine, and the job's `GITHUB_TOKEN` needs `actions: read`.
-
-Both kinds of run write the gate from a fresh read of the threads, so
-writes are idempotent, and no database or lock is needed. The races:
-
-- **A sync run while a push run for the head is queued or in flight:** the
-  Actions API shows it, so sync leaves the gate alone.
-- **A sync run reads "no active run" just before a push run starts:** sync
-  may conclude the gate, and the push run then sets it back to
-  `in_progress`. For those few seconds the gate shows a conclusion computed
-  from a fresh read, so it can only be green if nothing blocking was open.
-- **A push run's final write races a sync run:** a stale read can miss a
-  later resolution, so the gate reports red. Another sync fixes it.
-- **A person *unresolves* a thread between a run's last read and its
-  write:** the gate reports green from the stale read until the next sync
-  or push. That's the fail-green side, accepted under the principle.
-
-**Residual gap:** if buggrit can't start at all, for example because its
-release is broken, neither the `always()` step nor sync can run, and a
-required gate stays unconcluded. The workaround is the repository's: a
-ruleset bypass, or making the check optional until buggrit is fixed.
-Nothing inside the workflow can do better without a hosted service.
-
-**Fork PRs:** the workflow skips them, and a fork's `GITHUB_TOKEN` can't
-create check runs, so a repo that requires the gate blocks fork PRs until
-a maintainer bypasses it. A repo that takes fork PRs shouldn't require the
-gate, or should give maintainers a bypass.
-
-With `fail_on: P1`, a green gate with a complete pass at the head is §7 rule
-6's `converged`. Today's status line (`complete at …`) reports what a pass
-did, not those totals; the `converged` line and the summary ledger land in
-build step 5 too. The review itself is always `COMMENT`. The gate is off by
-default.
+An earlier design had a separate `buggrit/findings` check run, with a
+severity threshold, an `in_progress` state while a pass ran, fail-green
+rules and model-free sync runs to refresh it. It was dropped before it
+shipped: the conversation-resolution rule gives nearly the same signal
+without any of that (§13).
 
 ### Other outputs
 - Job summary (`$GITHUB_STEP_SUMMARY`): per-stage model, tokens, tool
   iterations, wall time. Useful for tuning even when tokens are free.
-- `buggrit review` exits 0 for a complete pass, a sync run, a skipped one
+- `buggrit review` exits 0 for a complete pass, a skipped one
   (the head already has a complete pass and no earlier finding needs
   attention, the head moved, or there's no config on the base branch), and
   1 for an incomplete pass, earlier findings left unverified, or an error,
@@ -1089,7 +1016,7 @@ for those.
     report;
   - a thread settled while the run that judged it fixed was still going;
   - a fixed finding that regresses, and a run killed between its regressed
-    reply and its unresolve (repaired by the next run, sync included);
+    reply and its unresolve (repaired by the next run);
   - a re-verification that moves the evidence baseline;
   - force-push;
   - a pass interrupted by the deadline (the baseline must not advance);
@@ -1114,7 +1041,7 @@ for those.
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
 4. **Verifier and thread lifecycle:** the state machine in §6.
 5. **Convergence controls:** dedupe (including other reviewers' threads),
-   class sweep, the non-convergence warning, summary ledger, gate check.
+   class sweep, the non-convergence warning, summary ledger.
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
    GitHub won't render very large diffs (`ErrDiffTooLarge`); for those the
    diff comes from the checkout (`git diff <merge-base>..<head>`) instead.
@@ -1136,8 +1063,10 @@ reply-triggered runs. Dogfooding then showed comment-triggered runs bumping
 pending push runs out of the queue, the completion signal going missing
 for private org members ([#34](https://github.com/SnapdragonPartners/buggrit/issues/34)),
 and a model relitigating the author's decisions, so the next PR replaced
-replies and rebuttals with settling by resolution, push-only runs and
-model-free sync runs (§2, §6), and designed the fail-green gate (§8).
+replies and rebuttals with settling by resolution and push-only runs
+(§2, §6). The PR after that dropped the planned gate check and the sync
+runs that refreshed it: a repository blocks merges on findings by
+requiring conversation resolution (§8, "Blocking merges").
 Reopening a fixed finding that comes back as
 a fingerprint match (§7 rule 3) stays with dedupe in step 5. Until then such
 a candidate is dropped as already raised. The verifier still reopens a
@@ -1197,10 +1126,16 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   cheap precautions (§10).
 - **Settle by resolution** (October 2026): a thread resolved by anyone but
   buggrit settles its finding, and replies carry no state and don't reach
-  the verifier. Only a push runs the model; sync runs are model-free and
-  dispatched. The gate fails green: it's red only for findings someone can
-  settle (§2, §6, §8). Unresolving a `fixed` thread doesn't reopen it, since
-  buggrit owns those threads.
+  the verifier. Only a push (or a dispatch) runs buggrit (§2, §6).
+  Unresolving a `fixed` thread doesn't reopen it, since buggrit owns those
+  threads.
+- **No gate check** (October 2026): buggrit adds no merge check of its
+  own. A repository that wants findings to block merges requires
+  conversation resolution, which GitHub enforces live, with no run (§8,
+  "Blocking merges"). A designed `buggrit/findings` gate, with a severity
+  threshold, fail-green rules and model-free sync runs to refresh it, was
+  dropped before it shipped: it gave nearly the same signal at a much
+  higher cost in moving parts.
 - **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).
 - **Terminal tools** use `toolloop`'s terminal-tool support

@@ -28,8 +28,8 @@ func TestParseMinimalAppliesDefaults(t *testing.T) {
 	if !slices.Equal(cfg.Review.Exclude, def.Review.Exclude) {
 		t.Errorf("exclude = %v, want %v", cfg.Review.Exclude, def.Review.Exclude)
 	}
-	if cfg.Convergence != def.Convergence || cfg.Gate != def.Gate || cfg.Identity != def.Identity {
-		t.Errorf("convergence/gate/identity not defaulted: %+v %+v %+v", cfg.Convergence, cfg.Gate, cfg.Identity)
+	if cfg.Convergence != def.Convergence || cfg.Identity != def.Identity {
+		t.Errorf("convergence/identity not defaulted: %+v %+v", cfg.Convergence, cfg.Identity)
 	}
 	if got := cfg.Models.Default.RequestTimeout.Std(); got != 10*time.Minute {
 		t.Errorf("request_timeout = %v, want 10m", got)
@@ -58,8 +58,7 @@ func TestParseOverridesDefaults(t *testing.T) {
 	  "version": 1,
 	  "models": {"default": {"provider": "ollama", "model": "qwen3-coder:30b", "request_timeout": "90s"}},
 	  "limits": {"profile": "budget", "pass_deadline": "20m", "max_tokens_per_pass": 500000},
-	  "review": {"exclude": [], "min_severity": "P1"},
-	  "gate": {"fail_on": "P1"}
+	  "review": {"exclude": [], "min_severity": "P1"}
 	}`))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -132,7 +131,7 @@ func TestParseRejects(t *testing.T) {
 		{"numeric duration", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"pass_deadline": 1800},`, 1), "duration must be a string"},
 		{"bad duration", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"pass_deadline": "soon"},`, 1), `invalid duration "soon"`},
 		{"bad severity", strings.Replace(minimal, `"version": 1,`, `"version": 1, "review": {"min_severity": "P4"},`, 1), "min_severity"},
-		{"bad gate", strings.Replace(minimal, `"version": 1,`, `"version": 1, "gate": {"fail_on": "P2"}`+",", 1), "gate.fail_on"},
+		{"gate", strings.Replace(minimal, `"version": 1,`, `"version": 1, "gate": {"fail_on": "P1"}`+",", 1), `unknown field "gate"`},
 		{"zero concurrency", strings.Replace(minimal, `"version": 1,`, `"version": 1, "limits": {"max_concurrency": 0},`, 1), "max_concurrency"},
 		{"bad include glob", strings.Replace(minimal, `"version": 1,`, `"version": 1, "review": {"include": ["src/**x"]},`, 1), "review.include: pattern"},
 		{"bad exclude glob", strings.Replace(minimal, `"version": 1,`, `"version": 1, "review": {"exclude": ["[ab"]},`, 1), "review.exclude: pattern"},
@@ -187,7 +186,7 @@ func TestZeroIterationsMeansNoCeiling(t *testing.T) {
 
 func TestValidationReportsEveryProblem(t *testing.T) {
 	_, err := Parse([]byte(`{"version": 1, "models": {"default": {"provider": "anthropic", "model": "m"}},
-	  "limits": {"max_concurrency": 0}, "gate": {"fail_on": "x"}}`))
+	  "limits": {"max_concurrency": 0}, "review": {"min_severity": "x"}}`))
 	var ve *ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("error = %v, want *ValidationError", err)

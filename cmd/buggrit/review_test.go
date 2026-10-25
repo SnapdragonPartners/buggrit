@@ -168,37 +168,6 @@ func TestReviewResolvingSettles(t *testing.T) {
 	}
 }
 
-// A sync run uses no model and no checkout: it repairs thread resolutions
-// at the PR's head (design §2).
-func TestReviewSync(t *testing.T) {
-	e := setupReview(t, submit(finding))
-	if code, out, errOut := e.run(t); code != 0 {
-		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
-	}
-	th := e.fake.PR(7).Threads[0]
-	// An open finding's thread buggrit resolved: a run killed between its
-	// regressed reply and its unresolve.
-	e.fake.ResolveAs(7, th.ID, true, githubtest.DefaultLogin)
-	calls := len(e.model.Calls())
-	e.deps.head = func(string) (string, error) { t.Error("sync read the checkout"); return head, nil }
-	e.deps.clients = func(*config.Config, modelObserver) (*llm.Clients, error) {
-		t.Error("sync made model clients")
-		return &llm.Clients{}, nil
-	}
-	e.env["BUGGRIT_MODE"] = "sync"
-	code, out, errOut := e.run(t)
-	if code != 0 || !strings.Contains(out, "synced at 1111111: earlier findings: 1 repaired") || th.Resolved || len(e.model.Calls()) != calls {
-		t.Fatalf("sync: exit %d, resolved %v\n%s\n%s", code, th.Resolved, out, errOut)
-	}
-	if code, out, _ = e.run(t); code != 0 || !strings.Contains(out, "synced at 1111111: nothing to repair") {
-		t.Errorf("second sync: exit %d, %s", code, out)
-	}
-	summary, err := os.ReadFile(e.summary)
-	if err != nil || !strings.Contains(string(summary), "## buggrit sync") {
-		t.Errorf("job summary = %s, %v", summary, err)
-	}
-}
-
 // A config that still sets convergence.max_rebuttals runs, with a warning.
 func TestReviewWarnsAboutMaxRebuttals(t *testing.T) {
 	e := setupReview(t, submit(finding))
@@ -279,7 +248,6 @@ func TestReviewArgs(t *testing.T) {
 		"no repo":  func() { delete(e.env, "GITHUB_REPOSITORY") },
 		"no pr":    func() { delete(e.env, "BUGGRIT_PR") },
 		"bad repo": func() { e.env["GITHUB_REPOSITORY"] = "nope" },
-		"bad mode": func() { e.env["BUGGRIT_MODE"] = "reconcile" },
 	} {
 		saved := map[string]string{}
 		for k, v := range e.env {
