@@ -595,9 +595,11 @@ it.
 - **Unresolving a settled thread un-settles it.** The finding is open again,
   and the next push verifies it. Replay reads the current resolution, so
   nothing else is needed.
-- **buggrit never resolves a thread that's already resolved**, so
-  `resolvedBy` keeps the settler. Before each resolve it reads the thread
-  again. That covers the normal race: an agent resolves a thread after a
+- **buggrit never resolves a thread that's already resolved, or undoes a
+  resolution it didn't make**, so `resolvedBy` keeps the settler. Before
+  each resolve or unresolve it reads the thread's resolution again, and
+  unresolves only a thread still resolved by buggrit. If that read fails,
+  the run fails rather than change the thread blind. That covers the normal race: an agent resolves a thread after a
   push run selected it, and the run then judges it fixed. buggrit posts its
   `fixed` reply, but the thread stays the agent's, so the finding stays
   settled, and a later change to its evidence files doesn't re-verify or

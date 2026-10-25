@@ -70,12 +70,12 @@ func (s *Server) graphql(r *http.Request, login string) (int, any) {
 		return data(map[string]any{"node": map[string]any{
 			"comments": s.commentPage(t, cursorStart(vars["after"])),
 		}})
-	case "ThreadResolved":
+	case "ThreadResolution":
 		t := s.findThread(vars["id"])
 		if t == nil {
 			return data(map[string]any{"node": nil})
 		}
-		return data(map[string]any{"node": map[string]any{"isResolved": t.Resolved}})
+		return data(map[string]any{"node": map[string]any{"isResolved": t.Resolved, "resolvedBy": resolver(t)}})
 	case "ResolveThread", "UnresolveThread":
 		if s.ForbidResolve {
 			return gqlError("FORBIDDEN", "Resource not accessible by integration")
@@ -129,6 +129,15 @@ func nullable(n int) any {
 	return n
 }
 
+// resolver renders a thread's resolvedBy. GitHub reports a bot resolver as
+// a User whose login keeps "[bot]".
+func resolver(t *Thread) any {
+	if !t.Resolved || t.ResolvedBy == "" {
+		return nil
+	}
+	return map[string]any{"__typename": "User", "login": t.ResolvedBy}
+}
+
 func (s *Server) threadNode(t *Thread) map[string]any {
 	subject := "LINE"
 	if t.FileLevel {
@@ -142,13 +151,8 @@ func (s *Server) threadNode(t *Thread) map[string]any {
 	if t.FileLevel {
 		side = nil
 	}
-	// GitHub reports a bot resolver as a User whose login keeps "[bot]".
-	var resolvedBy any
-	if t.Resolved && t.ResolvedBy != "" {
-		resolvedBy = map[string]any{"__typename": "User", "login": t.ResolvedBy}
-	}
 	return map[string]any{
-		"id": t.ID, "isResolved": t.Resolved, "resolvedBy": resolvedBy, "isOutdated": t.Outdated, "path": t.Path,
+		"id": t.ID, "isResolved": t.Resolved, "resolvedBy": resolver(t), "isOutdated": t.Outdated, "path": t.Path,
 		"line": line, "originalLine": nullable(t.OriginalLine), "startLine": nullable(t.StartLine),
 		"diffSide": side, "subjectType": subject,
 		"comments": s.commentPage(t, 0),

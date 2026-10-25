@@ -244,6 +244,58 @@ func TestLifecycleSettledMidRun(t *testing.T) {
 	}
 }
 
+// A person settling a thread buggrit resolved, while the run that finds
+// it regressed is still going, keeps their resolution: buggrit unresolves
+// only a thread still resolved by buggrit (§6).
+func TestLifecycleSettledDuringRegression(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.push("cache.go")
+	if p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go")); p.err != nil || th.ResolvedBy != githubtest.DefaultLogin {
+		t.Fatalf("fix: %v, resolved by %q", p.err, th.ResolvedBy)
+	}
+	w.push("cache.go")
+	verifier := &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		w.fake.ResolveAs(7, th.ID, true, "dratner") // unresolved and resolved again by a person
+		return testllm.ToolCallResponse("1", "submit_verdicts", verdict(id, "open", "The initialization is gone.")), nil
+	}}
+	pref := review.PRRef{Repo: ref.Repo, Number: 7, HeadSHA: w.head()}
+	res, err := review.Review(context.Background(), pref, w.ws, w.gh, &review.Options{Config: &w.cfg, Find: model("submit_findings", ""), Verify: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted, err := Publish(context.Background(), w.gh, pref, res)
+	if err != nil || posted.Unresolved != 0 || !th.Resolved || th.ResolvedBy != "dratner" || lastTransition(t, th).Kind != state.KindRegressed {
+		t.Fatalf("unresolved %d, resolved %v by %q, err %v", posted.Unresolved, th.Resolved, th.ResolvedBy, err)
+	}
+	w.push("cache.go")
+	if p := w.pass("", ""); p.err != nil || len(p.res.Checks) != 0 || p.posted.Unresolved != 0 {
+		t.Fatalf("the settled finding was touched: %+v, %+v", p.res.Checks, p.posted)
+	}
+}
+
+// If buggrit can't read a thread's resolution before resolving it, it
+// doesn't resolve blind, which could take a settler's resolution (§6).
+func TestLifecycleResolveNeedsFreshRead(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.push("cache.go")
+	resolves := 0
+	w.fake.OnRequest = func(op string) int {
+		switch op {
+		case "graphql ThreadResolution":
+			return http.StatusBadGateway
+		case "graphql ResolveThread":
+			resolves++
+		}
+		return 0
+	}
+	p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go"))
+	if p.err == nil || resolves != 0 || th.Resolved {
+		t.Fatalf("err %v, %d resolves, resolved %v", p.err, resolves, th.Resolved)
+	}
+}
+
 // A run killed between a regressed reply and its unresolve leaves an open
 // finding on a thread buggrit resolved. The next run, even a sync, reopens
 // it without a second reply (§6).
@@ -364,6 +416,23 @@ func TestLifecycleUnknownResolver(t *testing.T) {
 	reviews := w.fake.PR(7).Reviews
 	if body := reviews[len(reviews)-1].Body; !strings.Contains(body, "GitHub doesn't say by whom") || !strings.Contains(body, "- "+id+" ") {
 		t.Errorf("review body:\n%s", body)
+	}
+}
+
+// A fixed finding whose thread's resolver GitHub doesn't report, found
+// regressed, is open but left resolved, so it's listed for a person too.
+func TestLifecycleUnknownResolverRegressed(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.push("cache.go")
+	if p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go")); p.err != nil {
+		t.Fatal(p.err)
+	}
+	w.fake.ResolveAs(7, th.ID, true, "")
+	w.push("cache.go")
+	p := w.pass("", verdict(id, "open", "The initialization is gone."))
+	if p.err != nil || !th.Resolved || lastTransition(t, th).Kind != state.KindRegressed || len(p.res.UnknownResolver) != 1 {
+		t.Fatalf("regressed: %+v, %v; unknown %d", p.posted, p.err, len(p.res.UnknownResolver))
 	}
 }
 

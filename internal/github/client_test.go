@@ -228,9 +228,15 @@ func TestReplyResolveUnresolve(t *testing.T) {
 	if got := readThread(t, c, th.ID); got.ResolvedBy != "dratner" {
 		t.Errorf("resolved by %q, want dratner", got.ResolvedBy)
 	}
+	if r, err := c.ThreadResolution(ctx, th.ID); err != nil || !r.Resolved || r.By != "dratner" {
+		t.Errorf("ThreadResolution = %+v, %v", r, err)
+	}
 	fake.ResolveAs(7, th.ID, true, "")
 	if got := readThread(t, c, th.ID); !got.IsResolved || got.ResolvedBy != "" {
 		t.Errorf("ghost resolver: resolved=%v by %q", got.IsResolved, got.ResolvedBy)
+	}
+	if r, err := c.ThreadResolution(ctx, th.ID); err != nil || !r.Resolved || r.By != "" {
+		t.Errorf("ghost ThreadResolution = %+v, %v", r, err)
 	}
 }
 

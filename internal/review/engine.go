@@ -147,11 +147,7 @@ func (p *pass) run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 	res, cfg := p.res, p.cfg
-	for i := range p.tracked {
-		if t := &p.tracked[i]; t.State == state.StateOpen && t.ResolverUnknown {
-			res.UnknownResolver = append(res.UnknownResolver, t)
-		}
-	}
+	defer func() { res.UnknownResolver = unknownResolver(p.tracked, res.Transitions) }()
 	if p.opts.Sync {
 		// Repairs need no model and no diff.
 		res.Sync = true
@@ -213,6 +209,29 @@ func (p *pass) load(ctx context.Context) error {
 	}
 	p.tracked = state.Replay(p.threads, p.cfg.Identity.BotLogin)
 	return nil
+}
+
+// unknownResolver lists the findings open after this pass's transitions
+// whose threads are resolved by an account GitHub doesn't report. buggrit
+// never unresolves those, so a person decides (§6). That includes a fixed
+// finding the pass found regressed.
+func unknownResolver(tracked []state.Tracked, trs []Transition) []*state.Tracked {
+	kinds := map[*state.Tracked]state.Kind{}
+	for i := range trs {
+		kinds[trs[i].Tracked] = trs[i].Kind
+	}
+	var out []*state.Tracked
+	for i := range tracked {
+		t := &tracked[i]
+		st := t.State
+		if k := kinds[t]; k != "" {
+			st = k.To()
+		}
+		if st == state.StateOpen && t.ResolverUnknown && !t.Settled {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // onToolCall is opts.OnToolCall for one stage.

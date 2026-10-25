@@ -20,7 +20,7 @@ type GitHub interface {
 	Reply(ctx context.Context, repo github.Repo, number int, commentID int64, body string) (*github.Comment, error)
 	ResolveThread(ctx context.Context, threadID string) error
 	UnresolveThread(ctx context.Context, threadID string) error
-	ThreadResolved(ctx context.Context, threadID string) (bool, error)
+	ThreadResolution(ctx context.Context, threadID string) (github.Resolution, error)
 }
 
 // Posted reports what Publish created.
@@ -191,9 +191,14 @@ func publishTransition(ctx context.Context, gh GitHub, fence *github.Fence, ref 
 }
 
 // setResolution resolves or unresolves tr's thread if it wasn't already as
-// wanted when read. GitHub refusing is recorded for a person: it refuses by
-// token, not by thread, so a refusal is checked against the thread as it
-// is now, and one already as wanted was refused nothing (§3).
+// wanted when read. First it reads the thread again: someone may have
+// resolved it since, settling the finding, and buggrit never resolves a
+// resolved thread again or undoes a resolution it didn't make, so the
+// settler keeps it (§6). It unresolves only a thread still resolved by
+// whoever resolved it when read, which replay established was buggrit.
+// GitHub refusing is recorded for a person: it refuses by token, not by
+// thread, so a refusal is checked against the thread as it is now, and one
+// already as wanted was refused nothing (§3).
 func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, out *Posted) error {
 	if !tr.Repair() {
 		return nil
@@ -203,21 +208,21 @@ func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *revi
 	}
 	t := tr.Tracked
 	resolve := tr.Want == state.Resolve
-	var err error
+	cur, err := gh.ThreadResolution(ctx, t.Thread.ID)
+	if err != nil {
+		return fmt.Errorf("publish %s: %w", t.ID, err)
+	}
+	if !stillWanted(tr, cur) {
+		return nil
+	}
 	if resolve {
-		// Someone may have resolved the thread since it was read, settling
-		// the finding. buggrit never resolves a resolved thread again, so
-		// the resolver stays theirs (§6).
-		if cur, rerr := gh.ThreadResolved(ctx, t.Thread.ID); rerr == nil && cur {
-			return nil
-		}
 		err = gh.ResolveThread(ctx, t.Thread.ID)
 	} else {
 		err = gh.UnresolveThread(ctx, t.Thread.ID)
 	}
 	switch {
 	case github.IsForbidden(err):
-		if cur, rerr := gh.ThreadResolved(ctx, t.Thread.ID); rerr == nil && cur == resolve {
+		if now, rerr := gh.ThreadResolution(ctx, t.Thread.ID); rerr == nil && now.Resolved == resolve {
 			return nil
 		}
 		// Still not as wanted, or unknown: a person has to do it.
@@ -230,6 +235,18 @@ func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *revi
 		out.Unresolved++
 	}
 	return nil
+}
+
+// stillWanted reports whether tr's resolution change is still needed and
+// still buggrit's to make, given the thread's resolution now: not already
+// as wanted, and, for an unresolve, still resolved by whoever resolved it
+// when read. Anyone else's resolution since settles the finding, or is
+// theirs to decide (§6).
+func stillWanted(tr *review.Transition, cur github.Resolution) bool {
+	if tr.Want == state.Resolve {
+		return !cur.Resolved
+	}
+	return cur.Resolved && state.SameLogin(cur.By, tr.Tracked.Thread.ResolvedBy)
 }
 
 // comment renders c as a review comment at its anchor.
