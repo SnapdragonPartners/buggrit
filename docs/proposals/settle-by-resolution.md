@@ -73,8 +73,8 @@ change to its evidence files doesn't re-verify or reopen it.
 | any | resolved, `resolvedBy` not buggrit | **Settled.** Accepted as is, whatever the reason | Never verified or reopened. Not counted by the gate. Dedupe never raises it again. |
 | fixed | resolved by buggrit | Fixed | Re-verified only if its evidence files change since its baseline (below). Reopened as `regressed` if the defect is back. |
 | fixed | unresolved | A run killed before its resolve, or someone unresolved it | Repair resolves it (buggrit owns `fixed` threads). |
-| open (regressed or reopened) | resolved by buggrit | A run killed between the `regressed` marker and the unresolve | Repair unresolves it. If GitHub refuses, it's listed for manual unresolve and counts as open for the gate. |
-| any | resolved, `resolvedBy` unknown (null, such as a deleted account) | Can't tell | Not settled and not unresolved. Counts as open for the gate and is listed in the summary, failing toward "not done" like design §6's unknown resolution state. |
+| open (regressed or reopened) | resolved by buggrit | A run killed between the `regressed` marker and the unresolve | Repair unresolves it. If GitHub refuses, it's listed for manual unresolve in the summary and the gate's, and left out of the gate's count (fail green). |
+| any | resolved, `resolvedBy` unknown (null, such as a deleted account) | Can't tell | Not settled, so it's still verified, but never unresolved. Left out of the gate's count and listed for a person (fail green). |
 
 - **Replies are never a state signal.** No rebuttals, no `needs_human`,
   no verifier `dismissed` verdict, and no `max_rebuttals`.
@@ -114,27 +114,55 @@ change to its evidence files doesn't re-verify or reopen it.
 
 ### The gate is the merge signal
 
-The `buggrit/findings` check (design §8, built in #32) is the one to make
-required. It's `success` when all of these hold:
+The `buggrit/findings` check (design §8, built in #32) is the merge
+signal. **Whether it blocks is the repository's choice, not buggrit's:** a
+repo makes it a required check, or not, and can give its maintainers a
+bypass in the ruleset. Once it's required, GitHub blocks on anything but
+success, including `in_progress` and a check that doesn't exist yet. So
+buggrit's only job is to report honestly: `in_progress` while a pass runs,
+then a conclusion.
 
-1. **The current head has a complete pass.** A pass at an earlier head
-   doesn't count, so a push after green needs its own pass. An
-   incremental pass with nothing in scope (say, a merge from the base
-   branch) completes without the finder, in seconds.
-2. **No fixed finding is left unverified.** That means a `fixed`,
-   unsettled finding whose evidence files changed since its evidence
-   baseline (above). Sync computes this without a model, from the pass
-   markers and the compare API, by the same selection rules as design §6.
-3. **No open, unresolved buggrit finding at or above `fail_on`.**
+**Principle (Dan, 2026-10-25): the gate is red only for findings someone
+can settle.** A red gate always has a workaround that needs no bypass:
+resolve the thread and dispatch sync. When buggrit can't do its job, the
+gate **fails green**, and the check's summary says why. Nobody will adopt
+a reviewer that blocks merges for its own failures. This reverses design
+§8's fail-closed choice ("every gap fails toward not done").
 
-Otherwise it's `failure`. A push run sets it to `in_progress` when it
-starts. **While pass latency is bad**, `gate.accept_incomplete: true`
-(default `false`) lets an incomplete pass at the head satisfy condition 1.
-It's a temporary switch, not the rule, because "incomplete" means part of
-the change wasn't reviewed. The real fix is latency (#19).
+The conclusion:
+
+- **`failure`** if and only if some buggrit finding at or above `fail_on`
+  is open, unresolved and unsettled, counted from a fresh read of the
+  threads at write time.
+- **`success`** otherwise. The summary lists anything that weakened it:
+  - the pass at the head was incomplete (deadline), or there's no pass at
+    the head because the run failed;
+  - `fixed` findings whose evidence changed since their baseline (above)
+    and that weren't re-verified at this head. They're selected again on
+    the next push;
+  - threads whose `resolvedBy` is unknown, or whose unresolve GitHub
+    refused. They're left out of the count and listed for a person.
+
+Who writes it:
+
+| When | What |
+|---|---|
+| A push run starts | Sets the gate on its head to `in_progress` |
+| A push run ends, however it ends (complete, incomplete, or an error buggrit caught) | Concludes it from the rule above |
+| The binary crashes or the job times out | A final `if: always()` step runs sync, which concludes the gate with "not reviewed: the run failed" |
+| The runner is lost, so not even `always()` runs | A sync dispatch concludes an `in_progress` gate older than the job timeout as success, "not reviewed" |
+| A sync dispatch, otherwise | Concludes the gate if the head has one that isn't `in_progress`. Leaves a younger `in_progress` gate alone, since a push run is working, and creates none on a head that has no gate. |
+
+`gate.accept_incomplete` isn't needed: an incomplete pass never fails the
+gate on its own.
 
 `review` remains the "this push's pass has finished" signal for an agent
 waiting on `gh pr checks --watch`. The gate is what says "mergeable".
+
+**Known gap: fork PRs.** The workflow skips them, and a fork's
+`GITHUB_TOKEN` can't create check runs, so a repo that requires the gate
+blocks fork PRs until a maintainer bypasses it. A repo that takes fork PRs
+shouldn't require the gate, or should give maintainers a bypass.
 
 ### Concurrency
 
@@ -149,19 +177,17 @@ job-name expression and the `outside event` naming (design §3, §8) all go
 away.
 
 Both kinds of run write the gate from a fresh read of the threads, so
-writes are idempotent. Every race is covered:
+writes are idempotent. The races:
 
-- **A sync run while a push run is in flight at a newer head:** sync looks
-  up the current head, finds no complete pass there, and **leaves the gate
-  untouched**. It can't turn a running review green.
-- **A push run's final write races a sync run:** the push run reads the
-  threads again just before writing. A stale read misses a resolution
-  that happened after it, so it reports `failure`, which is the safe
-  side. Another sync corrects it.
-- **One race lands on the unsafe side:** a person *unresolves* a thread
-  between the push run's last read and its write. The gate then reports
-  green from the stale read until the next sync or push. Unresolving
-  isn't part of the agent flow, so this is accepted (settled question 3).
+- **A sync run while a push run is in flight at the head:** the gate is a
+  young `in_progress`, so sync leaves it alone. A sync at a head whose push
+  run hasn't started yet finds no gate and creates none.
+- **A push run's final write races a sync run:** a stale read can miss a
+  resolution that happened after it, so the gate reports red. Another sync
+  fixes it, so a workaround exists.
+- **A person *unresolves* a thread between a run's last read and its
+  write:** the gate reports green from the stale read until the next sync
+  or push. That's the fail-green side, accepted under the principle.
 
 **No database is needed.** The queue churn is on GitHub's side, and
 correctness rests on fresh reads, not locks. The optional store (#28)
@@ -202,7 +228,7 @@ stays for telemetry and the ledger (#26, #30).
   `dismissed` and `settled` stay terminal.
 - **Config:** strict decoding would make `convergence.max_rebuttals` an
   error in existing configs. For version 1 it's accepted, ignored, and
-  warned about in the job summary. `gate.accept_incomplete` is new.
+  warned about in the job summary.
 - **Old caller workflows** (morris, maestro-llms) still send comment and
   review events. The binary treats those events as sync, which keeps
   them cheap and model-free. They still share the push group until the
@@ -213,8 +239,9 @@ stays for telemetry and the ledger (#26, #30).
 
 - **#34:** closed by this, since nothing comment-triggered reports any
   more.
-- **#32** (warn and gate): the gate conditions above replace its
-  `needs_human` clause, and the sync mode belongs with it.
+- **#32** (warn and gate): the fail-green gate above replaces its
+  fail-closed conditions and its `needs_human` clause, and the sync mode
+  belongs with it.
 - **#30** (summary, ledger, converged line): the `awaiting human` status
   line goes away.
 - **#31** (dedupe): "dismissed" becomes "dismissed or settled by
@@ -239,5 +266,6 @@ stays for telemetry and the ledger (#26, #30).
    replies only, for their value as rebuttals. What the models get as
    input (comments, other reviewers' threads, the PR body) deserves its
    own decision record.
-3. **The stale-green race is accepted** (see Concurrency).
+3. **The stale-green race is accepted.** More broadly: if a race or gap
+   can't be resolved, fail green (see "The gate is the merge signal").
 4. **Gate condition 1 stays at the current head.**
