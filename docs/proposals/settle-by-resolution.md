@@ -149,8 +149,8 @@ Who writes it:
 |---|---|
 | A push run starts | Sets the gate on its head to `in_progress` |
 | A push run ends, however it ends (complete, incomplete, or an error buggrit caught) | Concludes it from the rule above |
-| The binary crashes or the job times out | A final `if: always()` step runs sync, which concludes the gate by the rule above, with "not reviewed: the run failed" in the summary |
-| A sync run | Asks the Actions API whether a buggrit push or `mode: full` run for the head is queued or in progress. **If one is**, it leaves the gate alone: that run owns it, and it creates none if the head has none yet. **If none is**, it creates the gate if it's missing, or concludes it if it isn't concluded, by the same rule as every writer. If the head has no pass, the summary says "not reviewed". |
+| The binary crashes or the job times out | A final `if: always()` step runs sync in **cleanup mode**: the active-run check below leaves out the containing run (`GITHUB_RUN_ID`), so the run concludes its own gate, while any other active run for the head still owns it. The summary says "not reviewed: the run failed". |
+| A sync run | Asks the Actions API whether a buggrit push or `mode: full` run for the head is queued or in progress. **If one is**, it leaves the gate alone: that run owns it, and it creates none if the head has none yet. **If none is**, it computes the conclusion by the same rule as every writer and writes it: it creates the gate if it's missing, or updates it otherwise, **even if it's already concluded**. That's how resolving a red gate's blocking threads and dispatching sync turns it green. If the head has no pass, the summary says "not reviewed". |
 
 The last row is what recovers every way a push run can end without
 concluding the gate:
