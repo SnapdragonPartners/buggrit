@@ -46,9 +46,9 @@ type Options struct {
 	// OnToolCall, if set, observes each tool call, with the stage that made
 	// it. With both stages running, it's called from both, concurrently.
 	OnToolCall func(config.Stage, toolloop.ToolCallEvent)
-	// Team, if set, is the run's Team, so a front end that already checked
-	// who started the run shares its permission lookups; nil makes one.
-	Team *Team
+	// Sync runs no model: it re-reads the threads and repairs their
+	// resolutions (design §2). It needs no Workspace.
+	Sync bool
 }
 
 // Result is a pass's outcome, ready to publish.
@@ -72,6 +72,14 @@ type Result struct {
 	// Transitions what the pass does with earlier findings (§6).
 	Checks      []Check
 	Transitions []Transition
+	// Verified maps each fixed finding the verifier found still fixed to
+	// the evidence files of that verdict; the pass's review records it
+	// (§6, "Evidence baseline").
+	Verified map[string][]string
+	// UnknownResolver lists open findings whose threads are resolved by an
+	// account GitHub no longer reports. buggrit can't tell whether they're
+	// settled and never unresolves them, so a person decides (§6).
+	UnknownResolver []*state.Tracked
 	// Unverified lists the checks the verifier didn't reach. They keep
 	// their state, and the next run selects them again (§6).
 	Unverified []string
@@ -85,6 +93,8 @@ type Result struct {
 	Duplicates     int
 	BelowThreshold int
 	Skipped        bool
+	// Sync is set for a sync run (Options.Sync).
+	Sync bool
 	// ReconcileOnly is set when the head already had a complete pass: the
 	// run verifies and publishes transitions, with no finder and no review
 	// (§2, step 0).
@@ -96,9 +106,10 @@ type Result struct {
 }
 
 // Done reports whether the pass finished everything it set out to do: its
-// whole scope searched and every selected finding verified. The status
+// whole scope searched and every selected finding verified. A sync run
+// sets out to do neither. The status
 // line says "incomplete" otherwise (§7 rule 6).
-func (r *Result) Done() bool { return r.Skipped || (r.Complete && len(r.Unverified) == 0) }
+func (r *Result) Done() bool { return r.Skipped || r.Sync || (r.Complete && len(r.Unverified) == 0) }
 
 // Review runs one pass over ref, whose head is checked out as ws: pick the
 // mode, load the PR and its history, verify earlier findings and find new
@@ -136,14 +147,24 @@ func (p *pass) run(ctx context.Context) (*Result, error) {
 		return nil, err
 	}
 	res, cfg := p.res, p.cfg
+	for i := range p.tracked {
+		if t := &p.tracked[i]; t.State == state.StateOpen && t.ResolverUnknown {
+			res.UnknownResolver = append(res.UnknownResolver, t)
+		}
+	}
+	if p.opts.Sync {
+		// Repairs need no model and no diff.
+		res.Sync = true
+		res.Transitions = transitions(p.tracked, nil, nil)
+		return res, nil
+	}
 	// Mode (§2, step 0): a full pass unless this head already has a
 	// completed one; then only earlier findings are reconciled.
 	res.ReconcileOnly = p.baseline.CompletedAt(p.ref.HeadSHA)
 	res.Complete = res.ReconcileOnly
-	res.Checks = selectChecks(ctx, p.gh, p.ref, p.tracked)
+	res.Checks = selectChecks(ctx, p.gh, p.ref, p.tracked, &p.baseline)
 	if res.ReconcileOnly && len(res.Checks) == 0 {
-		// Settling and repairs need no model and no diff.
-		res.Transitions = transitions(p.tracked, nil, nil, cfg.Convergence.MaxRebuttals)
+		res.Transitions = transitions(p.tracked, nil, nil)
 		if len(res.Transitions) == 0 {
 			res.Skipped = true
 			res.SkipReason = "a pass already completed at " + short(p.ref.HeadSHA) + " and no earlier finding needs attention"
@@ -187,11 +208,7 @@ func (p *pass) load(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("review: %w", err)
 	}
-	team := p.opts.Team
-	if team == nil {
-		team = NewTeam(p.gh, p.ref.Repo)
-	}
-	if p.threads, p.res.Ignored, err = screen(ctx, team, pr.Private, threads); err != nil {
+	if p.threads, p.res.Ignored, err = screen(ctx, NewTeam(p.gh, p.ref.Repo), pr.Private, threads); err != nil {
 		return err
 	}
 	p.tracked = state.Replay(p.threads, p.cfg.Identity.BotLogin)
@@ -225,7 +242,6 @@ func (p *pass) verifyInput() *VerifyInput {
 		Instructions:     p.cfg.Review.Instructions,
 		InstructionFiles: p.cfg.Review.InstructionFiles,
 		Checks:           p.res.Checks,
-		MaxRebuttals:     p.cfg.Convergence.MaxRebuttals,
 		MaxIterations:    p.cfg.Limits.MaxToolIterations,
 	}
 }
@@ -276,7 +292,8 @@ func (p *pass) collect() {
 		verdicts = res.Verify.Verdicts
 		res.Unverified = res.Verify.Unverified(res.Checks)
 	}
-	res.Transitions = transitions(p.tracked, res.Checks, verdicts, cfg.Convergence.MaxRebuttals)
+	res.Transitions = transitions(p.tracked, res.Checks, verdicts)
+	res.Verified = reverified(res.Checks, verdicts)
 	if f := res.Find; f != nil {
 		res.Complete, res.Reason, res.Summary = f.Complete, f.Reason, f.Summary
 		known, _ := readThreads(p.threads, cfg.Identity.BotLogin)

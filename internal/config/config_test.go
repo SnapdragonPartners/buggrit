@@ -36,6 +36,23 @@ func TestParseMinimalAppliesDefaults(t *testing.T) {
 	}
 }
 
+// convergence.max_rebuttals is no longer used. A version 1 config may still
+// set it: it's accepted, and warned about.
+func TestMaxRebuttalsWarns(t *testing.T) {
+	cfg, err := Parse([]byte(minimal))
+	if err != nil || len(cfg.Warnings()) != 0 {
+		t.Fatalf("minimal config: %v, warnings %v", err, cfg.Warnings())
+	}
+	withRebuttals := strings.Replace(minimal, `"version": 1,`, `"version": 1, "convergence": {"max_rebuttals": 2},`, 1)
+	cfg, err = Parse([]byte(withRebuttals))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if w := cfg.Warnings(); len(w) != 1 || !strings.Contains(w[0], "max_rebuttals is ignored") {
+		t.Errorf("warnings = %v", w)
+	}
+}
+
 func TestParseOverridesDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(`{
 	  "version": 1,

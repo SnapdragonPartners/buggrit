@@ -27,7 +27,8 @@ func TestReviews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reviews) != 1 || reviews[0].Author != "buggrit-bot[bot]" || reviews[0].CommitSHA != head || reviews[0].ID == 0 || reviews[0].Body != "buggrit pass 1" {
+	if len(reviews) != 1 || reviews[0].Author != "buggrit-bot[bot]" || reviews[0].CommitSHA != head || reviews[0].ID == 0 || reviews[0].Body != "buggrit pass 1" ||
+		reviews[0].SubmittedAt.IsZero() {
 		t.Fatalf("reviews = %+v", reviews)
 	}
 }

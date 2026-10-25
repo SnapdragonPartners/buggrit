@@ -29,6 +29,12 @@ inputs:
     description: Checkout of the PR head
     required: false
     default: ${{ github.workspace }}
+  mode:
+    description: >-
+      full (default) runs a pass with the models; sync re-reads the threads
+      and repairs them, with no model and no checkout (design §2)
+    required: false
+    default: ''
   version:
     description: >-
       Release to run (v0.1.0). Defaults to the release at the ref this action
@@ -54,5 +60,6 @@ runs:
       env:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         BUGGRIT_PR: ${{ inputs.pr }}
+        BUGGRIT_MODE: ${{ inputs.mode }}
         WORKSPACE: ${{ inputs.workspace }}
       run: '"$RUNNER_TEMP/buggrit-bin/buggrit" review --workspace "$WORKSPACE"'

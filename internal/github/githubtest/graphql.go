@@ -37,7 +37,7 @@ func gqlError(typ, message string) (int, any) {
 
 func data(v any) (int, any) { return http.StatusOK, map[string]any{"data": v} }
 
-func (s *Server) graphql(r *http.Request, _ string) (int, any) {
+func (s *Server) graphql(r *http.Request, login string) (int, any) {
 	var req gqlRequest
 	if !decode(r, &req) {
 		return http.StatusBadRequest, msg("Problems parsing JSON")
@@ -84,7 +84,13 @@ func (s *Server) graphql(r *http.Request, _ string) (int, any) {
 		if t == nil {
 			return gqlError("NOT_FOUND", "Could not resolve to a node")
 		}
-		t.Resolved = req.OperationName == "ResolveThread"
+		resolved := req.OperationName == "ResolveThread"
+		if resolved != t.Resolved {
+			t.Resolved, t.ResolvedBy = resolved, ""
+			if resolved {
+				t.ResolvedBy = login
+			}
+		}
 		key := "resolveReviewThread"
 		if !t.Resolved {
 			key = "unresolveReviewThread"
@@ -136,8 +142,13 @@ func (s *Server) threadNode(t *Thread) map[string]any {
 	if t.FileLevel {
 		side = nil
 	}
+	// GitHub reports a bot resolver as a User whose login keeps "[bot]".
+	var resolvedBy any
+	if t.Resolved && t.ResolvedBy != "" {
+		resolvedBy = map[string]any{"__typename": "User", "login": t.ResolvedBy}
+	}
 	return map[string]any{
-		"id": t.ID, "isResolved": t.Resolved, "isOutdated": t.Outdated, "path": t.Path,
+		"id": t.ID, "isResolved": t.Resolved, "resolvedBy": resolvedBy, "isOutdated": t.Outdated, "path": t.Path,
 		"line": line, "originalLine": nullable(t.OriginalLine), "startLine": nullable(t.StartLine),
 		"diffSide": side, "subjectType": subject,
 		"comments": s.commentPage(t, 0),

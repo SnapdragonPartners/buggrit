@@ -48,6 +48,10 @@ type Thread struct {
 	IsResolved   bool
 	IsOutdated   bool
 	FileLevel    bool
+	// ResolvedBy is the REST-form login of whoever resolved the thread, or
+	// "" if it's unresolved or GitHub doesn't say (a deleted account).
+	// buggrit settles a finding by who resolved its thread (design §6).
+	ResolvedBy string
 }
 
 // Root is the thread's first comment, or nil for an empty thread.
@@ -66,6 +70,7 @@ const threadsQuery = `query ReviewThreads($owner: String!, $name: String!, $numb
         nodes {
           id
           isResolved
+          resolvedBy { __typename login }
           isOutdated
           path
           line
@@ -114,13 +119,29 @@ type gqlPageInfo struct {
 	HasNextPage bool   `json:"hasNextPage"`
 }
 
+// gqlActor is a comment's author or a thread's resolver.
+type gqlActor struct {
+	Typename string `json:"__typename"`
+	Login    string `json:"login"`
+}
+
+// login is the actor's login in REST form. GraphQL gives a bot's login
+// without the "[bot]" suffix REST uses, which is what config's
+// identity.bot_login holds. A nil actor is a deleted ("ghost") user.
+func (a *gqlActor) login() string {
+	if a == nil {
+		return ""
+	}
+	if a.Typename == "Bot" && !strings.HasSuffix(a.Login, "[bot]") {
+		return a.Login + "[bot]"
+	}
+	return a.Login
+}
+
 type gqlComment struct {
 	CreatedAt time.Time `json:"createdAt"`
-	Author    *struct {
-		Typename string `json:"__typename"`
-		Login    string `json:"login"`
-	} `json:"author"`
-	Commit *struct {
+	Author    *gqlActor `json:"author"`
+	Commit    *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
 	ID          string `json:"id"`
@@ -137,6 +158,7 @@ type gqlComments struct {
 }
 
 type gqlThread struct {
+	ResolvedBy   *gqlActor   `json:"resolvedBy"`
 	Line         *int        `json:"line"`
 	OriginalLine *int        `json:"originalLine"`
 	StartLine    *int        `json:"startLine"`
@@ -158,15 +180,7 @@ func (g *gqlComment) comment() Comment {
 		URL:         g.URL,
 		DiffHunk:    g.DiffHunk,
 		CreatedAt:   g.CreatedAt,
-	}
-	if g.Author != nil { // nil for deleted ("ghost") users
-		c.Author = g.Author.Login
-		// GraphQL gives a bot's login without the "[bot]" suffix REST
-		// uses. Normalize to the REST form, which is what config's
-		// identity.bot_login holds.
-		if g.Author.Typename == "Bot" && !strings.HasSuffix(c.Author, "[bot]") {
-			c.Author += "[bot]"
-		}
+		Author:      g.Author.login(),
 	}
 	if g.Commit != nil {
 		c.CommitSHA = g.Commit.OID
@@ -233,6 +247,9 @@ func (c *Client) thread(ctx context.Context, g *gqlThread) (Thread, error) {
 		IsResolved:   g.IsResolved,
 		IsOutdated:   g.IsOutdated,
 		FileLevel:    g.SubjectType == "FILE",
+	}
+	if g.IsResolved {
+		t.ResolvedBy = g.ResolvedBy.login()
 	}
 	comments := g.Comments
 	for {

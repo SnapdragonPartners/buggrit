@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -35,9 +34,6 @@ type VerifyInput struct {
 	Instructions     string
 	InstructionFiles []string
 	Checks           []Check
-	// MaxRebuttals is convergence.max_rebuttals, so the model knows how
-	// many more chances a disputed finding gets.
-	MaxRebuttals int
 	// MaxIterations caps tool-calling turns; 0 means no ceiling (§9).
 	MaxIterations int
 	// WrapUp is held back from ctx's deadline for a final turn that makes
@@ -74,8 +70,9 @@ const verifyNudge = "You ended your turn without calling submit_verdicts. Call s
 	"every listed finding. Do not reply in text."
 
 // Verify runs the agentic verifier: the model checks each earlier finding
-// against the code at the reviewed head, judges any replies, and ends by
-// calling submit_verdicts (design §6). Like Find, it returns an error only
+// against the code at the reviewed head and ends by calling submit_verdicts
+// (design §6). It sees buggrit's own comments on each finding, and no one
+// else's. Like Find, it returns an error only
 // for a programming or configuration fault.
 func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 	if in.Client == nil || in.Workspace == nil || in.Diff == nil {
@@ -121,10 +118,10 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 }
 
 // verifySystemPrompt is the verifier's standing instructions (design §6, §7).
-const verifySystemPrompt = `You are buggrit's verifier. On earlier passes, buggrit raised findings on this pull request, each as its own review thread. The author, usually another agent such as Claude Code, then fixed them, replied, or resolved threads. For each finding listed in the opening message, decide from the code at the reviewed head commit whether the finding still holds, and judge any new reply.
+const verifySystemPrompt = `You are buggrit's verifier. On earlier passes, buggrit raised findings on this pull request, each as its own review thread. The author, usually another agent such as Claude Code, has since pushed changes. For each finding listed in the opening message, decide from the code at the reviewed head commit whether the defect it describes is still present.
 
 How to work:
-- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for a finding's thread. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
+- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for buggrit's own comments on a finding. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
 - Batch your tool calls. The tools return almost instantly; nearly all of the time is your own thinking between calls, so whenever you know what you need next, request it all in one turn.
 - An anchor can be outdated because the code moved. Use the original diff excerpt to find where that code is now.
 - When you are done, call submit_verdicts exactly once, with a verdict for every listed finding. Do not answer in plain text.
@@ -132,12 +129,11 @@ How to work:
 
 Verdicts:
 - fixed: the defect the finding describes is no longer present at the reviewed commit. evidence_files lists every file you relied on: the anchor file, plus wherever the fix lives. If any of them changes later, the finding is checked again.
-- open: the defect is still present. reason cites the code that shows it. If a reply argues otherwise and the argument does not hold, reason answers the argument specifically.
-- dismissed: only for a finding with a new reply, when the reply holds up: the behavior is deliberate and documented, the finding was mistaken, or it is out of scope by the pull request's own description. For an advisory finding (P2 or P3), any reply that gives a reason not to fix it holds up, such as "deferred to #123" or "intentional, see the ADR"; the author owns those decisions. A claim that it was fixed is not such a reason: check it, and if the code disproves it, the verdict is open.
-- Judge the code, not claims about it. "Fixed in abc123" is a claim to check. A resolved thread is not evidence of a fix.
+- open: the defect is still present. reason cites the code that shows it.
+- Judge the code, not commit messages or descriptions that claim a fix.
 - Only judge the listed findings. Do not raise new issues here.
 
-Writing: reason is posted as buggrit's reply in the thread, addressed to the author. One or two specific sentences, citing code where it matters.`
+Writing: when a verdict changes a finding's state (an open finding now fixed, or a fixed one whose defect is back), reason is posted as buggrit's reply in the thread, addressed to the author. One or two specific sentences, citing code where it matters.`
 
 // verifyOpening builds the verifier's first user message.
 func verifyOpening(in *VerifyInput) string {
@@ -163,7 +159,7 @@ func verifyOpening(in *VerifyInput) string {
 	var skipped []string
 	for i := range in.Checks {
 		var cb strings.Builder
-		writeCheck(&cb, &in.Checks[i], in.MaxRebuttals)
+		writeCheck(&cb, &in.Checks[i])
 		if b.Len()+cb.Len() > maxPromptDiffBytes-maxDeferredList {
 			skipped = append(skipped, in.Checks[i].Tracked.ID)
 			continue
@@ -201,48 +197,25 @@ func checkIDs(checks []Check) []string {
 	return ids
 }
 
-// maxCheckText bounds one finding's text, and each reply, in the opening
-// message, and maxPendingShown the number of replies it shows: the newest,
-// since they usually settle the finding. get_thread has the rest.
-const (
-	maxCheckText    = 6 << 10
-	maxPendingShown = 5
-)
+// maxCheckText bounds one finding's text, and its diff excerpt, in the
+// opening message.
+const maxCheckText = 6 << 10
 
-func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
+func writeCheck(b *strings.Builder, c *Check) {
 	t := c.Tracked
 	weight := "advisory"
 	if t.Blocking() {
 		weight = "blocking"
 	}
 	fmt.Fprintf(b, "### %s (%s, %s; state %s)\n\n", t.ID, t.Severity, weight, t.State)
-	fmt.Fprintf(b, "Anchor: %s. Checked because %s.", anchorText(t.Thread), c.Why)
-	if t.Thread.IsResolved {
-		b.WriteString(" The thread is resolved.")
-	}
-	b.WriteString("\n\n")
+	fmt.Fprintf(b, "Anchor: %s. Checked because %s.\n\n", anchorText(t.Thread), c.Why)
 	b.WriteString(truncate(state.Strip(t.Root.Body), maxCheckText))
 	b.WriteString("\n\n")
 	if h := strings.TrimSpace(t.Root.DiffHunk); h != "" {
 		fmt.Fprintf(b, "Diff excerpt the finding was raised on:\n\n%s\n%s\n%s\n\n", codeFenceFor(h), truncate(h, maxCheckText), codeFenceFor(h))
 	}
-	if len(t.Pending) > 0 {
-		b.WriteString("New replies to judge, oldest first:\n\n")
-		shown := t.Pending
-		if n := len(shown) - maxPendingShown; n > 0 {
-			fmt.Fprintf(b, "- (%d earlier not shown: get_thread %s)\n", n, t.ID)
-			shown = shown[n:]
-		}
-		for i := range shown {
-			fmt.Fprintf(b, "- %s: %s\n", shown[i].Author, truncate(strings.TrimSpace(shown[i].Body), maxCheckText))
-		}
-		if t.Blocking() {
-			fmt.Fprintf(b, "\nbuggrit has rebutted replies on this finding %d of %d times; after that, an open verdict sends it to a human.\n", t.Rebuttals, maxRebuttals)
-		}
-		b.WriteByte('\n')
-	}
-	if len(t.Thread.Comments) > 1+len(t.Pending) {
-		fmt.Fprintf(b, "Earlier comments: get_thread %s.\n\n", t.ID)
+	if len(t.Own) > 1 {
+		fmt.Fprintf(b, "buggrit's earlier replies on it: get_thread %s.\n\n", t.ID)
 	}
 }
 
@@ -280,7 +253,7 @@ type threadTool struct{ checks []Check }
 func (g *threadTool) tool() toolloop.Tool {
 	return toolloop.Tool{Definition: llms.ToolDefinition{
 		Name: "get_thread",
-		Description: "Read one of the listed findings' review thread: the finding, its anchor, the diff excerpt it was raised on, and the replies in order. " +
+		Description: "Read buggrit's own comments on one of the listed findings: the finding, its anchor, the diff excerpt it was raised on, and buggrit's earlier replies in order. " +
 			"A very long comment or thread is truncated, and the result says so.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -309,27 +282,20 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 		return toolError("no finding %q to verify; the IDs are %s", args.ID, strings.Join(checkIDs(g.checks), ", "))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s, %s, state %s. Anchor: %s.", t.ID, t.Severity, t.State, anchorText(t.Thread))
-	if t.Thread.IsResolved {
-		b.WriteString(" Resolved.")
-	}
-	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "%s, %s, state %s. Anchor: %s.\n\n", t.ID, t.Severity, t.State, anchorText(t.Thread))
 	if h := strings.TrimSpace(t.Root.DiffHunk); h != "" {
 		fmt.Fprintf(&b, "Diff excerpt:\n%s\n\n", truncate(h, maxThreadComment))
 	}
 	// Each comment is truncated, and added only if it fits, so the result
 	// stays within maxResultBytes.
-	for i := range t.Thread.Comments {
-		c := &t.Thread.Comments[i]
-		who := c.Author
-		switch {
-		case i == 0:
+	for i := range t.Own {
+		c := &t.Own[i]
+		who := "buggrit"
+		if i == 0 {
 			who += " (the finding)"
-		case slices.ContainsFunc(t.Pending, func(p github.Comment) bool { return p.DatabaseID == c.DatabaseID }):
-			who += " (new reply)"
 		}
 		entry := fmt.Sprintf("--- %s\n%s\n\n", who, truncate(strings.TrimSpace(state.Strip(c.Body)), maxThreadComment))
-		note := fmt.Sprintf("[thread truncated: %d more %s not shown]\n", len(t.Thread.Comments)-i, plural(len(t.Thread.Comments)-i, "comment"))
+		note := fmt.Sprintf("[thread truncated: %d more %s not shown]\n", len(t.Own)-i, plural(len(t.Own)-i, "comment"))
 		if b.Len()+len(entry)+len(note) > maxResultBytes {
 			b.WriteString(note)
 			break
@@ -370,8 +336,8 @@ func (s *verdictTool) tool() toolloop.Tool {
         "type": "object",
         "properties": {
           "id": {"type": "string", "description": "The finding's ID"},
-          "state": {"type": "string", "enum": ["fixed", "open", "dismissed"]},
-          "reason": {"type": "string", "description": "One or two sentences for the author, posted as the reply"},
+          "state": {"type": "string", "enum": ["fixed", "open"]},
+          "reason": {"type": "string", "description": "One or two sentences for the author, posted as the reply when the finding's state changes"},
           "evidence_files": {"type": "array", "items": {"type": "string"}, "description": "For fixed: every file the verdict relied on, including the anchor file"}
         },
         "required": ["id", "state", "reason"],
@@ -464,13 +430,9 @@ func verdict(a *verdictArgs, t *state.Tracked) (*state.Verdict, []string) {
 		if !seen[t.Thread.Path] {
 			problems = append(problems, fmt.Sprintf("a fixed verdict needs evidence_files, including the anchor file %s", t.Thread.Path))
 		}
-	case state.StateDismissed:
-		if len(t.Pending) == 0 {
-			problems = append(problems, "dismissed is only for a finding with a new reply; this one has none, so it is fixed or open")
-		}
 	case state.StateOpen:
 	default:
-		problems = append(problems, fmt.Sprintf("state must be fixed, open or dismissed, not %q", a.State))
+		problems = append(problems, fmt.Sprintf("state must be fixed or open, not %q", a.State))
 	}
 	switch {
 	case v.Reason == "":

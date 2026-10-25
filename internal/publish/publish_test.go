@@ -149,6 +149,8 @@ func TestReviewBodyGolden(t *testing.T) {
 		"review-incomplete.md": {HeadSHA: head, Pass: 3, Reason: "deadline reached"},
 		"review-partial.md": {HeadSHA: head, Pass: 4, Reason: "deadline reached; submitted 1 finding found before it",
 			Findings: []review.Candidate{classFinding()}},
+		"review-verified.md": {HeadSHA: head, Pass: 5, Complete: true, Scope: "lines changed since 0123456",
+			Verified: map[string][]string{"f-7f3a2c": {"cache.go", "new.go"}}},
 	}
 	for name, res := range cases {
 		body, err := ReviewBody(res, nil)
@@ -161,8 +163,31 @@ func TestReviewBodyGolden(t *testing.T) {
 		if !res.Complete {
 			want = state.PassIncomplete
 		}
-		if err != nil || !m.IsPass() || m.Status != want || m.Pass != res.Pass || m.SHA != head {
+		if err != nil || !m.IsPass() || m.Status != want || m.Pass != res.Pass || m.SHA != head || len(m.Verified) != len(res.Verified) {
 			t.Errorf("%s marker = %+v, %v", name, m, err)
+		}
+	}
+}
+
+// Transition replies are only fixed and regressed; the kinds earlier
+// versions posted are read, never written.
+func TestTransitionBody(t *testing.T) {
+	tr := &review.Transition{Tracked: &state.Tracked{ID: "f-7f3a2c"}}
+	tr.Kind, tr.Reason, tr.Evidence = state.KindFixed, "New initializes it.", []string{"cache.go"}
+	body, err := TransitionBody(tr, head)
+	if err != nil || !strings.Contains(body, "**Fixed** at `1111111`. New initializes it.") || !strings.Contains(body, "checked against cache.go") {
+		t.Errorf("fixed = %q, %v", body, err)
+	}
+	tr.Kind, tr.Reason, tr.Evidence = state.KindRegressed, "It's nil again.", nil
+	body, err = TransitionBody(tr, head)
+	if err != nil || !strings.Contains(body, "**Regressed** at `1111111`, so this thread is reopened. It's nil again.") ||
+		!strings.Contains(body, "Resolve the thread; that settles it") {
+		t.Errorf("regressed = %q, %v", body, err)
+	}
+	for _, k := range []state.Kind{state.KindReopened, state.KindRebutted, state.KindNeedsHuman, state.KindDismissed, state.KindSettled} {
+		tr.Kind = k
+		if _, err := TransitionBody(tr, head); err == nil {
+			t.Errorf("rendered a %s transition", k)
 		}
 	}
 }

@@ -27,11 +27,16 @@ const (
 // FindingState is a finding's state in the thread state machine (§6).
 type FindingState string
 
-// Finding states.
+// Finding states. Whether a finding is settled isn't a state: it's read
+// from who resolved its thread (Tracked.Settled).
 const (
-	StateOpen       FindingState = "open"
-	StateFixed      FindingState = "fixed"
-	StateDismissed  FindingState = "dismissed"
+	StateOpen  FindingState = "open"
+	StateFixed FindingState = "fixed"
+	// StateDismissed is terminal. buggrit no longer writes it, but threads
+	// earlier versions dismissed keep it.
+	StateDismissed FindingState = "dismissed"
+	// StateNeedsHuman is read only, from earlier versions' markers. Replay
+	// treats it as open.
 	StateNeedsHuman FindingState = "needs_human"
 )
 
@@ -44,20 +49,22 @@ func (s FindingState) Valid() bool {
 	return false
 }
 
-// Kind says why a transition happened. Several kinds lead to the same
-// state, and replay needs to tell them apart: rebuttals are counted against
-// max_rebuttals, and an identical transition isn't posted twice (§6, §7).
+// Kind says why a transition happened. buggrit posts only fixed and
+// regressed; the other kinds are read from earlier versions' markers, and
+// replay keeps reading them (§6).
 type Kind string
 
 // Transition kinds, each with the state it leads to (Kind.To).
 const (
-	KindFixed      Kind = "fixed"       // open → fixed
-	KindRegressed  Kind = "regressed"   // fixed → open: the defect is back
+	KindFixed     Kind = "fixed"     // open → fixed
+	KindRegressed Kind = "regressed" // fixed → open: the defect is back
+
+	// Read only, from earlier versions.
 	KindReopened   Kind = "reopened"    // resolved without a fix → open
-	KindRebutted   Kind = "rebutted"    // a reply judged invalid → open, with reasoning
-	KindNeedsHuman Kind = "needs_human" // a reply judged invalid, rebuttals used up
-	KindDismissed  Kind = "dismissed"   // a reply judged valid, or any reply to an advisory finding
-	KindSettled    Kind = "settled"     // needs_human, then a human replied or resolved
+	KindRebutted   Kind = "rebutted"    // a reply judged invalid → open
+	KindNeedsHuman Kind = "needs_human" // rebuttals used up → open
+	KindDismissed  Kind = "dismissed"   // a reply judged valid → dismissed
+	KindSettled    Kind = "settled"     // needs_human, then a human replied → dismissed
 )
 
 // To is the state a transition of kind k leads to, or "" for an unknown kind.
@@ -87,30 +94,26 @@ const (
 
 // Marker is the payload of a buggrit marker. A thread's root comment carries
 // a finding marker (FP, Severity, Pass set); each buggrit reply carries a
-// transition marker (To, Kind, SHA and Seen set, plus Evidence for a fixed
+// transition marker (To, Kind and SHA set, plus Evidence for a fixed
 // verdict); each pass's review body carries a pass marker (Status, Pass and
-// SHA set).
+// SHA set, and Verified when the pass re-verified fixed findings). A
+// reconcile-only run's review carries SHA and Verified with no Status.
 //
 // Unknown fields are ignored when decoding, so a marker written by a newer
-// buggrit still reads.
+// buggrit still reads, and so do earlier versions' seen and left_resolved.
 type Marker struct {
-	ID       string       `json:"id"`
-	FP       string       `json:"fp,omitempty"`
-	Severity string       `json:"sev,omitempty"`
-	SHA      string       `json:"sha,omitempty"`
-	To       FindingState `json:"to,omitempty"`
-	Kind     Kind         `json:"kind,omitempty"`
-	Status   PassStatus   `json:"status,omitempty"`
-	Evidence []string     `json:"evidence_files,omitempty"`
-	// Seen is the database ID of the newest human comment in the thread when
-	// the transition was decided. Later comments are still unhandled, even
-	// if they landed before the transition's reply (§6).
-	Seen int64 `json:"seen,omitempty"`
-	Pass int   `json:"pass,omitempty"`
-	// LeftResolved marks a needs_human transition posted on a thread GitHub
-	// wouldn't unresolve. That resolution predates the transition, so it
-	// doesn't settle the finding; only a reply does (§6).
-	LeftResolved bool `json:"left_resolved,omitempty"`
+	// Verified maps each fixed finding re-verified as still fixed at SHA to
+	// the evidence files of that verdict (design §6, "Evidence baseline").
+	Verified map[string][]string `json:"verified,omitempty"`
+	ID       string              `json:"id"`
+	FP       string              `json:"fp,omitempty"`
+	Severity string              `json:"sev,omitempty"`
+	SHA      string              `json:"sha,omitempty"`
+	To       FindingState        `json:"to,omitempty"`
+	Kind     Kind                `json:"kind,omitempty"`
+	Status   PassStatus          `json:"status,omitempty"`
+	Evidence []string            `json:"evidence_files,omitempty"`
+	Pass     int                 `json:"pass,omitempty"`
 }
 
 // IsTransition reports whether m records a state transition.
@@ -134,6 +137,20 @@ func (m *Marker) validate() error {
 		return fmt.Errorf("marker %s: unknown pass status %q", m.ID, m.Status)
 	case m.Status != "" && (m.Pass < 1 || m.SHA == ""):
 		return fmt.Errorf("marker %s: pass marker needs pass and sha", m.ID)
+	}
+	return m.validateVerified()
+}
+
+// validateVerified checks a pass's record of re-verified findings: like a
+// fixed transition, each needs the files its verdict relied on (§6).
+func (m *Marker) validateVerified() error {
+	if len(m.Verified) > 0 && m.SHA == "" {
+		return fmt.Errorf("marker %s: verified needs sha", m.ID)
+	}
+	for id, files := range m.Verified {
+		if len(files) == 0 {
+			return fmt.Errorf("marker %s: verified %s has no evidence files", m.ID, id)
+		}
 	}
 	return nil
 }

@@ -77,8 +77,8 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 			return out, err
 		}
 	}
-	if res.ReconcileOnly {
-		return out, publishManual(ctx, gh, fence, ref, res, out)
+	if res.ReconcileOnly || res.Sync {
+		return out, publishReconcile(ctx, gh, fence, ref, res, out)
 	}
 	if len(res.Transitions) > 0 {
 		// The transitions took time; check again before the new threads.
@@ -143,18 +143,20 @@ func publishReview(ctx context.Context, gh GitHub, ref review.PRRef, res *review
 	return nil
 }
 
-// publishManual tells the PR about resolutions GitHub refused in a
-// reconcile-only run, which posts no pass review to list them in (§3). It
-// posts only for refusals that follow a transition from this run; a repair
-// retried every run is already known, and stays in the job summary.
-func publishManual(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, out *Posted) error {
-	if !slices.ContainsFunc(out.Manual, func(m Manual) bool { return m.New }) {
+// publishReconcile posts a short review for a run that posts no pass
+// review (reconcile-only or sync), when it has something to record: fixed
+// findings it re-verified, which the review's marker records (§6,
+// "Evidence baseline"), or resolutions GitHub refused after a transition
+// from this run (§3). A repair refused again on every run is already known,
+// and stays in the job summary.
+func publishReconcile(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, out *Posted) error {
+	if len(res.Verified) == 0 && !slices.ContainsFunc(out.Manual, func(m Manual) bool { return m.New }) {
 		return nil
 	}
 	if err := fence.Check(ctx); err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}
-	body, err := ManualBody(res, out.Manual)
+	body, err := ReconcileBody(res, out.Manual)
 	if err != nil {
 		return err
 	}
@@ -166,65 +168,49 @@ func publishManual(ctx context.Context, gh GitHub, fence *github.Fence, ref revi
 	return nil
 }
 
-// publishTransition posts one transition's reply and fixes the thread's
-// resolution, each behind the fence. Usually the reply goes first, so a run
-// killed in between leaves the marker for the next run to repair from. A
-// needs_human transition goes the other way: replay reads a resolution
-// under its marker as a human settling the finding, so the thread must be
-// unresolved before the marker lands (§6). That unresolve is sent whatever
-// the thread looked like when it was read, since someone may have resolved
-// it while the verifier ran. GitHub refusing a resolution is
-// recorded in out.Manual, not an error (design §3).
+// publishTransition posts one transition's reply, then fixes the thread's
+// resolution, each behind the fence. A run killed in between leaves the
+// marker for the next run to repair from (§6). GitHub refusing a
+// resolution is recorded in out.Manual, not an error (design §3).
 func publishTransition(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, tr *review.Transition, out *Posted) error {
-	if tr.Kind == state.KindNeedsHuman {
-		refused, err := setResolution(ctx, gh, fence, tr, true, out)
+	if tr.Kind != "" {
+		t := tr.Tracked
+		text, err := TransitionBody(tr, res.HeadSHA)
 		if err != nil {
 			return err
 		}
-		return postReply(ctx, gh, fence, ref, res, tr, refused, out)
+		if err := fence.Check(ctx); err != nil {
+			return fmt.Errorf("publish: %w", err)
+		}
+		if _, err := gh.Reply(ctx, ref.Repo, ref.Number, t.Root.DatabaseID, text); err != nil {
+			return fmt.Errorf("publish %s: %w", t.ID, err)
+		}
+		out.Replies++
 	}
-	if err := postReply(ctx, gh, fence, ref, res, tr, false, out); err != nil {
-		return err
-	}
-	_, err := setResolution(ctx, gh, fence, tr, false, out)
-	return err
+	return setResolution(ctx, gh, fence, tr, out)
 }
 
-// postReply posts tr's transition reply, if it has one.
-func postReply(ctx context.Context, gh GitHub, fence *github.Fence, ref review.PRRef, res *review.Result, tr *review.Transition, leftResolved bool, out *Posted) error {
-	if tr.Kind == "" {
+// setResolution resolves or unresolves tr's thread if it wasn't already as
+// wanted when read. GitHub refusing is recorded for a person: it refuses by
+// token, not by thread, so a refusal is checked against the thread as it
+// is now, and one already as wanted was refused nothing (§3).
+func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, out *Posted) error {
+	if !tr.Repair() {
 		return nil
-	}
-	t := tr.Tracked
-	text, err := TransitionBody(tr, res.HeadSHA, leftResolved)
-	if err != nil {
-		return err
 	}
 	if err := fence.Check(ctx); err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}
-	if _, err := gh.Reply(ctx, ref.Repo, ref.Number, t.Root.DatabaseID, text); err != nil {
-		return fmt.Errorf("publish %s: %w", t.ID, err)
-	}
-	out.Replies++
-	return nil
-}
-
-// setResolution resolves or unresolves tr's thread if it wasn't already as
-// wanted when read, or always if always is set. refused reports that GitHub
-// wouldn't let buggrit change a thread that needed changing. GitHub refuses
-// by token, not by thread, so a refusal is checked against the thread as it
-// is now: one already as wanted was refused nothing (§3).
-func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *review.Transition, always bool, out *Posted) (refused bool, err error) {
-	if tr.Want == state.Keep || !always && !tr.Repair() {
-		return false, nil
-	}
-	if ferr := fence.Check(ctx); ferr != nil {
-		return false, fmt.Errorf("publish: %w", ferr)
-	}
 	t := tr.Tracked
 	resolve := tr.Want == state.Resolve
+	var err error
 	if resolve {
+		// Someone may have resolved the thread since it was read, settling
+		// the finding. buggrit never resolves a resolved thread again, so
+		// the resolver stays theirs (§6).
+		if cur, rerr := gh.ThreadResolved(ctx, t.Thread.ID); rerr == nil && cur {
+			return nil
+		}
 		err = gh.ResolveThread(ctx, t.Thread.ID)
 	} else {
 		err = gh.UnresolveThread(ctx, t.Thread.ID)
@@ -232,19 +218,18 @@ func setResolution(ctx context.Context, gh GitHub, fence *github.Fence, tr *revi
 	switch {
 	case github.IsForbidden(err):
 		if cur, rerr := gh.ThreadResolved(ctx, t.Thread.ID); rerr == nil && cur == resolve {
-			return false, nil
+			return nil
 		}
 		// Still not as wanted, or unknown: a person has to do it.
 		out.Manual = append(out.Manual, Manual{ID: t.ID, URL: t.Root.URL, Resolve: resolve, New: tr.Kind != ""})
-		return true, nil
 	case err != nil:
-		return false, fmt.Errorf("publish %s: %w", t.ID, err)
+		return fmt.Errorf("publish %s: %w", t.ID, err)
 	case resolve:
 		out.Resolved++
 	default:
 		out.Unresolved++
 	}
-	return false, nil
+	return nil
 }
 
 // comment renders c as a review comment at its anchor.
