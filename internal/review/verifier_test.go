@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -160,7 +161,7 @@ func TestVerifyOpeningBudget(t *testing.T) {
 	}
 	replies := make([]string, maxPendingShown+3)
 	for i := range replies {
-		replies[i] = strings.Repeat("I disagree. ", maxCheckText/10)
+		replies[i] = fmt.Sprintf("Reply %d. ", i) + strings.Repeat("I disagree. ", maxCheckText/10)
 	}
 	for i := range 4000 {
 		tr := tracked(t, fmt.Sprintf("f-%06d", i), "P1", state.StateOpen, replies...)
@@ -173,7 +174,8 @@ func TestVerifyOpeningBudget(t *testing.T) {
 	}
 	for _, want := range []string{
 		"### f-000000 (P1, blocking; state open)",
-		"- (3 more not shown: get_thread f-000000)",
+		"New replies to judge, oldest first:\n\n- (3 earlier not shown: get_thread f-000000)\n- dan: Reply 3. ",
+		fmt.Sprintf("- dan: Reply %d. ", len(replies)-1),
 		"Not shown, for space; read each with get_thread: ",
 		"more; submit_verdicts names any you leave out)",
 		"Verify every finding, then call submit_verdicts once with a verdict for each.\n",
@@ -184,6 +186,12 @@ func TestVerifyOpeningBudget(t *testing.T) {
 	}
 	if n := strings.Count(msg, "\n- dan: "); n == 0 || n%maxPendingShown != 0 {
 		t.Errorf("%d replies shown, want a multiple of %d", n, maxPendingShown)
+	}
+	if strings.Contains(msg, "- dan: Reply 2. ") {
+		t.Error("an older reply is shown in place of a newer one")
+	}
+	if regexp.MustCompile(`f-\d{6}\(and`).MatchString(msg) {
+		t.Error("the list of findings not shown runs its last ID into the remainder count")
 	}
 	// The first finding left out is named, not dropped.
 	shown := strings.Count(msg, "\n### f-")

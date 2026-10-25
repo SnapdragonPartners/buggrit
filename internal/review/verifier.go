@@ -173,12 +173,12 @@ func verifyOpening(in *VerifyInput) string {
 	if len(skipped) > 0 {
 		b.WriteString("Not shown, for space; read each with get_thread: ")
 		for i, id := range skipped {
+			if i > 0 {
+				b.WriteString(", ")
+			}
 			if b.Len() > maxPromptDiffBytes-maxVerifyClosing {
 				fmt.Fprintf(&b, "(and %d more; submit_verdicts names any you leave out)", len(skipped)-i)
 				break
-			}
-			if i > 0 {
-				b.WriteString(", ")
 			}
 			b.WriteString(id)
 		}
@@ -201,8 +201,8 @@ func checkIDs(checks []Check) []string {
 }
 
 // maxCheckText bounds one finding's text, and each reply, in the opening
-// message, and maxPendingShown the number of replies it shows; get_thread
-// has the rest.
+// message, and maxPendingShown the number of replies it shows: the newest,
+// since they usually settle the finding. get_thread has the rest.
 const (
 	maxCheckText    = 6 << 10
 	maxPendingShown = 5
@@ -226,13 +226,14 @@ func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
 		fmt.Fprintf(b, "Diff excerpt the finding was raised on:\n\n%s\n%s\n%s\n\n", codeFenceFor(h), truncate(h, maxCheckText), codeFenceFor(h))
 	}
 	if len(t.Pending) > 0 {
-		b.WriteString("New replies to judge:\n\n")
-		for i := range t.Pending {
-			if i == maxPendingShown {
-				fmt.Fprintf(b, "- (%d more not shown: get_thread %s)\n", len(t.Pending)-i, t.ID)
-				break
-			}
-			fmt.Fprintf(b, "- %s: %s\n", t.Pending[i].Author, truncate(strings.TrimSpace(t.Pending[i].Body), maxCheckText))
+		b.WriteString("New replies to judge, oldest first:\n\n")
+		shown := t.Pending
+		if n := len(shown) - maxPendingShown; n > 0 {
+			fmt.Fprintf(b, "- (%d earlier not shown: get_thread %s)\n", n, t.ID)
+			shown = shown[n:]
+		}
+		for i := range shown {
+			fmt.Fprintf(b, "- %s: %s\n", shown[i].Author, truncate(strings.TrimSpace(shown[i].Body), maxCheckText))
 		}
 		if t.Blocking() {
 			fmt.Fprintf(b, "\nbuggrit has rebutted replies on this finding %d of %d times; after that, an open verdict sends it to a human.\n", t.Rebuttals, maxRebuttals)
