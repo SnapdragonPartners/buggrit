@@ -3,8 +3,11 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
@@ -136,6 +139,100 @@ func TestSubmitVerdictsValidation(t *testing.T) {
 func TestGetThreadUnknownID(t *testing.T) {
 	g := &threadTool{checks: []Check{{Tracked: tracked(t, "f-aaaaaa", "P1", state.StateOpen)}}}
 	wantErr(t, call(t, []toolloop.Tool{g.tool()}, "get_thread", `{"id": "f-nope"}`), "the IDs are f-aaaaaa")
+}
+
+// The whole opening message is held to maxPromptDiffBytes: findings are
+// added only while they fit, each shows at most maxPendingShown replies, and
+// the ones left out are named for get_thread.
+func TestVerifyOpeningBudget(t *testing.T) {
+	in := verifyInput(t, &testllm.FakeChatClient{})
+	ws := testWorkspace()
+	in.InstructionFiles = nil
+	for i := range 3 {
+		name := fmt.Sprintf("docs/rules%d.md", i)
+		ws[name] = &fstest.MapFile{Data: []byte(strings.Repeat("Always check errors.\n", maxInstructionBytes/20))}
+		in.InstructionFiles = append(in.InstructionFiles, name)
+	}
+	in.Workspace = ws
+	in.PR.Body = strings.Repeat("A long description. ", 20<<10)
+	for i := range 5000 {
+		p := fmt.Sprintf("gen/file%04d.go", i)
+		in.Diff.Files = append(in.Diff.Files, github.FileDiff{OldPath: p, NewPath: p, Status: github.StatusModified})
+	}
+	replies := make([]string, maxPendingShown+3)
+	for i := range replies {
+		replies[i] = fmt.Sprintf("Reply %d. ", i) + strings.Repeat("I disagree. ", maxCheckText/10)
+	}
+	for i := range 4000 {
+		tr := tracked(t, fmt.Sprintf("f-%06d", i), "P1", state.StateOpen, replies...)
+		tr.Root.Body += strings.Repeat(" More detail.", maxCheckText/10)
+		in.Checks = append(in.Checks, Check{Tracked: tr, Why: "it has new replies"})
+	}
+	msg := verifyOpening(in)
+	if len(msg) > maxPromptDiffBytes {
+		t.Errorf("opening message is %d bytes, over the %d budget", len(msg), maxPromptDiffBytes)
+	}
+	for _, want := range []string{
+		"### f-000000 (P1, blocking; state open)",
+		"New replies to judge, oldest first:\n\n- (3 earlier not shown: get_thread f-000000)\n- dan: Reply 3. ",
+		fmt.Sprintf("- dan: Reply %d. ", len(replies)-1),
+		"Not shown, for space; read each with get_thread: ",
+		"more\n\nVerify every finding",
+		"Verify every finding, then call submit_verdicts once with a verdict for each.\n",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("opening message missing %q", want)
+		}
+	}
+	if n := strings.Count(msg, "\n- dan: "); n == 0 || n%maxPendingShown != 0 {
+		t.Errorf("%d replies shown, want a multiple of %d", n, maxPendingShown)
+	}
+	if strings.Contains(msg, "- dan: Reply 2. ") {
+		t.Error("an older reply is shown in place of a newer one")
+	}
+	if !regexp.MustCompile(`f-\d{6}, and \d+ more\n`).MatchString(msg) {
+		t.Error("the list of findings not shown doesn't end with \"f-NNNNNN, and N more\"")
+	}
+	// The first finding left out is named, not dropped.
+	shown := strings.Count(msg, "\n### f-")
+	if !strings.Contains(msg, fmt.Sprintf("get_thread: f-%06d, ", shown)) {
+		t.Errorf("%d findings shown; the list of the rest doesn't start at the next one", shown)
+	}
+}
+
+// get_thread truncates each comment and adds it only if it fits, so a long
+// thread stays within maxResultBytes.
+func TestGetThreadBudget(t *testing.T) {
+	replies := make([]string, 40)
+	for i := range replies {
+		replies[i] = strings.Repeat("x", 64<<10)
+	}
+	tr := tracked(t, "f-aaaaaa", "P1", state.StateOpen, replies...)
+	tr.Root.DiffHunk = strings.Repeat("+line\n", 20<<10)
+	g := &threadTool{checks: []Check{{Tracked: tr}}}
+	res := call(t, []toolloop.Tool{g.tool()}, "get_thread", `{"id": "f-aaaaaa"}`)
+	if len(res.Content) > maxResultBytes {
+		t.Errorf("get_thread returned %d bytes, over %d", len(res.Content), maxResultBytes)
+	}
+	if !strings.Contains(res.Content, "more comments not shown]") || !strings.Contains(res.Content, "x…\n") {
+		t.Errorf("get_thread didn't truncate:\n%.300s", res.Content)
+	}
+	if n := strings.Count(res.Content, "+line"); n > maxThreadComment/len("+line\n")+1 {
+		t.Errorf("get_thread shows %d diff excerpt lines; it didn't truncate the excerpt", n)
+	}
+}
+
+// Exactly maxPendingShown replies are all shown, with no note about
+// earlier ones.
+func TestVerifyOpeningShowsUpToMaxPending(t *testing.T) {
+	replies := make([]string, maxPendingShown)
+	for i := range replies {
+		replies[i] = fmt.Sprintf("Reply %d.", i)
+	}
+	msg := verifyOpening(verifyInput(t, &testllm.FakeChatClient{}, Check{Tracked: tracked(t, "f-aaaaaa", "P1", state.StateOpen, replies...)}))
+	if n := strings.Count(msg, "\n- dan: Reply "); n != maxPendingShown || strings.Contains(msg, "earlier not shown") {
+		t.Errorf("%d replies shown, or a note about earlier ones:\n%s", n, msg)
+	}
 }
 
 // Running out of time forces a submission of what the model has; the rest

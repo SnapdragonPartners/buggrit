@@ -124,7 +124,7 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 const verifySystemPrompt = `You are buggrit's verifier. On earlier passes, buggrit raised findings on this pull request, each as its own review thread. The author, usually another agent such as Claude Code, then fixed them, replied, or resolved threads. For each finding listed in the opening message, decide from the code at the reviewed head commit whether the finding still holds, and judge any new reply.
 
 How to work:
-- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for a finding's whole thread. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
+- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for a finding's thread. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
 - Batch your tool calls. The tools return almost instantly; nearly all of the time is your own thinking between calls, so whenever you know what you need next, request it all in one turn.
 - An anchor can be outdated because the code moved. Use the original diff excerpt to find where that code is now.
 - When you are done, call submit_verdicts exactly once, with a verdict for every listed finding. Do not answer in plain text.
@@ -157,19 +157,41 @@ func verifyOpening(in *VerifyInput) string {
 	b.WriteString(fileList(in.Diff, nil, 0, maxPromptFileList))
 	b.WriteString("\nCall get_diff for any file's changes.\n\n")
 
+	// Like the finder's diff, findings are added only while the whole
+	// message fits, and those that don't are named (design §5).
 	fmt.Fprintf(&b, "## Findings to verify (%d)\n\n", len(in.Checks))
-	start := b.Len()
+	var skipped []string
 	for i := range in.Checks {
-		if b.Len()-start > maxPromptDiffBytes/2 {
-			fmt.Fprintf(&b, "(%d more findings not shown for space; read each with get_thread: %s)\n\n",
-				len(in.Checks)-i, strings.Join(checkIDs(in.Checks[i:]), ", "))
-			break
+		var cb strings.Builder
+		writeCheck(&cb, &in.Checks[i], in.MaxRebuttals)
+		if b.Len()+cb.Len() > maxPromptDiffBytes-maxDeferredList {
+			skipped = append(skipped, in.Checks[i].Tracked.ID)
+			continue
 		}
-		writeCheck(&b, &in.Checks[i], in.MaxRebuttals)
+		b.WriteString(cb.String())
 	}
-	b.WriteString("Verify every finding above, then call submit_verdicts once with a verdict for each.\n")
+	if len(skipped) > 0 {
+		b.WriteString("Not shown, for space; read each with get_thread: ")
+		for i, id := range skipped {
+			sep := ""
+			if i > 0 {
+				sep = ", "
+			}
+			if b.Len() > maxPromptDiffBytes-maxVerifyClosing {
+				fmt.Fprintf(&b, "%sand %d more", sep, len(skipped)-i)
+				break
+			}
+			b.WriteString(sep + id)
+		}
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Verify every finding, then call submit_verdicts once with a verdict for each.\n")
 	return b.String()
 }
+
+// maxVerifyClosing is held back from the list of findings not shown, for
+// the lines that close the opening message.
+const maxVerifyClosing = 1 << 10
 
 func checkIDs(checks []Check) []string {
 	ids := make([]string, len(checks))
@@ -180,8 +202,12 @@ func checkIDs(checks []Check) []string {
 }
 
 // maxCheckText bounds one finding's text, and each reply, in the opening
-// message; get_thread has the rest.
-const maxCheckText = 6 << 10
+// message, and maxPendingShown the number of replies it shows: the newest,
+// since they usually settle the finding. get_thread has the rest.
+const (
+	maxCheckText    = 6 << 10
+	maxPendingShown = 5
+)
 
 func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
 	t := c.Tracked
@@ -201,9 +227,14 @@ func writeCheck(b *strings.Builder, c *Check, maxRebuttals int) {
 		fmt.Fprintf(b, "Diff excerpt the finding was raised on:\n\n%s\n%s\n%s\n\n", codeFenceFor(h), truncate(h, maxCheckText), codeFenceFor(h))
 	}
 	if len(t.Pending) > 0 {
-		b.WriteString("New replies to judge:\n\n")
-		for i := range t.Pending {
-			fmt.Fprintf(b, "- %s: %s\n", t.Pending[i].Author, truncate(strings.TrimSpace(t.Pending[i].Body), maxCheckText))
+		b.WriteString("New replies to judge, oldest first:\n\n")
+		shown := t.Pending
+		if n := len(shown) - maxPendingShown; n > 0 {
+			fmt.Fprintf(b, "- (%d earlier not shown: get_thread %s)\n", n, t.ID)
+			shown = shown[n:]
+		}
+		for i := range shown {
+			fmt.Fprintf(b, "- %s: %s\n", shown[i].Author, truncate(strings.TrimSpace(shown[i].Body), maxCheckText))
 		}
 		if t.Blocking() {
 			fmt.Fprintf(b, "\nbuggrit has rebutted replies on this finding %d of %d times; after that, an open verdict sends it to a human.\n", t.Rebuttals, maxRebuttals)
@@ -242,13 +273,15 @@ func codeFenceFor(text string) string {
 	return strings.Repeat("`", max(3, longest+1))
 }
 
-// threadTool is get_thread: an earlier finding's whole thread (design §5).
+// threadTool is get_thread: an earlier finding's thread, within
+// maxResultBytes (design §5).
 type threadTool struct{ checks []Check }
 
 func (g *threadTool) tool() toolloop.Tool {
 	return toolloop.Tool{Definition: llms.ToolDefinition{
-		Name:        "get_thread",
-		Description: "Read one of the listed findings' whole review thread: the finding, its anchor, the diff excerpt it was raised on, and every reply in order.",
+		Name: "get_thread",
+		Description: "Read one of the listed findings' review thread: the finding, its anchor, the diff excerpt it was raised on, and the replies in order. " +
+			"A very long comment or thread is truncated, and the result says so.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {"id": {"type": "string", "description": "The finding's ID, such as f-7f3a2c"}},
@@ -282,8 +315,10 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 	}
 	b.WriteString("\n\n")
 	if h := strings.TrimSpace(t.Root.DiffHunk); h != "" {
-		fmt.Fprintf(&b, "Diff excerpt:\n%s\n\n", h)
+		fmt.Fprintf(&b, "Diff excerpt:\n%s\n\n", truncate(h, maxThreadComment))
 	}
+	// Each comment is truncated, and added only if it fits, so the result
+	// stays within maxResultBytes.
 	for i := range t.Thread.Comments {
 		c := &t.Thread.Comments[i]
 		who := c.Author
@@ -293,14 +328,19 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 		case slices.ContainsFunc(t.Pending, func(p github.Comment) bool { return p.DatabaseID == c.DatabaseID }):
 			who += " (new reply)"
 		}
-		fmt.Fprintf(&b, "--- %s\n%s\n\n", who, strings.TrimSpace(state.Strip(c.Body)))
-		if b.Len() > maxResultBytes {
-			b.WriteString("[thread truncated]\n")
+		entry := fmt.Sprintf("--- %s\n%s\n\n", who, truncate(strings.TrimSpace(state.Strip(c.Body)), maxThreadComment))
+		note := fmt.Sprintf("[thread truncated: %d more %s not shown]\n", len(t.Thread.Comments)-i, plural(len(t.Thread.Comments)-i, "comment"))
+		if b.Len()+len(entry)+len(note) > maxResultBytes {
+			b.WriteString(note)
 			break
 		}
+		b.WriteString(entry)
 	}
 	return ok(b.String())
 }
+
+// maxThreadComment bounds each comment, and the diff excerpt, in get_thread.
+const maxThreadComment = 16 << 10
 
 // maxReason bounds a verdict's reason, which is posted as a reply.
 const maxReason = 4000

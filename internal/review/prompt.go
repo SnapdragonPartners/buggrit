@@ -25,7 +25,9 @@ const (
 	maxOtherThreadExcerpt = 500
 	maxPromptFileList     = 48 << 10
 	// maxDeferredList is held back from the diff for the closing list of
-	// files deferred to get_diff and the final instruction.
+	// files deferred to get_diff and the final instruction. The verifier
+	// holds it back from its findings in the same way, for the list of
+	// findings deferred to get_thread (bounded by maxVerifyClosing).
 	maxDeferredList = 16 << 10
 )
 
