@@ -1,0 +1,215 @@
+# Proposal: settle findings by resolution; push-only reviews
+
+Status: **proposal**, 2026-10-25. Agreed in outline with Dan; under review.
+When it's accepted, the implementation PR folds it into `docs/design.md`
+(§1, §2, §3, §4, §6, §7, §8, §10, §11, §12) and deletes this file.
+
+## Why
+
+Three problems showed up on PR #33:
+
+1. **Queue churn.** Push runs and comment runs share one concurrency group
+   per PR. GitHub keeps one pending run per group, so a burst of replies
+   bumps out a waiting push run. The run that replaces it does the full
+   40-minute pass if the head has none, under whatever name its event
+   earned.
+2. **The completion signal goes missing** (#34). A reply from an org
+   member whose membership is private runs as `outside event`, so
+   `review` never reports on that head.
+3. **Replies are judged by a model.** A "won't fix" or "disagree" goes
+   through the verifier, which can rebut it once and then escalate to
+   `needs_human` (design §7 rule 4). Dan's development model is the
+   opposite. The PR should get as close as possible to mergeable with
+   agents alone, and a person acts only as the last safeguard, at the
+   merge. What the agent and the person agree to fix or not fix can be
+   decided anywhere, not necessarily on GitHub, and buggrit shouldn't
+   relitigate it.
+
+The one reason comment-triggered runs exist that still holds is the
+**final state**. A PR has to be able to reach a green, mergeable state
+without another push.
+
+## The model
+
+### A push runs the model; nothing else does
+
+- **A push** (`pull_request`: opened, synchronize, reopened,
+  ready_for_review) runs a **full pass**: the finder (whole PR on pass 1,
+  incremental scope after that, design §7 rule 2) and the verifier over
+  the findings it selects (below).
+- **A sync run** runs no model. It re-reads the threads, recomputes the
+  gate and refreshes the summary, in seconds. It's started by
+  `workflow_dispatch` with `mode: sync`. The agent dispatches it after
+  resolving threads, and a person can do the same from the Actions tab.
+- `workflow_dispatch` with `mode: full` (the default) reruns a full pass
+  at the current head, for example after a deadline-hit pass.
+- **No comment or review triggers.** `pull_request_review_comment` and
+  `pull_request_review` are removed. GitHub Actions has no trigger for
+  resolving a thread (`pull_request_review_thread` is webhook-only), so
+  those triggers never carried the event that matters. That's why sync is
+  an explicit dispatch.
+
+### Resolution settles a finding
+
+The thread's resolution is the human-facing lever, and **who** resolved it
+doesn't matter. An agent with a person's credentials counts the same as
+the person; design §1's trust model already says so.
+
+| Finding's state (from markers) | Thread | Meaning | What buggrit does |
+|---|---|---|---|
+| open | unresolved | Outstanding | Verified on the next push. Marked `fixed` and resolved if the defect is gone. |
+| open | resolved by anyone but buggrit | **Settled.** Accepted as is, whatever the reason | Never verified or reopened. Not counted by the gate. Dedupe never raises it again. |
+| fixed | resolved (by buggrit) | Fixed | Re-verified only if its evidence files change (design §6). Reopened as `regressed` if the defect is back. |
+| open (regressed) | unresolved | Outstanding again | As for open. |
+
+- **Replies are never a state signal.** No rebuttals, no `needs_human`,
+  no verifier `dismissed` verdict, and no `max_rebuttals`.
+- **Removed: "a bare resolution with no reply while the issue is still
+  present reopens the thread"** (design §6). This deliberately reverses
+  "an agent resolving a thread doesn't prove the issue is fixed" (§1).
+  Resolving no longer claims a fix; it settles the finding. The merge is
+  where a person confirms they're comfortable with every resolution.
+- **Unresolving a settled thread un-settles it.** It's open again, and the
+  next push verifies it. Nothing extra is needed: replay reads the current
+  `isResolved`.
+- **buggrit owns the resolution of its `fixed` threads.** The repair pass
+  (design §6) keeps a `fixed` thread resolved, which covers a run killed
+  between the marker and the resolve. Unresolving a `fixed` thread is
+  therefore not a reopen signal (see open question 1).
+- **The verifier posts only on transitions:** `fixed` and `regressed`. A
+  finding it judges still open gets no reply. With no rebuttal loop, a
+  "still open" reply on every push is noise, and the gate already says the
+  finding is outstanding.
+
+### The gate is the merge signal
+
+The `buggrit/findings` check (design §8, built in #32) is the one to make
+required. It's `success` when all of these hold:
+
+1. **The current head has a complete pass.** A pass at an earlier head
+   doesn't count, so a push after green needs its own pass. An
+   incremental pass with nothing in scope (say, a merge from the base
+   branch) completes without the finder, in seconds.
+2. **No fixed finding is left unverified.** That means a `fixed` finding
+   whose evidence files changed since its fix commit and hasn't been
+   re-verified at this head. Sync computes this without a model, from the
+   compare API, by the same selection rules as design §6.
+3. **No open, unresolved buggrit finding at or above `fail_on`.**
+
+Otherwise it's `failure`. A push run sets it to `in_progress` when it
+starts. **While pass latency is bad**, `gate.accept_incomplete: true`
+(default `false`) lets an incomplete pass at the head satisfy condition 1.
+It's a temporary switch, not the rule, because "incomplete" means part of
+the change wasn't reviewed. The real fix is latency (#19).
+
+`review` remains the "this push's pass has finished" signal for an agent
+waiting on `gh pr checks --watch`. The gate is what says "mergeable".
+
+### Concurrency
+
+| Run | Group | `cancel-in-progress` |
+|---|---|---|
+| Push, or `mode: full` dispatch | `buggrit-<pr>` | true for `pull_request` (a push cancels the pass in flight), false for a dispatch |
+| `mode: sync` dispatch | `buggrit-sync-<pr>` | true (latest wins) |
+
+Sync never touches the push queue, so the churn can't happen. buggrit's
+own comments trigger nothing, so the bot-event concurrency group, the
+job-name expression and the `outside event` naming (design §3, §8) all go
+away.
+
+Both kinds of run write the gate from a fresh read of the threads, so
+writes are idempotent. Every race is covered:
+
+- **A sync run while a push run is in flight at a newer head:** sync looks
+  up the current head, finds no complete pass there, and **leaves the gate
+  untouched**. It can't turn a running review green.
+- **A push run's final write races a sync run:** the push run reads the
+  threads again just before writing. A stale read misses a resolution
+  that happened after it, so it reports `failure`, which is the safe
+  side. Another sync corrects it.
+- **One race lands on the unsafe side:** a person *unresolves* a thread
+  between the push run's last read and its write. The gate then reports
+  green from the stale read until the next sync or push. Unresolving
+  isn't part of the agent flow, so this is accepted (open question 3).
+
+**No database is needed.** The queue churn is on GitHub's side, and
+correctness rests on fresh reads, not locks. The optional store (#28)
+stays for telemetry and the ledger (#26, #30).
+
+### What the agent does (CLAUDE.md step 9 for repos using buggrit)
+
+1. Push, then wait for `review`.
+2. For each buggrit thread:
+   - **To fix:** fix it, push, and leave the thread open; buggrit
+     verifies and resolves it.
+   - **Not to fix:** resolve it. A reply is optional, and so is
+     discussing it with the person somewhere else.
+3. After resolving threads, dispatch sync
+   (`gh workflow run buggrit.yml -f pr=<n> -f mode=sync`) and wait for
+   the gate.
+4. Stop when the gate is green. The person reviews the resolutions and
+   merges.
+
+## What goes away
+
+- Reply and review triggers; the bot-event group and job-name expression;
+  the `outside event` name and the outsider stop in `cmd/buggrit`
+  (closes #34).
+- Rebuttals, `needs_human`, the verifier's `dismissed` verdict, the
+  `seen` field and "handled" replies, and `convergence.max_rebuttals`.
+- The repair rule that unresolves an `open` thread someone resolved.
+- **Replies in the verifier's input** (open question 2). Without replies,
+  outsiders on a public repo can't put text in front of the verifier.
+  The finder still reads other reviewers' threads, filtered to the team
+  (design §1), to avoid repeating them.
+
+## Compatibility
+
+- **Existing markers:** replay keeps reading the old kinds. `rebutted`
+  and `reopened` mean open. `needs_human` means open, and since a
+  `needs_human` thread is left unresolved it counts until resolved.
+  `dismissed` and `settled` stay terminal.
+- **Config:** strict decoding would make `convergence.max_rebuttals` an
+  error in existing configs. For version 1 it's accepted, ignored, and
+  warned about in the job summary. `gate.accept_incomplete` is new.
+- **Old caller workflows** (morris, maestro-llms) still send comment and
+  review events. The binary treats those events as sync, which keeps
+  them cheap and model-free. They still share the push group until the
+  caller drops the triggers, so the README snippet and each caller get
+  updated in the release that ships this.
+
+## Effect on open issues
+
+- **#34:** closed by this, since nothing comment-triggered reports any
+  more.
+- **#32** (warn and gate): the gate conditions above replace its
+  `needs_human` clause, and the sync mode belongs with it.
+- **#30** (summary, ledger, converged line): the `awaiting human` status
+  line goes away.
+- **#31** (dedupe): "dismissed" becomes "dismissed or settled by
+  resolution".
+- **#24's** engine-side reply filtering mostly goes away with replies
+  leaving the verifier. Fork-PR skipping stays.
+
+## Open questions for review
+
+1. **Unresolving a `fixed` thread.** Should a person be able to reopen a
+   `fixed` finding by unresolving it? Repair can't tell that apart from a
+   run killed before its resolve, unless the `fixed` marker is posted
+   only after the resolve succeeds. That order flips how a killed run
+   leaves a fixed finding: resolved with no marker, which replay would
+   read as settled. That's an acceptable outcome for a finding the
+   verifier judged fixed. Proposed: keep buggrit owning `fixed` threads
+   for now.
+2. **Dropping replies from the verifier's input.** A reply such as "the
+   fix lives in the caller" helps the verifier find the evidence.
+   Proposed: drop them anyway, for less exposure and less code. The
+   verifier reads the code, and evidence files already cover fixes made
+   elsewhere.
+3. **The stale-green race on an unresolve.** Accept it, or have the push
+   run skip its gate write and always leave the gate to a sync it
+   triggers itself? An Actions run can't dispatch another without a
+   token with `actions: write`, which the App doesn't have today.
+4. **Gate condition 1 at the current head.** This keeps a docs-only push
+   after green waiting for a pass. Incremental scope makes that pass
+   short but not free.
