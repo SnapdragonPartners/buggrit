@@ -95,13 +95,18 @@ change to its evidence files doesn't re-verify or reopen it.
   reply (design §6, "never say the same thing twice"). Without replies,
   nothing would record that the check happened, and sync couldn't tell a
   successful re-verification from one the verifier never reached. So the
-  pass marker gains `"verified":["f-…",…]`, the `fixed` findings
-  re-verified as still fixed at that pass's head. It's posted with every
-  pass, complete or not, in the review body that already carries the
-  marker. A `fixed` finding's **evidence baseline** is the newer of its
-  fix commit and the head of the newest pass that listed it, among those
-  in the current head's history. Selection (design §6) and gate condition
-  2 both measure "evidence files changed" from that baseline.
+  pass marker gains `"verified":{"f-…":["path",…],…}`: each `fixed`
+  finding re-verified as still fixed at that pass's head, with the
+  `evidence_files` of that verdict. The verifier already has to return
+  them for a `fixed` verdict, and the files can differ from the earlier
+  ones if the fix has moved. It's posted with every pass, complete or
+  not, in the review body that already carries the marker. A `fixed`
+  finding's **evidence baseline** is its newest record among those whose
+  commit is in the current head's history: its fix commit with the
+  transition marker's evidence files, or the head of a pass that listed
+  it, with the files listed there. Selection (design §6) and gate
+  condition 2 both measure "evidence files changed" from that commit,
+  over those files.
 - **The verifier posts only on transitions:** `fixed` and `regressed`. A
   finding it judges still open gets no reply. With no rebuttal loop, a
   "still open" reply on every push is noise, and the gate already says the
