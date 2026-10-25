@@ -149,9 +149,30 @@ Who writes it:
 |---|---|
 | A push run starts | Sets the gate on its head to `in_progress` |
 | A push run ends, however it ends (complete, incomplete, or an error buggrit caught) | Concludes it from the rule above |
-| The binary crashes or the job times out | A final `if: always()` step runs sync, which concludes the gate with "not reviewed: the run failed" |
-| The runner is lost, so not even `always()` runs | A sync dispatch concludes an `in_progress` gate older than the job timeout as success, "not reviewed" |
-| A sync dispatch, otherwise | Concludes the gate if the head has one that isn't `in_progress`. Leaves a younger `in_progress` gate alone, since a push run is working, and creates none on a head that has no gate. |
+| The binary crashes or the job times out | A final `if: always()` step runs sync, which concludes the gate by the rule above, with "not reviewed: the run failed" in the summary |
+| A sync run | Asks the Actions API whether a buggrit push or `mode: full` run for the head is queued or in progress. **If one is**, it leaves the gate alone: that run owns it, and it creates none if the head has none yet. **If none is**, it creates the gate if it's missing, or concludes it if it isn't concluded, by the same rule as every writer. If the head has no pass, the summary says "not reviewed". |
+
+The last row is what recovers every way a push run can end without
+concluding the gate:
+- it failed before creating the gate (token minting, binary install);
+- its runner was lost, so not even `always()` ran. GitHub marks the run
+  failed once the runner stops responding;
+- it was cancelled by a newer push. That push's run owns the new head,
+  and the old head no longer matters.
+
+Even a recovered gate stays red while a blocking finding is open. A
+crashed run never turns findings green.
+
+Reading run status is an Actions concern, so it lives in `cmd/buggrit`
+(the front end), not the engine (CLAUDE.md, "keep the review engine free
+of GitHub Actions specifics"). The job's `GITHUB_TOKEN` needs
+`actions: read`.
+
+**Residual gap:** if buggrit can't start at all, for example because its
+release is broken, then neither the `always()` step nor sync can run, and a
+required gate stays unconcluded. The workaround is the repository's: a
+ruleset bypass, or making the check optional until buggrit is fixed.
+Nothing inside the workflow can do better without a hosted service.
 
 `gate.accept_incomplete` isn't needed: an incomplete pass never fails the
 gate on its own.
@@ -179,9 +200,15 @@ away.
 Both kinds of run write the gate from a fresh read of the threads, so
 writes are idempotent. The races:
 
-- **A sync run while a push run is in flight at the head:** the gate is a
-  young `in_progress`, so sync leaves it alone. A sync at a head whose push
-  run hasn't started yet finds no gate and creates none.
+- **A sync run while a push run for the head is queued or in flight:**
+  the Actions API shows it, so sync leaves the gate alone and creates
+  none.
+- **A sync run reads "no active run" just before a push run starts:** sync
+  may conclude the gate, and then the push run sets it back to
+  `in_progress` when it starts. The window is a few seconds, during which
+  the gate shows the previous conclusion. Because the conclusion is
+  computed from a fresh read of the threads, it can only be green if
+  nothing blocking was open.
 - **A push run's final write races a sync run:** a stale read can miss a
   resolution that happened after it, so the gate reports red. Another sync
   fixes it, so a workaround exists.
@@ -229,6 +256,10 @@ stays for telemetry and the ledger (#26, #30).
 - **Config:** strict decoding would make `convergence.max_rebuttals` an
   error in existing configs. For version 1 it's accepted, ignored, and
   warned about in the job summary.
+- **Permissions:** the reusable workflow's job needs `actions: read` on
+  `GITHUB_TOKEN` for sync's run check. A caller's `permissions` block caps
+  what a reusable workflow gets, so the README snippet and each caller add
+  it.
 - **Old caller workflows** (morris, maestro-llms) still send comment and
   review events. The binary treats those events as sync, which keeps
   them cheap and model-free. They still share the push group until the
