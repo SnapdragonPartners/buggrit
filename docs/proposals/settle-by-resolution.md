@@ -234,6 +234,10 @@ stays for telemetry and the ledger (#26, #30).
    author who doesn't want to fix something just resolves the thread. So
    replies add the risk of an agent talking the verifier into a false
    `fixed`, plus an injection path on public repos that needs the team
-   filter and permission lookup (#24). Dropping them removes both.
+   filter and permission lookup (#24). Dropping them removes both. Dan:
+   leave them out for now, but reconsider admitting the **PR author's**
+   replies only, for their value as rebuttals. What the models get as
+   input (comments, other reviewers' threads, the PR body) deserves its
+   own decision record.
 3. **The stale-green race is accepted** (see Concurrency).
 4. **Gate condition 1 stays at the current head.**
