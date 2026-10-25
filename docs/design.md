@@ -91,7 +91,7 @@ GitHub event
                           repairs, summary
 ```
 
-**Only a push runs buggrit.** A push runs a full pass. Rerunning that run,
+**Only a push, or a manual rerun, runs buggrit.** A push runs a full pass. Rerunning that run,
 for example after a pass that hit its deadline, does the same at the
 current head, and so does a `workflow_dispatch`, though a dispatched run's
 check shows on the branch it was dispatched on, not on the PR (§8). Comments and reviews start no runs: what
@@ -783,6 +783,10 @@ buggrit doesn't end. The rules, in order of importance:
    completed pass at HEAD.
    It also carries a hidden JSON ledger, so the agent can fetch the whole
    state with one `gh api` call.
+
+   Not built yet: today's status line is `complete at abc123: …` or
+   `incomplete at abc123: …`, which reports what the pass did rather than
+   these totals. The `converged` line and the ledger land in build step 5.
 7. **Watch for non-convergence; don't suppress findings.** If a PR reaches
    `warn_after_pass` passes and still isn't converged, buggrit says so in the
    summary and lists the findings that keep reopening or appearing. That points
@@ -862,12 +866,17 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
 buggrit has no merge check of its own, and the review itself is always
 `COMMENT`. A repository that wants findings to block merges turns on
 **require conversation resolution** in the branch's ruleset. Under the
-thread model (§6), an unresolved buggrit thread is exactly a finding nobody
-has fixed or settled: buggrit resolves a thread once it verifies the fix,
-the author resolves one to settle it, and buggrit unresolves one when a
-fixed defect comes back. So "every conversation resolved" means "no open
+thread model (§6), an unresolved buggrit thread is a finding nobody has
+fixed or settled: buggrit resolves a thread once it verifies the fix, the
+author resolves one to settle it, and buggrit unresolves one when a fixed
+defect comes back. So "every conversation resolved" means "no open
 findings", and GitHub enforces it live: resolving the last thread unblocks
-the merge, with no run.
+the merge, with no run. Two cases from §6 break the equivalence, and
+buggrit lists both in the pass review for a person: an open finding whose
+thread is resolved by an account GitHub doesn't report, and a regressed
+finding whose unresolve GitHub refused. Each thread stays resolved, so the
+rule passes, until that person reopens it or resolves it again to settle
+it.
 
 The trade-offs, accepted for the simplicity:
 
@@ -1041,7 +1050,8 @@ for those.
    `submit_findings`, posting. First real reviews. Dogfood on this repo.
 4. **Verifier and thread lifecycle:** the state machine in §6.
 5. **Convergence controls:** dedupe (including other reviewers' threads),
-   class sweep, the non-convergence warning, summary ledger.
+   class sweep, the non-convergence warning, the `converged` status line and
+   summary ledger (§7 rule 6).
 6. **Large PRs:** splitting into parallel sub-reviews, then reconciling.
    GitHub won't render very large diffs (`ErrDiffTooLarge`); for those the
    diff comes from the checkout (`git diff <merge-base>..<head>`) instead.
