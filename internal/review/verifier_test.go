@@ -177,7 +177,7 @@ func TestVerifyOpeningBudget(t *testing.T) {
 		"New replies to judge, oldest first:\n\n- (3 earlier not shown: get_thread f-000000)\n- dan: Reply 3. ",
 		fmt.Sprintf("- dan: Reply %d. ", len(replies)-1),
 		"Not shown, for space; read each with get_thread: ",
-		"more; submit_verdicts names any you leave out)",
+		"more\n\nVerify every finding",
 		"Verify every finding, then call submit_verdicts once with a verdict for each.\n",
 	} {
 		if !strings.Contains(msg, want) {
@@ -190,8 +190,8 @@ func TestVerifyOpeningBudget(t *testing.T) {
 	if strings.Contains(msg, "- dan: Reply 2. ") {
 		t.Error("an older reply is shown in place of a newer one")
 	}
-	if regexp.MustCompile(`f-\d{6}\(and`).MatchString(msg) {
-		t.Error("the list of findings not shown runs its last ID into the remainder count")
+	if !regexp.MustCompile(`f-\d{6}, and \d+ more\n`).MatchString(msg) {
+		t.Error("the list of findings not shown doesn't end with \"f-NNNNNN, and N more\"")
 	}
 	// The first finding left out is named, not dropped.
 	shown := strings.Count(msg, "\n### f-")
@@ -216,6 +216,22 @@ func TestGetThreadBudget(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "more comments not shown]") || !strings.Contains(res.Content, "x…\n") {
 		t.Errorf("get_thread didn't truncate:\n%.300s", res.Content)
+	}
+	if n := strings.Count(res.Content, "+line"); n > maxThreadComment/len("+line\n")+1 {
+		t.Errorf("get_thread shows %d diff excerpt lines; it didn't truncate the excerpt", n)
+	}
+}
+
+// Exactly maxPendingShown replies are all shown, with no note about
+// earlier ones.
+func TestVerifyOpeningShowsUpToMaxPending(t *testing.T) {
+	replies := make([]string, maxPendingShown)
+	for i := range replies {
+		replies[i] = fmt.Sprintf("Reply %d.", i)
+	}
+	msg := verifyOpening(verifyInput(t, &testllm.FakeChatClient{}, Check{Tracked: tracked(t, "f-aaaaaa", "P1", state.StateOpen, replies...)}))
+	if n := strings.Count(msg, "\n- dan: Reply "); n != maxPendingShown || strings.Contains(msg, "earlier not shown") {
+		t.Errorf("%d replies shown, or a note about earlier ones:\n%s", n, msg)
 	}
 }
 

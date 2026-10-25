@@ -124,7 +124,7 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 const verifySystemPrompt = `You are buggrit's verifier. On earlier passes, buggrit raised findings on this pull request, each as its own review thread. The author, usually another agent such as Claude Code, then fixed them, replied, or resolved threads. For each finding listed in the opening message, decide from the code at the reviewed head commit whether the finding still holds, and judge any new reply.
 
 How to work:
-- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for a finding's whole thread. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
+- Investigate with the tools: read_file, grep, list_dir, get_diff, and get_thread for a finding's thread. All tools are read-only. Read the anchored code and wherever a fix could live, such as a caller that now initializes the state.
 - Batch your tool calls. The tools return almost instantly; nearly all of the time is your own thinking between calls, so whenever you know what you need next, request it all in one turn.
 - An anchor can be outdated because the code moved. Use the original diff excerpt to find where that code is now.
 - When you are done, call submit_verdicts exactly once, with a verdict for every listed finding. Do not answer in plain text.
@@ -173,14 +173,15 @@ func verifyOpening(in *VerifyInput) string {
 	if len(skipped) > 0 {
 		b.WriteString("Not shown, for space; read each with get_thread: ")
 		for i, id := range skipped {
+			sep := ""
 			if i > 0 {
-				b.WriteString(", ")
+				sep = ", "
 			}
 			if b.Len() > maxPromptDiffBytes-maxVerifyClosing {
-				fmt.Fprintf(&b, "(and %d more; submit_verdicts names any you leave out)", len(skipped)-i)
+				fmt.Fprintf(&b, "%sand %d more", sep, len(skipped)-i)
 				break
 			}
-			b.WriteString(id)
+			b.WriteString(sep + id)
 		}
 		b.WriteString("\n\n")
 	}
@@ -272,13 +273,15 @@ func codeFenceFor(text string) string {
 	return strings.Repeat("`", max(3, longest+1))
 }
 
-// threadTool is get_thread: an earlier finding's whole thread (design §5).
+// threadTool is get_thread: an earlier finding's thread, within
+// maxResultBytes (design §5).
 type threadTool struct{ checks []Check }
 
 func (g *threadTool) tool() toolloop.Tool {
 	return toolloop.Tool{Definition: llms.ToolDefinition{
-		Name:        "get_thread",
-		Description: "Read one of the listed findings' whole review thread: the finding, its anchor, the diff excerpt it was raised on, and every reply in order.",
+		Name: "get_thread",
+		Description: "Read one of the listed findings' review thread: the finding, its anchor, the diff excerpt it was raised on, and the replies in order. " +
+			"A very long comment or thread is truncated, and the result says so.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {"id": {"type": "string", "description": "The finding's ID, such as f-7f3a2c"}},
@@ -326,8 +329,9 @@ func (g *threadTool) execute(_ context.Context, call llms.ToolCall) (toolloop.To
 			who += " (new reply)"
 		}
 		entry := fmt.Sprintf("--- %s\n%s\n\n", who, truncate(strings.TrimSpace(state.Strip(c.Body)), maxThreadComment))
-		if b.Len()+len(entry) > maxResultBytes {
-			fmt.Fprintf(&b, "[thread truncated: %d more %s not shown]\n", len(t.Thread.Comments)-i, plural(len(t.Thread.Comments)-i, "comment"))
+		note := fmt.Sprintf("[thread truncated: %d more %s not shown]\n", len(t.Thread.Comments)-i, plural(len(t.Thread.Comments)-i, "comment"))
+		if b.Len()+len(entry)+len(note) > maxResultBytes {
+			b.WriteString(note)
 			break
 		}
 		b.WriteString(entry)
