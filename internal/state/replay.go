@@ -40,7 +40,8 @@ func (t *Tracked) Blocking() bool { return t.Severity == "P0" || t.Severity == "
 // if its root comment carries a finding marker and is buggrit's own (§3);
 // other threads belong to other reviewers. Within a thread, only buggrit's
 // own transition markers for that finding count, in order. Every other
-// comment is a human's, under the trust model in §1.
+// comment is a human's, under the trust model in §1; the engine drops
+// comments from outside the team before replay (§1, "Public repositories").
 func Replay(threads []github.Thread, botLogin string) []Tracked {
 	out := make([]Tracked, 0, len(threads))
 	for i := range threads {

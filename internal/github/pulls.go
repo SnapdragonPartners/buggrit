@@ -24,6 +24,9 @@ type PullRequest struct {
 	Number  int
 	Draft   bool
 	Merged  bool
+	// Private is the base repository's visibility. On a public repository
+	// only the team's comments count (design §1, "Public repositories").
+	Private bool
 }
 
 type restUser struct {
@@ -41,8 +44,11 @@ type restPR struct {
 		Ref string `json:"ref"`
 	} `json:"head"`
 	Base struct {
-		SHA string `json:"sha"`
-		Ref string `json:"ref"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			Private bool `json:"private"`
+		} `json:"repo"`
 	} `json:"base"`
 	Number int  `json:"number"`
 	Draft  bool `json:"draft"`
@@ -76,6 +82,7 @@ func (c *Client) PullRequest(ctx context.Context, repo Repo, number int) (*PullR
 		HeadRef: pr.Head.Ref,
 		BaseSHA: pr.Base.SHA,
 		BaseRef: pr.Base.Ref,
+		Private: pr.Base.Repo.Private,
 	}, nil
 }
 

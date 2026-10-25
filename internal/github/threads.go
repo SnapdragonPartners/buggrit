@@ -14,8 +14,13 @@ type Comment struct {
 	// ID is the GraphQL node ID.
 	ID     string
 	Author string
-	Body   string
-	URL    string
+	// Association is the author's relation to the repository, as GraphQL's
+	// authorAssociation reports it: OWNER, MEMBER, COLLABORATOR,
+	// CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN or NONE.
+	// Empty for comments read over REST.
+	Association string
+	Body        string
+	URL         string
 	// CommitSHA is the commit a review comment was made on (empty for
 	// conversation comments and for replies read over REST).
 	CommitSHA string
@@ -98,6 +103,7 @@ const commentFragment = `fragment threadComment on PullRequestReviewComment {
   url
   diffHunk
   createdAt
+  authorAssociation
   author { __typename login }
   commit { oid }
 }
@@ -117,11 +123,12 @@ type gqlComment struct {
 	Commit *struct {
 		OID string `json:"oid"`
 	} `json:"commit"`
-	ID         string `json:"id"`
-	Body       string `json:"body"`
-	URL        string `json:"url"`
-	DiffHunk   string `json:"diffHunk"`
-	DatabaseID int64  `json:"databaseId"`
+	ID          string `json:"id"`
+	Association string `json:"authorAssociation"`
+	Body        string `json:"body"`
+	URL         string `json:"url"`
+	DiffHunk    string `json:"diffHunk"`
+	DatabaseID  int64  `json:"databaseId"`
 }
 
 type gqlComments struct {
@@ -144,12 +151,13 @@ type gqlThread struct {
 
 func (g *gqlComment) comment() Comment {
 	c := Comment{
-		ID:         g.ID,
-		DatabaseID: g.DatabaseID,
-		Body:       g.Body,
-		URL:        g.URL,
-		DiffHunk:   g.DiffHunk,
-		CreatedAt:  g.CreatedAt,
+		ID:          g.ID,
+		DatabaseID:  g.DatabaseID,
+		Association: g.Association,
+		Body:        g.Body,
+		URL:         g.URL,
+		DiffHunk:    g.DiffHunk,
+		CreatedAt:   g.CreatedAt,
 	}
 	if g.Author != nil { // nil for deleted ("ghost") users
 		c.Author = g.Author.Login

@@ -7,7 +7,7 @@ An automated pull-request reviewer that runs as a GitHub Action. Like Copilot co
 - is built to make the review → fix → review loop with a coding agent end in an explicit final state.
 
 > [!WARNING]
-> **Pre-release: not ready for general use.** buggrit is in early development and is being piloted on a few SnapdragonPartners repositories. Its behavior, configuration and workflow interface may change without notice between `v0` releases, and the convergence controls the design depends on (build step 5) aren't built yet. It assumes private, trusted repositories ([design §1](docs/design.md#1-goals-and-context)): on a public repository, anyone who can comment counts as a human reviewer. We aren't taking outside issues or contributions yet.
+> **Pre-release: not ready for general use.** buggrit is in early development and is being piloted on a few SnapdragonPartners repositories. Its behavior, configuration and workflow interface may change without notice between `v0` releases, and the convergence controls the design depends on (build step 5) aren't built yet. It assumes trusted repositories ([design §1](docs/design.md#1-goals-and-context)). On a private repository anyone who can comment counts as a human reviewer; on a public one only the team does (members, collaborators and anyone with write access), and fork PRs are skipped. We aren't taking outside issues or contributions yet.
 
 The design is in [docs/design.md](docs/design.md). Contributor workflow is in [CLAUDE.md](CLAUDE.md).
 
@@ -78,7 +78,7 @@ buggrit reads the config from the PR's base branch, so it starts reviewing once 
 - **Pinning:** `@v0` follows the newest v0 release. For a fixed release, pass `with: { version: v0.1.0 }`, or pin both the workflow and `version`.
 - **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint, and a self-hosted one needs Actions Runner v2.327.1 or later, plus `NODE_USE_ENV_PROXY=1` behind a proxy) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
 - **A different bot login:** set the variable `BUGGRIT_BOT_LOGIN` and `identity.bot_login` in the config to the same value.
-- **The check** to wait on is `buggrit / review`.
+- **The check** to wait on is `buggrit / review`. On a public repository, a run started by a person's reply or review, when that person's association shows as anything but `OWNER`, `MEMBER` or `COLLABORATOR`, reports as `buggrit / outside event` instead, even when buggrit reviews for real because the author has write access. A run started by a bot, Copilot included, stays `buggrit / review`. Only `review` means a pass finished: `outside event` is also the name of the quick "nothing to do" stop for an outsider, so after a reply followed only by `outside event`, dispatch the workflow (`gh workflow run <workflow> -f pr=<number>`) or push to get a `review`. Re-running the `outside event` job replays the same event and doesn't help ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal").
 
 ## Development
 

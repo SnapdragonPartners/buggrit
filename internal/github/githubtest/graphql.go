@@ -169,6 +169,6 @@ func gqlComment(c *Comment) map[string]any {
 		"id": c.NodeID, "databaseId": c.DatabaseID, "body": c.Body, "diffHunk": c.DiffHunk,
 		"url":       "https://github.example/comment/" + strconv.FormatInt(c.DatabaseID, 10),
 		"createdAt": c.CreatedAt.Format(time.RFC3339),
-		"author":    author, "commit": commit,
+		"author":    author, "commit": commit, "authorAssociation": c.Association,
 	}
 }

@@ -41,6 +41,22 @@ never merge**: a person on the team approves and merges. So buggrit doesn't
 try to be airtight against people who already have write access, which
 matches Copilot's posture. We still take the cheap precautions in §10.
 
+**Public repositories.** On a public repo, anyone on GitHub can comment, so
+"anyone who can comment" would mean everyone. There buggrit counts only the
+**team**: commenters whose author association is `OWNER`, `MEMBER` or
+`COLLABORATOR`, or, failing that, who have write or admin permission on the
+repository (an org member whose membership is private can show up as
+`CONTRIBUTOR`, or even `NONE`). Bots count too, since only an admin can
+install an App. Everyone else's comments are left out before anything reads
+the threads: they don't count as replies, don't settle a `needs_human`
+finding, never reach the verifier or the finder, and are listed in the job
+summary. On a private repo everyone who can comment is on the team anyway,
+so buggrit drops nothing there and doesn't check who started a run; that
+also spares private repos any doubt about how GitHub reports private
+members. The workflows skip fork PRs everywhere, and on public repos a run
+an outsider started stops before the model (§3 "Outside events"). Agents never merging is still the
+integrity control.
+
 ### Non-goals (for now)
 
 - Hosting a GitHub App service. The engine is a library, so a `buggrit serve`
@@ -166,8 +182,10 @@ The triggers and the concurrency group stay in the calling workflow,
 because a run enters its group before any job starts. Everything else is
 in the reusable workflow, `.github/workflows/review.yml`, whose one job:
 
-- is named `review` and skips drafts and buggrit's own events, with the
-  same login test (§3 "Bot events"). Through a reusable workflow the check
+- is named `review` and skips drafts, fork PRs and buggrit's own events,
+  with the same login test (§3 "Bot events"). On a public repository a
+  run for a possible outsider is named `outside event` (§3 "Outside
+  events"). Through a reusable workflow the check
   shows as `buggrit / review`, the caller's job name first;
 - mints the App installation token for the calling repo, and a second
   token that can only read buggrit's contents, for the release download
@@ -259,6 +277,38 @@ below) writes its own job around the composite action instead, with
   must match `identity.bot_login` (§4): a differently named App, or
   `github-actions[bot]` with the `GITHUB_TOKEN` fallback, sets the variable
   and the config. Otherwise buggrit's own comments count as human events.
+- **Outside events:** on a public repository anyone can trigger a
+  `pull_request_review_comment` or `pull_request_review` run. The workflow
+  can't tell an outsider from a teammate: a teammate whose org membership
+  is private may show any `author_association`, and an expression can't
+  read their permission. So the run starts, and `buggrit review` reads the
+  event's author from the payload (`GITHUB_EVENT_PATH`) and applies the
+  team rule in §1, association or else write access. For someone outside
+  the team it stops with "nothing to do" before the model runs, at the cost
+  of a runner start and the binary install. Private repositories skip the
+  check. Two consequences:
+  - Such a run's job is named `outside event` rather than `review` when
+    the author is a person whose association alone doesn't place them on
+    the team (anything but `OWNER`, `MEMBER` or `COLLABORATOR`). Its quick
+    success then can't hide a failing `review`, though it can hide an
+    earlier `outside event`, so that name isn't a completion signal (§8
+    "Completion signal"). A teammate whose private membership shows as
+    `CONTRIBUTOR` or `NONE` gets a real run under that name; only the name
+    is off.
+  - It shares the PR's concurrency group, since it may be a teammate's. So
+    an outsider who comments while a run is in flight replaces a pending
+    teammate run, and that teammate's reply waits for the next run (any
+    push, reply or dispatch). Pushes aren't affected, since a push cancels
+    the run in flight rather than waiting. Routing these events to the
+    throwaway group instead would let a teammate's run publish alongside
+    another one.
+
+  Bots count as the team (the payload's `user.type` is `Bot`; Copilot's
+  login there is just `Copilot`), so Copilot's reviews still start
+  reconcile runs under `review`, as before. The job `if` skips fork PRs (`pull_request.head.repo.full_name`
+  differs from the repository), which get no secrets anyway. A manual
+  dispatch has no PR in its event and always runs, since only writers can
+  dispatch.
 - **Identity:** the supported setup is a small **GitHub App** (no hosting).
   The workflow mints an installation token with
   `actions/create-github-app-token`, so comments appear as `buggrit-bot[bot]`.
@@ -282,6 +332,12 @@ below) writes its own job around the composite action instead, with
   `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
   unresolving is refused, buggrit keeps the state in markers, lists the
   affected threads in the summary as "resolve manually", and carries on.
+  A rate limit isn't a refusal (§9): it fails the pass, and the next one
+  repairs the thread.
+  On a public repository buggrit also reads commenters' permission (§6),
+  which GitHub documents as needing only **Metadata: Read**, a permission
+  every App has. A refusal there fails the run, so a missing permission
+  can't pass for "outside the team".
 - **App credentials** are set once at the org level: the variable
   `BUGGRIT_APP_ID` and the secret `BUGGRIT_APP_PRIVATE_KEY`, both visible to
   the repos buggrit runs in. The App's installation needs those repos too.
@@ -505,7 +561,10 @@ Each buggrit reply in a thread carries a transition marker
 (`{"id":"f-7f3a2c","to":"fixed","kind":"fixed","sha":"def456","seen":1234,"evidence_files":[…]}`).
 The state of a finding is the result of replaying its thread. Replay only
 counts markers that pass the own-comment check in §3; marker text in anyone
-else's comment is ignored, and the comment counts as a human's.
+else's comment is ignored, and the comment counts as a human's. Comments
+from outside the team (§1 "Public repositories") are dropped before replay,
+so they count as nothing at all, and a thread an outsider started isn't
+read, nor are teammates' replies to it.
 
 - `kind` says why the transition happened, since several lead to the same
   state: `fixed`, `regressed`, `reopened` (resolved without a fix),
@@ -523,8 +582,15 @@ that buggrit regenerates every pass. It's never read back as authoritative,
 so it can't drift from the threads.
 
 History is read with GraphQL `pullRequest.reviewThreads`, which gives
-`isResolved`, `isOutdated`, the anchor, and all comments with authors. That
-covers our findings plus human or agent replies.
+`isResolved`, `isOutdated`, the anchor, and all comments with authors and
+their `authorAssociation`. That covers our findings plus human or agent
+replies. When a comment's association doesn't place its author on the team,
+buggrit reads the author's permission once per run (`GET
+/repos/{owner}/{repo}/collaborators/{login}/permission`), shared by the
+front end's event check (§3 "Outside events") and the engine. A 404 (no
+such user) leaves the author outside. Any other error fails the run rather
+than drop what may be a teammate's reply: a 403 is about the token, not the
+author, and a rate limit buggrit can't wait out is temporary.
 
 Threads started by **other reviewers** (Copilot, humans) are also read.
 buggrit doesn't manage them, but it treats them as already-raised issues:
@@ -582,10 +648,12 @@ fixed ── defect is back (re-verify or dedupe match) ─► open (unresolve +
   So the fence is an optimization that avoids pointless mutations, and
   correctness comes from the rules above.
 - **Humans settle findings.** Under the trust model in §1, any reply or
-  resolution by someone other than buggrit is a human action. That includes
-  Claude Code acting with a person's credentials. Replies to `open` findings
-  go through the rebuttal rules in §7. Once a finding is `needs_human`, the
-  next reply or resolution from anyone settles it as `dismissed`, and buggrit
+  resolution by someone on the team other than buggrit is a human action.
+  That includes Claude Code acting with a person's credentials. (Resolving
+  needs write access or authorship of the PR, so a resolution always comes
+  from the team.) Replies to `open` findings go through the rebuttal rules
+  in §7. Once a finding is `needs_human`, the next reply or resolution from
+  anyone on the team settles it as `dismissed`, and buggrit
   doesn't argue. Only a reply posted after the `needs_human` marker counts.
   One that landed while buggrit was deciding answered the earlier state; it
   stays unhandled, but it settles nothing. The one thing that never settles a finding is **a bare
@@ -815,6 +883,24 @@ title. The finding ID is `f-` plus the fingerprint's first six hex digits.
   (`gh pr checks --watch`). In a repo on the reusable workflow it shows as
   `buggrit / review` (§3). Runs skipped for buggrit's own events report
   under another name, so they don't stand in for it (§3 "Bot events").
+  On a public repository, a run started by a person's reply or review,
+  when that person's association isn't `OWNER`, `MEMBER` or
+  `COLLABORATOR`, reports as `outside event` instead (`buggrit / outside
+  event`), whether it stops for an outsider or reviews for a teammate
+  with write access (§3 "Outside events"). A run started by a bot,
+  Copilot included, keeps the name `review`.
+- `review` is the only completion signal. A green `outside event` says
+  nothing about whether a pass ran: it is also the name of an outsider's
+  "nothing to do" stop, and since the panel shows only the newest run per
+  name, a later stop can hide an earlier `outside event` that failed. An
+  outsider's event can also replace a teammate's pending run (§3), so a
+  reply can end with an `outside event` and no run of its own. So an
+  agent whose reply was followed only by `outside event` doesn't take it
+  as its pass: it dispatches the workflow (or pushes) to get a `review`.
+  A dispatch at a head with a complete pass only reconciles (§2), so it's
+  cheap even when the earlier run was real. Re-running the `outside
+  event` job doesn't help: it replays the same event, so it keeps that
+  name and, for an outsider, stops again.
 - Optional **gate check** (`gate.fail_on`): a separate `buggrit/findings`
   check run on the head, created through the Checks API. It is the check
   to make required, rather than `review`. `review` reports only the run's
@@ -913,8 +999,11 @@ enforce lane limits (for example LunaRoute) or limits shared across runs,
 reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
 and circuit-breaker policy come from the `maestro-llms` recommended chain.
 
-GitHub calls retry rate limits (429, or 403 with `Retry-After` or an
-exhausted quota) for every method, waiting up to 60 seconds. Longer waits
+GitHub calls retry rate limits (429; 403 with `Retry-After` or an exhausted
+`X-RateLimit-Remaining`; or a 403 whose message says "rate limit", as the
+secondary limit's sometimes does alone) for every method, waiting up to 60
+seconds. A rate limit is never a refusal: a throttled resolve fails the
+pass rather than being listed as "resolve manually" (§3). Longer waits
 fail the call, so the pass reports itself incomplete. Server errors and
 transport failures are retried only for reads, including GraphQL queries.
 A mutation that fails that way may still have landed, and the next pass's
@@ -941,6 +1030,10 @@ people who already have write access to the repo (§1).
 - **Config comes from the base branch**, so a PR can't redirect the model
   endpoint.
 - No PR code is run, and `pull_request_target` is never used.
+- **On public repositories**, only the team's comments count (§1 "Public
+  repositories"), fork PRs are skipped, and a run an outsider started stops
+  before the model (§3 "Outside events"). An outsider can't rebut a finding, settle one,
+  or put text in front of the models.
 - Tokens get the minimum permissions listed in §3. The App's Contents
   write access, needed only to resolve threads, could push code; it's
   acceptable because the token lives only in buggrit's process and the
@@ -1054,9 +1147,11 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   `GitHub` interfaces (§2), so a local front end would provide a git-diff
   workspace and print findings instead of posting them. Don't put anything
   Action-specific (env vars, event payload parsing) inside the engine.
-- **Trust model** (§1): private, trusted repos. Anyone who can comment counts
-  as human, including an agent using a person's credentials. Agents never
-  merge, and that is the integrity control. Security work is limited to
+- **Trust model** (§1): trusted repos. On a private repo anyone who can
+  comment counts as human, including an agent using a person's
+  credentials; on a public repo only the team does (association, or else
+  write access), and fork PRs are skipped. Agents never merge, and that is
+  the integrity control. Security work is limited to
   cheap precautions (§10).
 - **Identity:** a GitHub App token (`buggrit-bot[bot]`) is the supported setup,
   with the Actions `GITHUB_TOKEN` as a fallback (§3).

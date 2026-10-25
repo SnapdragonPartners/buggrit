@@ -240,3 +240,50 @@ func TestParseRepo(t *testing.T) {
 		}
 	}
 }
+
+// A rate limit GitHub won't lift in time is an error, but not a refusal:
+// callers that fall back on IsForbidden must not take it for one.
+func TestRateLimitIsNotForbidden(t *testing.T) {
+	tests := []struct {
+		header    map[string]string
+		name      string
+		status    int
+		forbidden bool
+	}{
+		{name: "403 long Retry-After", status: 403, header: map[string]string{"Retry-After": "120"}},
+		{name: "403 quota spent", status: 403, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "9999999999"}},
+		{name: "429 long Retry-After", status: 429, header: map[string]string{"Retry-After": "120"}},
+		{name: "403 refusal", status: 403, forbidden: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _, _ := retryServer(t, 5, tt.status, tt.header)
+			_, _, err := c.do(context.Background(), &request{method: http.MethodGet, url: c.restURL + "/x"})
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if got := IsForbidden(err); got != tt.forbidden {
+				t.Errorf("IsForbidden = %v, want %v (%v)", got, tt.forbidden, err)
+			}
+		})
+	}
+}
+
+// The secondary rate limit can come with only its message.
+func TestSecondaryRateLimitMessageRetried(t *testing.T) {
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if n.Add(1) == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient("t", WithBaseURL(srv.URL))
+	c.sleep = func(context.Context, time.Duration) error { return nil }
+	if _, _, err := c.do(context.Background(), &request{method: http.MethodPost, url: c.restURL + "/x"}); err != nil || n.Load() != 2 {
+		t.Errorf("err = %v, attempts = %d; want a retry and success", err, n.Load())
+	}
+}
