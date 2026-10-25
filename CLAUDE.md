@@ -53,7 +53,7 @@ scripts/           # install.sh, the action's download and checksum step, and it
 - `make lint`: `go vet` + `golangci-lint run` (v1.64.8, pinned in CI)
 - `make vuln`: `govulncheck ./...`
 - `make check`: everything CI runs (lint, vuln, build, test)
-- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`
+- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`. **Before tagging, close every open issue labeled `release-blocker`** (`gh issue list --label release-blocker`); file one whenever a change needs work elsewhere before it ships
 - `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
 - `make deps`: check the required tools are installed
