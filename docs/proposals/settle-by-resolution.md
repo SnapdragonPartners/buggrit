@@ -51,16 +51,30 @@ without another push.
 
 ### Resolution settles a finding
 
-The thread's resolution is the human-facing lever, and **who** resolved it
-doesn't matter. An agent with a person's credentials counts the same as
-the person; design §1's trust model already says so.
+The thread's resolution is the human-facing lever. Which person or agent
+resolved it doesn't matter: an agent with a person's credentials counts
+the same as the person, as design §1's trust model already says. What
+matters is only **whether buggrit resolved it**. GraphQL's
+`reviewThread.resolvedBy` says so. Checked live: it reports
+`buggrit-bot[bot]` for threads buggrit resolved (maestro-llms#115,
+buggrit#10) and the person's login for everything else.
+
+**A thread that's resolved, and not by buggrit, is settled. That beats
+every marker.** A `fixed` or `regressed` marker posted later doesn't
+override it, and buggrit never re-resolves a thread that's already
+resolved, so `resolvedBy` keeps the settler. This covers the normal flow
+racing a pass: an agent resolves a thread after a push run selected it.
+If the run then publishes `fixed`, the thread stays settled, and a later
+change to its evidence files doesn't re-verify or reopen it.
 
 | Finding's state (from markers) | Thread | Meaning | What buggrit does |
 |---|---|---|---|
 | open | unresolved | Outstanding | Verified on the next push. Marked `fixed` and resolved if the defect is gone. |
-| open | resolved by anyone but buggrit | **Settled.** Accepted as is, whatever the reason | Never verified or reopened. Not counted by the gate. Dedupe never raises it again. |
-| fixed | resolved (by buggrit) | Fixed | Re-verified only if its evidence files change (design §6). Reopened as `regressed` if the defect is back. |
-| open (regressed) | unresolved | Outstanding again | As for open. |
+| any | resolved, `resolvedBy` not buggrit | **Settled.** Accepted as is, whatever the reason | Never verified or reopened. Not counted by the gate. Dedupe never raises it again. |
+| fixed | resolved by buggrit | Fixed | Re-verified only if its evidence files change since its baseline (below). Reopened as `regressed` if the defect is back. |
+| fixed | unresolved | A run killed before its resolve, or someone unresolved it | Repair resolves it (buggrit owns `fixed` threads). |
+| open (regressed or reopened) | resolved by buggrit | A run killed between the `regressed` marker and the unresolve | Repair unresolves it. If GitHub refuses, it's listed for manual unresolve and counts as open for the gate. |
+| any | resolved, `resolvedBy` unknown (null, such as a deleted account) | Can't tell | Not settled and not unresolved. Counts as open for the gate and is listed in the summary, failing toward "not done" like design §6's unknown resolution state. |
 
 - **Replies are never a state signal.** No rebuttals, no `needs_human`,
   no verifier `dismissed` verdict, and no `max_rebuttals`.
@@ -75,7 +89,19 @@ the person; design §1's trust model already says so.
 - **buggrit owns the resolution of its `fixed` threads.** The repair pass
   (design §6) keeps a `fixed` thread resolved, which covers a run killed
   between the marker and the resolve. Unresolving a `fixed` thread is
-  therefore not a reopen signal (see open question 1).
+  therefore not a reopen signal. Dan agreed to this for now.
+- **Every pass records what it re-verified.** A `fixed` finding re-checked
+  because its evidence files changed, and found still fixed, posts no
+  reply (design §6, "never say the same thing twice"). Without replies,
+  nothing would record that the check happened, and sync couldn't tell a
+  successful re-verification from one the verifier never reached. So the
+  pass marker gains `"verified":["f-…",…]`, the `fixed` findings
+  re-verified as still fixed at that pass's head. It's posted with every
+  pass, complete or not, in the review body that already carries the
+  marker. A `fixed` finding's **evidence baseline** is the newer of its
+  fix commit and the head of the newest pass that listed it, among those
+  in the current head's history. Selection (design §6) and gate condition
+  2 both measure "evidence files changed" from that baseline.
 - **The verifier posts only on transitions:** `fixed` and `regressed`. A
   finding it judges still open gets no reply. With no rebuttal loop, a
   "still open" reply on every push is noise, and the gate already says the
@@ -90,10 +116,10 @@ required. It's `success` when all of these hold:
    doesn't count, so a push after green needs its own pass. An
    incremental pass with nothing in scope (say, a merge from the base
    branch) completes without the finder, in seconds.
-2. **No fixed finding is left unverified.** That means a `fixed` finding
-   whose evidence files changed since its fix commit and hasn't been
-   re-verified at this head. Sync computes this without a model, from the
-   compare API, by the same selection rules as design §6.
+2. **No fixed finding is left unverified.** That means a `fixed`,
+   unsettled finding whose evidence files changed since its evidence
+   baseline (above). Sync computes this without a model, from the pass
+   markers and the compare API, by the same selection rules as design §6.
 3. **No open, unresolved buggrit finding at or above `fail_on`.**
 
 Otherwise it's `failure`. A push run sets it to `in_progress` when it
@@ -130,7 +156,7 @@ writes are idempotent. Every race is covered:
 - **One race lands on the unsafe side:** a person *unresolves* a thread
   between the push run's last read and its write. The gate then reports
   green from the stale read until the next sync or push. Unresolving
-  isn't part of the agent flow, so this is accepted (open question 3).
+  isn't part of the agent flow, so this is accepted (settled question 3).
 
 **No database is needed.** The queue churn is on GitHub's side, and
 correctness rests on fresh reads, not locks. The optional store (#28)
@@ -158,7 +184,7 @@ stays for telemetry and the ledger (#26, #30).
 - Rebuttals, `needs_human`, the verifier's `dismissed` verdict, the
   `seen` field and "handled" replies, and `convergence.max_rebuttals`.
 - The repair rule that unresolves an `open` thread someone resolved.
-- **Replies in the verifier's input** (open question 2). Without replies,
+- **Replies in the verifier's input** (settled question 2). Without replies,
   outsiders on a public repo can't put text in front of the verifier.
   The finder still reads other reviewers' threads, filtered to the team
   (design §1), to avoid repeating them.
@@ -191,25 +217,18 @@ stays for telemetry and the ledger (#26, #30).
 - **#24's** engine-side reply filtering mostly goes away with replies
   leaving the verifier. Fork-PR skipping stays.
 
-## Open questions for review
+## Questions settled with Dan
 
-1. **Unresolving a `fixed` thread.** Should a person be able to reopen a
-   `fixed` finding by unresolving it? Repair can't tell that apart from a
-   run killed before its resolve, unless the `fixed` marker is posted
-   only after the resolve succeeds. That order flips how a killed run
-   leaves a fixed finding: resolved with no marker, which replay would
-   read as settled. That's an acceptable outcome for a finding the
-   verifier judged fixed. Proposed: keep buggrit owning `fixed` threads
-   for now.
-2. **Dropping replies from the verifier's input.** A reply such as "the
-   fix lives in the caller" helps the verifier find the evidence.
-   Proposed: drop them anyway, for less exposure and less code. The
-   verifier reads the code, and evidence files already cover fixes made
-   elsewhere.
-3. **The stale-green race on an unresolve.** Accept it, or have the push
-   run skip its gate write and always leave the gate to a sync it
-   triggers itself? An Actions run can't dispatch another without a
-   token with `actions: write`, which the App doesn't have today.
-4. **Gate condition 1 at the current head.** This keeps a docs-only push
-   after green waiting for a pass. Incremental scope makes that pass
-   short but not free.
+1. **Unresolving a `fixed` thread** doesn't reopen it. buggrit owns
+   `fixed` threads for now.
+2. **Replies leave the verifier's input.** Under this model a reply has no
+   authority, so it can only be a hint. The hints that matter most, "fixed
+   in abc123" and "the fix is in the caller", are claims the verifier has
+   to check against the code anyway, and it has grep and evidence files
+   for fixes made elsewhere. A reply can also only push toward `fixed`: an
+   author who doesn't want to fix something just resolves the thread. So
+   replies add the risk of an agent talking the verifier into a false
+   `fixed`, plus an injection path on public repos that needs the team
+   filter and permission lookup (#24). Dropping them removes both.
+3. **The stale-green race is accepted** (see Concurrency).
+4. **Gate condition 1 stays at the current head.**
