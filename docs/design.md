@@ -880,10 +880,11 @@ person in three cases:
   regressed finding whose unresolve GitHub refused** (§6). The finding is
   open but its thread stays resolved, so the rule passes until a person
   reopens the thread or resolves it again to settle it.
-- **A fixed finding whose resolve GitHub refused**, as it does for a token
-  without Contents write (§3, "Identity"). The thread stays open, so the
-  rule blocks the merge although nothing is left to fix. Resolving it by
-  hand clears it.
+- **A finding buggrit resolves whose resolve GitHub refused**: a fixed
+  one, or an earlier version's `dismissed` one (§6). GitHub refuses a
+  token without Contents write (§3, "Identity"). The thread stays open, so
+  the rule blocks the merge although nothing is left to fix. Resolving it
+  by hand clears it.
 
 A pass review lists each such thread for a person. A run that posts no pass
 review lists a refusal again only in its job summary (§8, "Transition
