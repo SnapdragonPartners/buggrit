@@ -16,7 +16,7 @@ buggrit is an automated pull-request reviewer that runs as a GitHub Action. It p
 - **Trust model** (design §1): buggrit runs on trusted repos. On a private repo anyone who can comment counts as a human; on a public one only the team does (association or write access), and fork PRs are skipped. Agents never merge, which is the integrity control. Take the cheap precautions in design §10; don't build defenses against people who already have write access
 - **Convergence beats coverage.** Every feature is judged by whether it helps a PR reach a final state (design §7). A change that could make the loop longer needs a stated reason
 - Never bypass hooks with `--no-verify`; fix failures. The only exception, **push only**: a documentation-only push that Dan confirms for that specific push
-- Changes needed in `maestro-llms` go there as issues or PRs, not as workarounds here. buggrit is on v0.11.0; nothing it needs is open upstream today. `wellFormed`'s one remaining check, dropping a dangling tool-call turn from a run canceled mid-tool before the wrap-up, is buggrit's own
+- Changes needed in `maestro-llms` go there as issues or PRs, not as workarounds here. buggrit is on v0.14.0; nothing it needs is open upstream today. `wellFormed`'s one remaining check, dropping a dangling tool-call turn from a run canceled mid-tool before the wrap-up, is buggrit's own
 
 ## Dependency Discipline
 

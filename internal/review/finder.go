@@ -136,6 +136,9 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 			return "canceled", nil
 		}
 		return "model error: " + truncate(fmt.Sprint(out.Err), 300), nil
+	case toolloop.OutcomeContextExceeded:
+		// toolloop already lets a done context win over the overflow.
+		return "context window exceeded: " + truncate(fmt.Sprint(out.Err), 300), nil
 	case toolloop.OutcomeToolError:
 		// A tool stopped by the deadline or cancellation (grep's walk checks
 		// the context) is an incomplete pass, not a bug.
@@ -146,7 +149,8 @@ func incompleteReason(ctx context.Context, out *toolloop.Outcome, maxIterations 
 			return "canceled", nil //nolint:nilerr // cancellation is an incomplete pass, not a fault
 		}
 		return "", fmt.Errorf("%s: %w", terminal, out.Err)
-	case toolloop.OutcomeTerminalTool:
+	case toolloop.OutcomeTerminalTool, toolloop.OutcomeCompactionError:
+		// buggrit sets no Compact hook, so compaction can't fail.
 	}
 	return "", fmt.Errorf("%s: unexpected tool loop outcome %q", terminal, out.Kind)
 }

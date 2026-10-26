@@ -6,8 +6,8 @@ cloud.google.com/go/auth/oauth2adapt v0.2.8 h1:keo8NaayQZ6wimpNSmW5OPc283g65QNIi
 cloud.google.com/go/auth/oauth2adapt v0.2.8/go.mod h1:XQ9y31RkqZCcwJWNSx2Xvric3RrU88hAYYbjDWYDL+c=
 cloud.google.com/go/compute/metadata v0.9.0 h1:pDUj4QMoPejqq20dK0Pg2N4yG9zIkYGdBtwLoEkH9Zs=
 cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCBSM6qQI1yTBdEb3C10=
-github.com/SnapdragonPartners/maestro-llms v0.11.0 h1:rQPnkiGekn3RQZ57466rk3LoFsZnpolniUPrFY9B+mU=
-github.com/SnapdragonPartners/maestro-llms v0.11.0/go.mod h1:+LODTo/WWhag1TkTqkd5UNb/BLM/XLBm0gYAeqAB7hc=
+github.com/SnapdragonPartners/maestro-llms v0.14.0 h1:L5PVGWl1gFQrJdvPhgZnLXcfm0ry5w4SWcSNUPNXUmc=
+github.com/SnapdragonPartners/maestro-llms v0.14.0/go.mod h1:wP1SrhlJxEA006zG5tW7Bw4OKyJbg5adKnVwaCuOk98=
 github.com/anthropics/anthropic-sdk-go v1.82.0 h1:A82J+yHEMbQ3+7ObCagOX4tVm1uyBhELCHd2dDYZYuo=
 github.com/anthropics/anthropic-sdk-go v1.82.0/go.mod h1:GThfYqPJoaQ/6pmibCI98Cr4y5su2FXMUHn3NrSSnIc=
 github.com/aws/aws-sdk-go-v2 v1.47.1 h1:uOIZnp4PK3ZhKI0dNrJrhTEsLxbpXHTAJlwoS1pvAtw=

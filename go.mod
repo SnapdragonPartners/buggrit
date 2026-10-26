@@ -2,7 +2,7 @@ module github.com/SnapdragonPartners/buggrit
 
 go 1.26.10
 
-require github.com/SnapdragonPartners/maestro-llms v0.11.0
+require github.com/SnapdragonPartners/maestro-llms v0.14.0
 
 require (
 	cloud.google.com/go v0.116.0 // indirect
