@@ -305,7 +305,8 @@ below) writes its own job around the composite action instead, with
   write**. The Actions
   `GITHUB_TOKEN` with `contents: write` is untested. Whenever resolving or
   unresolving is refused, buggrit keeps the state in markers, lists the
-  affected threads in the summary as "resolve manually", and carries on.
+  affected threads in the pass's review body and the job summary as
+  "resolve manually", and carries on.
   A rate limit isn't a refusal (§9): it fails the pass, and the next one
   repairs the thread.
   On a public repository buggrit also reads commenters' permission (§1),
@@ -550,9 +551,9 @@ never a state signal.**
   thread was left unresolved, so it stays outstanding until someone
   resolves it), and `dismissed` and `settled` are terminal. Earlier
   versions' `seen` and `left_resolved` fields are ignored.
-The **summary comment** (one per PR, updated in place) is a *derived view*
-that buggrit regenerates every pass. It's never read back as authoritative,
-so it can't drift from the threads.
+The **summary** is the body of each pass's review, a *derived view* that
+buggrit writes fresh every pass. Only its pass marker is read back
+("Review baseline", below), so it can't drift from the threads.
 
 History is read with GraphQL `pullRequest.reviewThreads`, which gives
 `isResolved`, `resolvedBy`, `isOutdated`, the anchor, and all comments with
@@ -733,7 +734,7 @@ settled ── unresolved ─► its marker state again
   ([#35](https://github.com/SnapdragonPartners/buggrit/issues/35)).
 
 ### Review baseline
-Two SHAs are recorded in the summary marker and in each pass's review body:
+Two SHAs come from the pass markers in the reviews' bodies:
 - `attempted_sha`: the head of the most recent pass, complete or not.
 - `completed_sha`: the head of the most recent pass that covered its whole
   scope **and** finished publishing.

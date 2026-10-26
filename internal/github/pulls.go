@@ -334,8 +334,8 @@ func (c *Client) CreateIssueComment(ctx context.Context, repo Repo, number int, 
 	return &cm, nil
 }
 
-// UpdateIssueComment replaces a conversation comment's body; the summary is
-// updated in place (design §6).
+// UpdateIssueComment replaces a conversation comment's body; the database
+// warning is edited in place (design §6).
 func (c *Client) UpdateIssueComment(ctx context.Context, repo Repo, commentID int64, body string) (*Comment, error) {
 	var rc restComment
 	if _, _, err := c.do(ctx, &request{
