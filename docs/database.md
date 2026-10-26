@@ -67,8 +67,19 @@ none of them secret:
 
 ## Roles
 
-Connect to the `buggrit` database as `postgres` (through the proxy, below)
-and create the roles:
+Creating roles needs the built-in `postgres` user, which logs in with its
+password, so this one connection goes through a proxy without
+`--auto-iam-authn` (the migration proxy, below, logs in IAM users only).
+Keep the password in `~/.pgpass` rather than on the command line (if
+`postgres` has none, set one with `gcloud sql users set-password postgres
+--instance buggrit-db --project buggrit --prompt-for-password`):
+
+```sh
+cloud-sql-proxy --gcloud-auth --port 5434 buggrit:us-east1:buggrit-db &
+psql 'host=127.0.0.1 port=5434 user=postgres dbname=buggrit sslmode=disable'
+```
+
+Then create the roles:
 
 ```sql
 CREATE ROLE buggrit_owner NOLOGIN;

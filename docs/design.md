@@ -587,7 +587,8 @@ depends on it.
   binary needs, or a failed setup step in the workflow), the run goes on
   without it. It says why in one comment on the PR, edited in place and
   removed once the database works again or is no longer configured, and in
-  the job summary. The warning carries the failure message as is. The
+  the job summary. The warning carries the failure message as is, except
+  that the database URL and any password in it are masked (§10). The
   comment has a marker with the ID `database` and passes the own-comment
   check like any other (§3). Failing to post it is logged, not fatal.
 - **Migrations are an explicit command:** `buggrit db migrate`, run by an

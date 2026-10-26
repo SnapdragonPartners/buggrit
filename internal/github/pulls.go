@@ -301,7 +301,7 @@ func (c *Client) DeleteReviewComment(ctx context.Context, repo Repo, commentID i
 }
 
 // IssueComments lists a PR's conversation comments (not review comments),
-// where the summary lives.
+// where the database warning lives; the summary is the pass review's body.
 func (c *Client) IssueComments(ctx context.Context, repo Repo, number int) ([]Comment, error) {
 	var out []Comment
 	next := c.rest(repo.segments("issues", strconv.Itoa(number), "comments")...) + "?per_page=100"

@@ -88,6 +88,32 @@ func (r *reviewer) syncDatabaseWarning(ctx context.Context, botLogin string, num
 	return wrapWarningErr(errors.Join(errs...))
 }
 
+// redactURL takes the database URL, and any password in it, out of a
+// failure message before it's shown (design §10). pgx masks the password
+// when it quotes a URL it can't parse, but only on a best-effort basis.
+func redactURL(msg, rawURL string) string {
+	if rawURL == "" {
+		return msg
+	}
+	msg = strings.ReplaceAll(msg, rawURL, "$BUGGRIT_DATABASE_URL")
+	// The password runs from the user's colon to the last @ before any query
+	// or fragment, found by hand since a URL that fails to parse is the
+	// case that matters.
+	_, rest, ok := strings.Cut(rawURL, "://")
+	if !ok {
+		return msg
+	}
+	if i := strings.IndexAny(rest, "?#"); i >= 0 {
+		rest = rest[:i]
+	}
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		if _, pw, ok := strings.Cut(rest[:at], ":"); ok && pw != "" {
+			msg = strings.ReplaceAll(msg, pw, "xxxxx")
+		}
+	}
+	return msg
+}
+
 func wrapWarningErr(err error) error {
 	if err != nil {
 		return fmt.Errorf("can't update the database warning on the PR: %w", err)

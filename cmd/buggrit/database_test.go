@@ -13,6 +13,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 type fakeStore struct{ closed bool }
@@ -228,5 +229,38 @@ func TestReviewWithoutDatabase(t *testing.T) {
 func TestCodeBlock(t *testing.T) {
 	if got := codeBlock("a\n"); got != "```\na\n```\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestRedactURL(t *testing.T) {
+	for _, tc := range []struct{ msg, url, want string }{
+		{"dial: refused", "postgres://u:pw@h/db", "dial: refused"},
+		{`parse "postgres://u:s3cret@h:x/db": invalid port`, "postgres://u:s3cret@h:x/db", `parse "$BUGGRIT_DATABASE_URL": invalid port`},
+		{"cannot parse `postgres://u:a@b@h/db`: failed (a@b)", "postgres://u:a@b@h/db", "cannot parse `$BUGGRIT_DATABASE_URL`: failed (xxxxx)"},
+		{"no password: postgres://u@h/db?options=x@y", "postgres://u@h/db?options=x@y", "no password: $BUGGRIT_DATABASE_URL"},
+		{"not a URL: host=h", "host=h password=pw", "not a URL: host=h"},
+	} {
+		if got := redactURL(tc.msg, tc.url); got != tc.want {
+			t.Errorf("redactURL(%q, %q) = %q, want %q", tc.msg, tc.url, got, tc.want)
+		}
+	}
+}
+
+// The warning for a URL pgx can't parse doesn't carry its password.
+func TestDatabaseWarningHidesPassword(t *testing.T) {
+	e := newDBEnv(t)
+	const url = "postgres://runner:s3cret@127.0.0.1:notaport/buggrit"
+	repo, _ := github.ParseRepo("acme/widgets")
+	r := &reviewer{
+		args: &reviewArgs{databaseURL: url}, repo: repo, stderr: &e.stderr, stdout: io.Discard,
+		gh:   github.NewClient(githubtest.DefaultToken, github.WithBaseURL(e.fake.URL())),
+		deps: reviewDeps{openStore: func(ctx context.Context, url string) (io.Closer, error) { return store.Open(ctx, url) }},
+	}
+	if db := r.openDatabase(context.Background(), e.cfg, 7); db != nil {
+		t.Fatal("opened a malformed URL")
+	}
+	out := r.dbProblem + e.stderr.String() + strings.Join(e.warnings(), "")
+	if r.dbProblem == "" || len(e.warnings()) != 1 || strings.Contains(out, "s3cret") {
+		t.Errorf("dbProblem %q, warnings %q", r.dbProblem, e.warnings())
 	}
 }
