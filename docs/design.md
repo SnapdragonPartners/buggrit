@@ -1066,7 +1066,8 @@ ADR-0025).
   so it can be read and edited in place. It holds no key: `api_key_env` is
   the name of the variable with the key, as in the config (§4). It's
   decoded as strictly as the config, and needs a `base_url` and at least
-  one limit.
+  one limit. Without the database it has no effect, and the job log says
+  so.
 - **Each stage finds its bucket** by its effective model's `base_url` and
   `api_key_env` (a trailing slash doesn't matter). Stages on one endpoint
   share a bucket; a stage whose endpoint isn't listed has only the run's
@@ -1093,6 +1094,8 @@ ADR-0025).
 - **Queueing shows.** The job summary says how long the run waited for
   leases in total, so time spent behind other repositories' runs isn't
   mistaken for model time.
+
+### GitHub rate limits
 
 GitHub calls retry rate limits (429; 403 with `Retry-After` or an exhausted
 `X-RateLimit-Remaining`; or a 403 whose message says "rate limit", as the

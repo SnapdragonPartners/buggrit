@@ -85,7 +85,7 @@ func (e *dbEnv) open(t *testing.T, args reviewArgs) io.Closer {
 func (e *dbEnv) warnings() []string {
 	var out []string
 	for _, c := range e.fake.PR(7).IssueComments {
-		if strings.Contains(c.Body, "couldn't use its database") {
+		if strings.Contains(c.Body, "had a problem this run") {
 			out = append(out, c.Body)
 		}
 	}

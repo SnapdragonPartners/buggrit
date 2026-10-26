@@ -183,6 +183,9 @@ type reviewer struct {
 	shared *llm.SharedState
 	// dbProblem is why the configured database couldn't be used, or "".
 	dbProblem string
+	// stopped means the run stopped without publishing, perhaps because
+	// the head moved and a newer run owns the PR (design §2).
+	stopped bool
 }
 
 // run does the pass and returns the exit code and the job summary.
@@ -276,6 +279,7 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 
 // stop ends a run that has nothing to do; that isn't a failure.
 func (r *reviewer) stop(reason string) (int, string) {
+	r.stopped = true
 	say(r.stdout, "buggrit: nothing to do: %s\n", reason)
 	return 0, "## buggrit\n\nNothing to do: " + reason + "\n"
 }

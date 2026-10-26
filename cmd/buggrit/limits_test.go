@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -197,4 +198,57 @@ func TestReviewSharedLimitFails(t *testing.T) {
 	if !warned {
 		t.Errorf("no warning on the PR")
 	}
+}
+
+// Without a database the variable has no effect, and the log says so; it
+// isn't a database problem, since no database is configured.
+func TestRateLimitsWithoutDatabase(t *testing.T) {
+	e := newDBEnv(t)
+	if db := e.open(t, reviewArgs{rateLimits: `{"luna": {"base_url": "u", "max_concurrency": 1}}`}); db != nil {
+		t.Fatal("opened a database")
+	}
+	if !strings.Contains(e.stderr.String(), "BUGGRIT_RATE_LIMITS is set, but there's no database") || len(e.warnings()) != 0 {
+		t.Errorf("stderr %q, warnings %q", e.stderr.String(), e.warnings())
+	}
+}
+
+// A run that stopped, perhaps because the head moved, doesn't publish the
+// shared limit's problems: a newer run may own the PR (design §2).
+func TestReviewSharedProblemsAfterStop(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	e.env["BUGGRIT_DATABASE_URL"] = "postgres://runner@127.0.0.1/buggrit"
+	e.env["BUGGRIT_RATE_LIMITS"] = `{"luna": {"base_url": "https://llm.example/v1", "max_concurrency": 2}}`
+	fs := &fakeStore{buckets: &fakeBuckets{acquireErr: errors.New("connection reset")}}
+	e.deps.openStore = func(context.Context, string) (database, error) { return fs, nil }
+	e.deps.clients = func(cfg *config.Config, _ modelObserver, shared *llm.Shared) (*llm.Clients, error) {
+		// The head moves while the model runs, so publishing stops.
+		moving := &headMover{ChatClient: e.model, move: func() { e.fake.Push(7, "2222222222222222222222222222222222222222", diff) }}
+		return llm.New(cfg, llm.WithShared(shared),
+			llm.WithBase(func(*config.Model, string) (llms.ChatClient, error) { return moving, nil }))
+	}
+	code, out, errOut := e.run(t)
+	if code != 0 || !strings.Contains(out, "nothing to do") {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "connection reset") {
+		t.Errorf("stderr = %q", errOut)
+	}
+	for _, c := range e.fake.PR(7).IssueComments {
+		if strings.Contains(c.Body, "connection reset") {
+			t.Errorf("published after stopping: %q", c.Body)
+		}
+	}
+}
+
+// headMover pushes to the PR when the model is first called.
+type headMover struct {
+	llms.ChatClient
+	move func()
+	once sync.Once
+}
+
+//nolint:gocritic // hugeParam: the signature is fixed by llms.ChatClient
+func (h *headMover) Complete(ctx context.Context, req llms.ChatRequest) (llms.ChatResponse, error) {
+	h.once.Do(h.move)
+	return h.ChatClient.Complete(ctx, req) //nolint:wrapcheck // a test decorator
 }

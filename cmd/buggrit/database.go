@@ -63,8 +63,11 @@ func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number 
 			db, r.dbProblem = nil, redactURL(err.Error(), r.args.databaseURL)
 		}
 	}
-	if db != nil {
+	switch {
+	case db != nil:
 		shared = r.openShared(ctx, cfg, db)
+	case r.dbProblem == "" && r.args.rateLimits != "":
+		say(r.stderr, "buggrit: %s is set, but there's no database, so this run has only its own rate limit\n", rateLimitsEnv)
 	}
 	if r.dbProblem != "" {
 		say(r.stderr, "buggrit: warning: the database can't be used, so this run goes without it: %s\n", r.dbProblem)
@@ -92,7 +95,8 @@ func (r *reviewer) openShared(ctx context.Context, cfg *config.Config, db databa
 }
 
 // noteShared adds what went wrong with the shared rate limit during the
-// pass to the database warning.
+// pass to the database warning. A run that stopped doesn't publish it,
+// since a newer run may own the PR.
 func (r *reviewer) noteShared(ctx context.Context, cfg *config.Config, number int, s *llm.SharedState) {
 	if s == nil {
 		return
@@ -105,7 +109,9 @@ func (r *reviewer) noteShared(ctx context.Context, cfg *config.Config, number in
 		say(r.stderr, "buggrit: warning: %s\n", p)
 		r.addDatabaseProblem(p)
 	}
-	r.publishDatabaseWarning(ctx, cfg, number)
+	if !r.stopped {
+		r.publishDatabaseWarning(ctx, cfg, number)
+	}
 }
 
 func (r *reviewer) addDatabaseProblem(p string) {
@@ -196,15 +202,16 @@ func wrapWarningErr(err error) error {
 
 // databaseWarning renders the PR comment, with the failure message as is.
 func databaseWarning(problem string) (string, error) {
-	body := "> [!WARNING]\n> buggrit couldn't use its database for all of this run, and went on without it. " +
-		"Reviews don't depend on the database. This comment goes away once it works again.\n\n" +
+	body := "> [!WARNING]\n> buggrit's database, or the rate limit shared through it, had a problem this run, " +
+		"and the run went on without what failed. Reviews don't depend on the database. " +
+		"This comment goes away once it works again.\n\n" +
 		codeBlock(problem)
 	return state.Append(body, &state.Marker{ID: databaseWarningID}) //nolint:wrapcheck // a fixed, valid marker
 }
 
 // databaseSummary is the job summary's note of the same problem.
 func databaseSummary(problem string) string {
-	return "\n### Database\n\nThe database couldn't be used for all of this run, so the run went on without it:\n\n" + codeBlock(problem)
+	return "\n### Database\n\nThe database, or the rate limit shared through it, had a problem, and the run went on without what failed:\n\n" + codeBlock(problem)
 }
 
 // codeBlock fences text, with a fence longer than any backtick run in it.
