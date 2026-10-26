@@ -66,7 +66,7 @@ func setupReview(t *testing.T, model *testllm.FakeChatClient) *reviewEnv {
 
 	e.deps = reviewDeps{
 		head: func(string) (string, error) { return head, nil },
-		clients: func(cfg *config.Config, _ modelObserver) (*llm.Clients, error) {
+		clients: func(cfg *config.Config, _ modelObserver, _ *llm.Shared) (*llm.Clients, error) {
 			if cfg.Stage(config.StageFind).Model != "glm-5.3" {
 				t.Errorf("config not read from the base branch: %+v", cfg.Models)
 			}

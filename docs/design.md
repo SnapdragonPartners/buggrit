@@ -257,6 +257,8 @@ below) writes its own job around the composite action instead, with
   of those steps fails, including a caller that doesn't grant `id-token:
   write`, the job passes the reason as `BUGGRIT_DATABASE_ERROR` instead,
   and the review runs without the database (§6, "The optional database").
+  The job also passes the org variable `BUGGRIT_RATE_LIMITS` through, as
+  the environment variable of the same name (§9, "Shared rate limit").
   None of this reaches the engine (§2). The dogfood workflow runs the same
   action from its checkout of `main`, so buggrit's own PRs use the
   database too, and catch a broken action before a release does.
@@ -416,7 +418,9 @@ Notes:
 - The optional database isn't in the config. It's the org's
   infrastructure rather than the repository's, and its URL can hold a
   credential, so a run gets it as `BUGGRIT_DATABASE_URL` in its environment
-  (§3, "Database"; §6, "The optional database").
+  (§3, "Database"; §6, "The optional database"). For the same reason, the
+  rate limits shared across repositories are in the org variable
+  `BUGGRIT_RATE_LIMITS`, not here (§9, "Shared rate limit").
 
 ## 5. The review engine
 
@@ -589,7 +593,11 @@ depends on it.
   without it. It says why in one comment on the PR, edited in place and
   removed once the database works again or is no longer configured, and in
   the job summary. The warning carries the failure message as is, except
-  that the database URL and any password in it are masked (§10). The
+  that the database URL and any password in it are masked (§10). Problems
+  with the shared rate limit are database problems too: an invalid
+  `BUGGRIT_RATE_LIMITS`, a bucket that can't be set up, and, added at the
+  end of the run, a bucket that failed or a lease lost mid-run (§9,
+  "Shared rate limit"). The
   comment has a marker with the ID `database` and passes the own-comment
   check like any other (§3). Failing to post it is logged, not fatal.
 - **Migrations are an explicit command:** `buggrit db migrate`, run by an
@@ -1035,11 +1043,56 @@ minute per turn late in a pass. The system prompt therefore tells the model
 to request everything it knows it needs in one turn, and why: fewer, fuller
 turns leave more of the budget for reasoning.
 
-**Concurrency and lanes.** Every model call goes through a `Limiter` seam in
-`internal/llm`. Today it's a semaphore of `max_concurrency`. Later it can
-enforce lane limits (for example LunaRoute) or limits shared across runs,
-reusing `maestro-llms`' rate-limit middleware where that fits. Retry, timeout
-and circuit-breaker policy come from the `maestro-llms` recommended chain.
+**Concurrency.** Every model call goes through a `Limiter` seam in
+`internal/llm`: a semaphore of `max_concurrency` for the run, and for a
+stage that shares a rate limit across runs (below), a lease on its bucket
+too. Retry, timeout and circuit-breaker policy come from the `maestro-llms`
+recommended chain.
+
+### Shared rate limit
+
+Each run's `max_concurrency` bounds only that run, but every repository's
+runs use the same credentials. LunaRoute's key, for example, allows two
+requests in flight across all of them. So when the database is available
+(§6, "The optional database"), calls also take a lease on a bucket shared
+by every run that uses the same endpoint and key: maestro-llms'
+`bucket/postgres`, adapted by `ratelimit.FromBucket` (maestro-llms
+ADR-0025).
+
+- **The buckets are org settings.** The org variable
+  `BUGGRIT_RATE_LIMITS` names them, a JSON object of
+  `{"<bucket>": {"base_url", "api_key_env", "max_concurrency",
+  "tokens_per_minute", "max_wait"}}`. It's a variable rather than a secret,
+  so it can be read and edited in place. It holds no key: `api_key_env` is
+  the name of the variable with the key, as in the config (§4). It's
+  decoded as strictly as the config, and needs a `base_url` and at least
+  one limit.
+- **Each stage finds its bucket** by its effective model's `base_url` and
+  `api_key_env` (a trailing slash doesn't matter). Stages on one endpoint
+  share a bucket; a stage whose endpoint isn't listed has only the run's
+  own limit, which the job log says. Two buckets matching one stage is an
+  error.
+- **The variable wins.** At startup each run sets every bucket it uses to
+  the variable's limits (`Ensure` with overwrite), so a limit is changed by
+  editing the variable, and every repository's next run applies it. The
+  runtime role's DML is enough for that.
+- **Both limits apply.** A call takes a slot of its run's
+  `max_concurrency` first, then a lease, so it never holds a shared slot,
+  which other repositories are waiting for, while it waits for one of its
+  own.
+- **A run never hangs on the bucket.** A lease wait is bounded by the
+  bucket's `max_wait`, a quarter of `pass_deadline` by default. When the
+  wait runs out, or the backend fails, the run uses only its own limit from
+  then on, and says why in the database warning (§6). A lease lost while a
+  call held it (its renewal failed, so the limit may have been exceeded
+  once) goes in the warning too, but the run keeps using the bucket. A call
+  whose own context ends while waiting fails as it would without the
+  bucket. Leases are renewed for at most the longest stage's
+  `request_timeout` plus a minute (at least maestro-llms' default of 15
+  minutes), so a call that runs to its timeout keeps its lease.
+- **Queueing shows.** The job summary says how long the run waited for
+  leases in total, so time spent behind other repositories' runs isn't
+  mistaken for model time.
 
 GitHub calls retry rate limits (429; 403 with `Retry-After` or an exhausted
 `X-RateLimit-Remaining`; or a 403 whose message says "rate limit", as the
@@ -1116,8 +1169,10 @@ for those.
   - a forged marker in a non-buggrit comment (ignored).
 - Golden tests for diff→line mapping and comment rendering.
 - **Database:** unit tests with fakes cover the degrade paths (the warning
-  posted, edited, removed, and failing to post). The Postgres tests
-  (migrate, schema checks, the DML-only role) run against a real server
+  posted, edited, removed, and failing to post; the shared rate limit's
+  backend failing, a lease wait running out, and a lost lease). The
+  Postgres tests (migrate, schema checks, the DML-only role, and two runs
+  sharing one bucket that never have more than its limit in flight) run against a real server
   when `BUGGRIT_POSTGRES_DSN` is set; CI runs them against a service
   container. The proxy path is checked live by hand.
 - Dogfooding: buggrit reviews its own PRs from the first working milestone.
@@ -1153,8 +1208,8 @@ steps 5 and 6, so other SnapdragonPartners repos can pilot buggrit on a
 pinned release instead of copying the dogfood workflow, which changes with
 every merge to `main`. The release workflow, the composite action and the
 reusable workflow (§3) are in; running in morris alongside Copilot is
-still to come. A wide rollout waits for step 5 and for a rate limit shared
-across repos. Step 4 took two PRs. #9 added the verifier, the
+still to come. A wide rollout waits for step 5; the rate limit shared
+across repos is in (#29, §9). Step 4 took two PRs. #9 added the verifier, the
 §6 state machine, transitions, and resolve, unresolve and repair. #16 added
 reply-triggered runs. Dogfooding then showed comment-triggered runs bumping
 pending push runs out of the queue, the completion signal going missing

@@ -64,6 +64,24 @@ none of them secret:
 | `BUGGRIT_CLOUDSQL_INSTANCE` | `buggrit:us-east1:buggrit-db` |
 | `BUGGRIT_GCP_WIF_PROVIDER` | `projects/663301162144/locations/global/workloadIdentityPools/github/providers/buggrit-review` |
 | `BUGGRIT_GCP_SERVICE_ACCOUNT` | `buggrit-runner@buggrit.iam.gserviceaccount.com` |
+| `BUGGRIT_RATE_LIMITS` | the shared rate limits, below |
+
+### Shared rate limits
+
+`BUGGRIT_RATE_LIMITS` names a bucket for each model endpoint whose limit
+every repository shares (design §9, "Shared rate limit"). A stage uses a
+bucket when its `base_url` and `api_key_env` match. For LunaRoute, whose
+key allows two requests in flight:
+
+```json
+{"lunaroute": {"base_url": "https://gw.lunaroute.com/v1", "api_key_env": "LUNAROUTE_API_KEY", "max_concurrency": 2}}
+```
+
+`tokens_per_minute` is optional, and so is `max_wait` (how long a call
+waits for a lease before the run goes on with only its own limit; a
+quarter of `pass_deadline` by default). Each run sets its buckets to these
+limits, so to change one, edit the variable. The key itself stays in its
+secret.
 
 ## Roles
 

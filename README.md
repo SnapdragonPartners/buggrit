@@ -21,7 +21,7 @@ For SnapdragonPartners repositories, while buggrit is in pilot.
 - buggrit → Settings → Actions → General → Access: "Accessible from repositories in the SnapdragonPartners organization". This covers the action and the reusable workflow.
 - The `buggrit-bot` GitHub App installed on buggrit (to download release assets) and on each repository it reviews. Permissions: Pull requests and Contents, both read and write ([design §3](docs/design.md#3-trigger-packaging-permissions)).
 - The org variable `BUGGRIT_APP_ID` and the secrets `BUGGRIT_APP_PRIVATE_KEY` and `LUNAROUTE_API_KEY` visible to the repository.
-- Optionally, buggrit's database (for the rate limit shared across repositories): the org variables `BUGGRIT_CLOUDSQL_INSTANCE`, `BUGGRIT_GCP_WIF_PROVIDER` and `BUGGRIT_GCP_SERVICE_ACCOUNT`, none of them secret. [docs/database.md](docs/database.md) has the setup. Without them, buggrit runs without a database.
+- Optionally, buggrit's database (for the rate limit shared across repositories): the org variables `BUGGRIT_CLOUDSQL_INSTANCE`, `BUGGRIT_GCP_WIF_PROVIDER` and `BUGGRIT_GCP_SERVICE_ACCOUNT`, none of them secret, and `BUGGRIT_RATE_LIMITS`, which names the limits. [docs/database.md](docs/database.md) has the setup. Without them, buggrit runs without a database.
 
 **Per repository**, add `.github/workflows/buggrit.yml`:
 

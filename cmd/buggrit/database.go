@@ -8,9 +8,13 @@ import (
 	"strings"
 	"time"
 
+	bucketpg "github.com/SnapdragonPartners/maestro-llms/bucket/postgres"
+
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
+	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 // databaseWarningID is the marker ID of the PR comment that says the
@@ -21,14 +25,32 @@ const databaseWarningID = "database"
 // The Auth Proxy fetches an IAM token on the first connection.
 const openTimeout = 30 * time.Second
 
+// database is the optional database as review uses it: store.Store.
+type database interface {
+	io.Closer
+	Buckets(ctx context.Context, cfg bucketpg.Config) (sharedBuckets, error)
+}
+
+// storeDB adapts store.Store to database.
+type storeDB struct{ *store.Store }
+
+func (s storeDB) Buckets(ctx context.Context, cfg bucketpg.Config) (sharedBuckets, error) {
+	return s.Store.Buckets(ctx, cfg) //nolint:wrapcheck // the message is shown as is (design §6)
+}
+
 // openDatabase opens the optional database (design §6, "The optional
-// database"), used when BUGGRIT_DATABASE_URL is set. When it's configured
-// but can't be used, the run goes on without it, and says why in one
-// comment on the PR, edited in place, and in the job summary. That comment
-// is removed once the database works again or is no longer configured. It
-// returns nil when there's no database to use.
-func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number int) io.Closer {
-	var db io.Closer
+// database"), used when BUGGRIT_DATABASE_URL is set, and sets up the rate
+// limit shared across runs on it (design §9). When it's configured but
+// can't be used, the run goes on without it, and says why in one comment
+// on the PR, edited in place, and in the job summary. That comment is
+// removed once the database works again or is no longer configured. It
+// returns nil when there's no database to use, and the shared limit when
+// a stage has one.
+func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number int) (io.Closer, *llm.Shared) {
+	var (
+		db     database
+		shared *llm.Shared
+	)
 	switch {
 	case r.args.databaseError != "":
 		r.dbProblem = r.args.databaseError
@@ -41,16 +63,67 @@ func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number 
 			db, r.dbProblem = nil, redactURL(err.Error(), r.args.databaseURL)
 		}
 	}
+	if db != nil {
+		shared = r.openShared(ctx, cfg, db)
+	}
 	if r.dbProblem != "" {
 		say(r.stderr, "buggrit: warning: the database can't be used, so this run goes without it: %s\n", r.dbProblem)
 	}
+	r.publishDatabaseWarning(ctx, cfg, number)
+	if db == nil {
+		return nil, nil
+	}
+	return db, shared
+}
+
+// openShared sets up the shared rate limit. A problem with it is a
+// database problem: the run goes on with only its own limit.
+func (r *reviewer) openShared(ctx context.Context, cfg *config.Config, db database) *llm.Shared {
+	sctx, cancel := context.WithTimeout(ctx, openTimeout)
+	defer cancel()
+	open := func(bc bucketpg.Config) (sharedBuckets, error) { return db.Buckets(sctx, bc) }
+	log := func(format string, args ...any) { say(r.stderr, format, args...) }
+	shared, err := sharedLimits(sctx, cfg, r.args.rateLimits, open, log)
+	if err != nil {
+		r.addDatabaseProblem(redactURL(err.Error(), r.args.databaseURL))
+		return nil
+	}
+	return shared
+}
+
+// noteShared adds what went wrong with the shared rate limit during the
+// pass to the database warning.
+func (r *reviewer) noteShared(ctx context.Context, cfg *config.Config, number int, s *llm.SharedState) {
+	if s == nil {
+		return
+	}
+	problems := s.Problems()
+	if len(problems) == 0 {
+		return
+	}
+	for _, p := range problems {
+		say(r.stderr, "buggrit: warning: %s\n", p)
+		r.addDatabaseProblem(p)
+	}
+	r.publishDatabaseWarning(ctx, cfg, number)
+}
+
+func (r *reviewer) addDatabaseProblem(p string) {
+	if r.dbProblem != "" {
+		r.dbProblem += "\n"
+	}
+	r.dbProblem += p
+}
+
+// publishDatabaseWarning brings the PR's warning comment up to date, except
+// in a dry run.
+func (r *reviewer) publishDatabaseWarning(ctx context.Context, cfg *config.Config, number int) {
 	if r.args.dryRun {
-		return db
+		return
 	}
 	if err := r.syncDatabaseWarning(ctx, cfg.Identity.BotLogin, number); err != nil {
 		say(r.stderr, "buggrit: warning: %v\n", err)
 	}
-	return db
 }
 
 // syncDatabaseWarning makes the PR's warning comment match r.dbProblem:
@@ -123,7 +196,7 @@ func wrapWarningErr(err error) error {
 
 // databaseWarning renders the PR comment, with the failure message as is.
 func databaseWarning(problem string) (string, error) {
-	body := "> [!WARNING]\n> buggrit couldn't use its database, so this run went without it. " +
+	body := "> [!WARNING]\n> buggrit couldn't use its database for all of this run, and went on without it. " +
 		"Reviews don't depend on the database. This comment goes away once it works again.\n\n" +
 		codeBlock(problem)
 	return state.Append(body, &state.Marker{ID: databaseWarningID}) //nolint:wrapcheck // a fixed, valid marker
@@ -131,7 +204,7 @@ func databaseWarning(problem string) (string, error) {
 
 // databaseSummary is the job summary's note of the same problem.
 func databaseSummary(problem string) string {
-	return "\n### Database\n\nThe database couldn't be used, so this run went without it:\n\n" + codeBlock(problem)
+	return "\n### Database\n\nThe database couldn't be used for all of this run, so the run went on without it:\n\n" + codeBlock(problem)
 }
 
 // codeBlock fences text, with a fence longer than any backtick run in it.

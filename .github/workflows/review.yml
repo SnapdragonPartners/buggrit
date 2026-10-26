@@ -118,6 +118,9 @@ jobs:
           BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
           BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
+          # The rate limits shared across repositories (design §9); used only
+          # with the database.
+          BUGGRIT_RATE_LIMITS: ${{ vars.BUGGRIT_RATE_LIMITS }}
         with:
           github-token: ${{ steps.app.outputs.token }}
           download-token: ${{ steps.download.outputs.token }}
