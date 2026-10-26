@@ -38,7 +38,7 @@ func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number 
 		db, err = r.deps.openStore(octx, r.args.databaseURL)
 		cancel()
 		if err != nil {
-			db, r.dbProblem = nil, err.Error()
+			db, r.dbProblem = nil, redactURL(err.Error(), r.args.databaseURL)
 		}
 	}
 	if r.dbProblem != "" {

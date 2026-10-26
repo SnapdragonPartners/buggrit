@@ -264,3 +264,15 @@ func TestDatabaseWarningHidesPassword(t *testing.T) {
 		t.Errorf("dbProblem %q, warnings %q", r.dbProblem, e.warnings())
 	}
 }
+
+// openDatabase masks the URL and password even when the error quotes them.
+func TestDatabaseWarningMasksURL(t *testing.T) {
+	e := newDBEnv(t)
+	const url = "postgres://runner:s3cret@db.internal/buggrit"
+	e.openErr = errors.New(`dial "` + url + `": refused; password s3cret`)
+	e.open(t, reviewArgs{databaseURL: url})
+	got := e.stderr.String() + strings.Join(e.warnings(), "")
+	if len(e.warnings()) != 1 || strings.Contains(got, "s3cret") || !strings.Contains(got, `dial "$BUGGRIT_DATABASE_URL": refused; password xxxxx`) {
+		t.Errorf("stderr and warning = %q", got)
+	}
+}
