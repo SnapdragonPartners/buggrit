@@ -161,7 +161,7 @@ func (l *sharedLimiter) Reserve(ctx context.Context, req ratelimit.ReservationRe
 	if timedOut {
 		l.state.fail(fmt.Sprintf("the shared rate limit %q: no lease within max_wait (%s), so this run used only its own limit from then on", l.bucket, l.maxWait))
 	} else {
-		l.state.fail(fmt.Sprintf("the shared rate limit %q failed, so this run used only its own limit from then on: %v", l.bucket, err))
+		l.failed(err)
 	}
 	return own, nil
 }
@@ -171,20 +171,36 @@ type sharedReservation struct {
 	limiter    *sharedLimiter
 }
 
-// Commit implements ratelimit.Reservation.
+// Commit implements ratelimit.Reservation. The middleware discards its
+// error, so a backend failure here switches the run to its own limit, as
+// one while acquiring does.
 //
 //nolint:gocritic // hugeParam: the signature is fixed by ratelimit.Reservation
 func (r *sharedReservation) Commit(ctx context.Context, usage llms.Usage) error {
-	return errors.Join(r.lease.Commit(ctx, usage), r.own.Commit(ctx, usage)) //nolint:wrapcheck // each limiter's error, as is
+	err := r.lease.Commit(ctx, usage)
+	if err != nil {
+		r.limiter.failed(err)
+	}
+	return errors.Join(err, r.own.Commit(ctx, usage)) //nolint:wrapcheck // each limiter's error, as is
 }
 
 // Release implements ratelimit.Reservation. A lease that was lost while
 // held (its renewal failed, so another holder may have had the slot) is
-// reported, and the run goes on using the bucket.
+// reported, and the run goes on using the bucket. Any other failure is the
+// backend's, and switches the run to its own limit; the middleware
+// discards the error, so this is the only place it's seen.
 func (r *sharedReservation) Release(ctx context.Context) error {
 	err := r.lease.Release(ctx)
-	if errors.Is(err, bucket.ErrLeaseLost) {
+	switch {
+	case errors.Is(err, bucket.ErrLeaseLost):
 		r.limiter.state.lost(fmt.Sprintf("the shared rate limit %q: a lease expired while a call held it, so the limit may have been exceeded", r.limiter.bucket))
+	case err != nil:
+		r.limiter.failed(err)
 	}
 	return errors.Join(err, r.own.Release(ctx)) //nolint:wrapcheck // each limiter's error, as is; ErrLeaseLost stays matchable
+}
+
+// failed switches the run to its own limit after a backend failure.
+func (l *sharedLimiter) failed(err error) {
+	l.state.fail(fmt.Sprintf("the shared rate limit %q failed, so this run used only its own limit from then on: %v", l.bucket, err))
 }

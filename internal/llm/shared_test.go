@@ -48,7 +48,10 @@ func (f *inFlight) Complete(ctx context.Context, _ llms.ChatRequest) (llms.ChatR
 			return llms.ChatResponse{}, ctx.Err()
 		}
 	}
-	return testllm.TextResponse("ok"), nil
+	resp := testllm.TextResponse("ok")
+	// Usage, so the middleware reconciles the lease's tokens.
+	resp.Usage = llms.Usage{InputTokens: 1, OutputTokens: 1}
+	return resp, nil
 }
 
 func sharedClients(t *testing.T, cfg *config.Config, shared *Shared, model llms.ChatClient) *Clients {
@@ -139,11 +142,11 @@ func (f *fakeBucket) Acquire(context.Context, string, int) (bucket.Lease, error)
 	return f.lease, nil
 }
 
-type fakeLease struct{ releaseErr error }
+type fakeLease struct{ adjustErr, releaseErr error }
 
-func (*fakeLease) Adjust(context.Context, int) error { return nil }
-func (l *fakeLease) Release(context.Context) error   { return l.releaseErr }
-func (*fakeLease) Lost() <-chan struct{}             { return nil }
+func (l *fakeLease) Adjust(context.Context, int) error { return l.adjustErr }
+func (l *fakeLease) Release(context.Context) error     { return l.releaseErr }
+func (*fakeLease) Lost() <-chan struct{}               { return nil }
 
 // A failing backend switches the run to its own limit, for good: the call
 // goes ahead, and later calls don't ask the bucket.
@@ -237,4 +240,29 @@ func TestSharedLostLease(t *testing.T) {
 
 func reservation() ratelimit.ReservationRequest {
 	return ratelimit.ReservationRequest{EstimatedUnits: ratelimit.UsageUnits{Requests: 1}}
+}
+
+// A backend failure after the lease was granted, while reconciling tokens
+// or releasing, is a failure like one while acquiring, although the
+// middleware discards the error: the run switches to its own limit.
+func TestSharedLeaseBackendFailure(t *testing.T) {
+	cfg := parse(t, sharedCfg)
+	for name, lease := range map[string]*fakeLease{
+		"adjust":  {adjustErr: errors.New("adjust: timeout")},
+		"release": {releaseErr: errors.New("release: timeout")},
+	} {
+		b := &fakeBucket{lease: lease}
+		c := sharedClients(t, cfg, &Shared{Limiter: b, Stages: map[config.Stage]SharedStage{config.StageFind: {Bucket: "luna"}}}, &inFlight{})
+		for range 2 {
+			if err := call(c.Find); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		if n := b.calls.Load(); n != 1 {
+			t.Errorf("%s: bucket asked %d times, want 1", name, n)
+		}
+		if p := c.Shared.Problems(); len(p) != 1 || !strings.Contains(p[0], name+": timeout") {
+			t.Errorf("%s: problems = %q", name, p)
+		}
+	}
 }
