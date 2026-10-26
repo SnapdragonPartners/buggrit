@@ -25,7 +25,8 @@ jobs:
       postgres:
         image: postgres:18
         env:
-          POSTGRES_PASSWORD: buggrit
+          # A throwaway container: trust auth, so no password at all.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
           - 5432:5432
         options: >-
@@ -73,7 +74,7 @@ jobs:
 
       - name: Unit tests
         env:
-          BUGGRIT_POSTGRES_DSN: postgres://postgres:buggrit@localhost:5432/postgres?sslmode=disable
+          BUGGRIT_POSTGRES_DSN: postgres://postgres@localhost:5432/postgres?sslmode=disable
           # Fail rather than skip if the service isn't wired up.
           BUGGRIT_POSTGRES_REQUIRED: "1"
         run: make test

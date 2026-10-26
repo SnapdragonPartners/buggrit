@@ -22,8 +22,8 @@ import (
 // databases and roles. CI uses a service container. Each test creates its
 // own database and drops it afterwards. Locally, for example:
 //
-//	docker run -d --name buggrit-pg -e POSTGRES_PASSWORD=buggrit -p 127.0.0.1:55432:5432 postgres:18
-//	BUGGRIT_POSTGRES_DSN='postgres://postgres:buggrit@127.0.0.1:55432/postgres?sslmode=disable' make test
+//	docker run -d --name buggrit-pg -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:18
+//	BUGGRIT_POSTGRES_DSN='postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable' make test
 
 func TestMigrationsMatchSchemaVersion(t *testing.T) {
 	ups, err := fs.Glob(Migrations(), "*.up.sql")
@@ -219,14 +219,15 @@ func TestOpenAsDMLOnlyRole(t *testing.T) {
 	migrateAll(t, dsn)
 	role := fmt.Sprintf("buggrit_runtime_%d", time.Now().UnixNano())
 	exec(t, dsn,
-		"CREATE ROLE "+role+" LOGIN PASSWORD 'runtime'",
+		"CREATE ROLE "+role+" LOGIN",
 		"GRANT USAGE ON SCHEMA buggrit, bucket TO "+role,
 		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA buggrit, bucket TO "+role)
 	t.Cleanup(func() {
 		exec(t, dsn, "DROP OWNED BY "+role, "DROP ROLE "+role)
 	})
 	u, _ := url.Parse(dsn)
-	u.User = url.UserPassword(role, "runtime")
+	// The test server trusts local logins, as CI's does.
+	u.User = url.User(role)
 	s, err := Open(context.Background(), u.String())
 	if err != nil {
 		t.Fatalf("Open as the runtime role: %v", err)
