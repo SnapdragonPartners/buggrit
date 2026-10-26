@@ -871,12 +871,24 @@ fixed or settled: buggrit resolves a thread once it verifies the fix, the
 author resolves one to settle it, and buggrit unresolves one when a fixed
 defect comes back. So "every conversation resolved" means "no open
 findings", and GitHub enforces it live: resolving the last thread unblocks
-the merge, with no run. Two cases from §6 break the equivalence, and
-buggrit lists both in the pass review for a person: an open finding whose
-thread is resolved by an account GitHub doesn't report, and a regressed
-finding whose unresolve GitHub refused. Each thread stays resolved, so the
-rule passes, until that person reopens it or resolves it again to settle
-it.
+the merge, with no run.
+
+The equivalence holds while buggrit can change resolutions, and needs a
+person in three cases:
+
+- **An open thread resolved where buggrit can't see by whom**, or **a
+  regressed finding whose unresolve GitHub refused** (§6). The finding is
+  open but its thread stays resolved, so the rule passes until a person
+  reopens the thread or resolves it again to settle it.
+- **A finding buggrit resolves whose resolve GitHub refused**: a fixed
+  one, or an earlier version's `dismissed` one (§6). GitHub refuses a
+  token without Contents write (§3, "Identity"). The thread stays open, so
+  the rule blocks the merge although nothing is left to fix. Resolving it
+  by hand clears it.
+
+A pass review lists each such thread for a person. A run that posts no pass
+review lists a refusal again only in its job summary (§8, "Transition
+replies").
 
 The trade-offs, accepted for the simplicity:
 
@@ -889,7 +901,13 @@ The trade-offs, accepted for the simplicity:
   incomplete or the run fails, and rerunning that run clears it: a rerun
   keeps the PR event, so its check lands on the PR, and it looks up the
   current head (§2). A dispatch doesn't clear it, since a dispatched run's
-  check belongs to the branch it was dispatched on.
+  check belongs to the branch it was dispatched on. A skipped run also
+  reports as `buggrit / review`, and GitHub counts a skipped check as
+  passing. So for a fork PR, which buggrit skips (§1), the required check
+  passes with no review; a repository that takes fork PRs decides
+  separately how to hold them. A caller that still sends comment or review
+  events (§3, "Callers") gets skipped runs too, and has to drop those
+  triggers before it relies on the check.
 
 An earlier design had a separate `buggrit/findings` check run, with a
 severity threshold, an `in_progress` state while a pass ran, fail-green
