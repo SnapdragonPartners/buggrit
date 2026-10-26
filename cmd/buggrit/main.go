@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,9 +46,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
 	case "db":
-		ctx, stop := signalContext()
-		defer stop()
-		return runDB(ctx, defaultDBOps(), args[1:], os.Getenv, stdout, stderr)
+		// No signalContext: golang-migrate waits for its advisory lock
+		// without a context, so Ctrl-C has to end the process. The lock
+		// goes with the connection.
+		return runDB(context.Background(), defaultDBOps(), args[1:], os.Getenv, stdout, stderr)
 	case "review":
 		ctx, stop := signalContext()
 		defer stop()
