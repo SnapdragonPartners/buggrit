@@ -247,7 +247,8 @@ below) writes its own job around the composite action instead, with
   Node 24. Behind an HTTP proxy, set `NODE_USE_ENV_PROXY=1` alongside
   `HTTP_PROXY`/`HTTPS_PROXY`, since v3 dropped its own proxy handling.
 - **Database:** when the org variable `BUGGRIT_CLOUDSQL_INSTANCE` is set,
-  the job authenticates to Google Cloud with `google-github-actions/auth`
+  the job runs the composite action `.github/actions/database`, which
+  authenticates to Google Cloud with `google-github-actions/auth`
   through Workload Identity Federation (no key; the variables
   `BUGGRIT_GCP_WIF_PROVIDER` and `BUGGRIT_GCP_SERVICE_ACCOUNT` name the
   provider and the service account). It then starts a pinned,
@@ -256,7 +257,9 @@ below) writes its own job around the composite action instead, with
   of those steps fails, including a caller that doesn't grant `id-token:
   write`, the job passes the reason as `BUGGRIT_DATABASE_ERROR` instead,
   and the review runs without the database (§6, "The optional database").
-  None of this reaches the engine (§2).
+  None of this reaches the engine (§2). The dogfood workflow runs the same
+  action from its checkout of `main`, so buggrit's own PRs use the
+  database too, and catch a broken action before a release does.
 - **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
   from the PR at startup. The checkout, the diff, line anchors and markers all
   refer to that commit. GitHub's synthetic merge commit is never used. The
@@ -1075,7 +1078,9 @@ people who already have write access to the repo (§1).
 - **Database credentials** are keyless. A run gets a short-lived Google
   Cloud token through Workload Identity Federation, and the provider's
   attribute condition admits only SnapdragonPartners' repositories running
-  buggrit's reusable workflow (`job_workflow_ref` on `review.yml`). The
+  buggrit's reusable workflow or its dogfood workflow (`job_workflow_ref`
+  on `review.yml` or `buggrit.yml`). A PR to buggrit could change the
+  dogfood workflow, but only the team can open one that gets secrets (§1). The
   Auth Proxy logs in as the service account's IAM database user, whose
   role can read and write rows but not change the schema. The token file
   `google-github-actions/auth` writes is in the job's workspace, outside

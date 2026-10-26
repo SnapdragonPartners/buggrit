@@ -33,7 +33,7 @@ for role in roles/cloudsql.client roles/cloudsql.instanceUser; do
 done
 
 # Only buggrit's reusable workflow, called from a SnapdragonPartners
-# repository, gets credentials.
+# repository, and buggrit's own dogfood workflow get credentials.
 gcloud iam workload-identity-pools create github --project $PROJECT \
   --location global --display-name "GitHub Actions"
 gcloud iam workload-identity-pools providers create-oidc buggrit-review --project $PROJECT \
@@ -41,7 +41,7 @@ gcloud iam workload-identity-pools providers create-oidc buggrit-review --projec
   --display-name "buggrit review workflow" \
   --issuer-uri https://token.actions.githubusercontent.com \
   --attribute-mapping "google.subject=assertion.sub,attribute.repository_owner=assertion.repository_owner,attribute.job_workflow_ref=assertion.job_workflow_ref" \
-  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@')"
+  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && (assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@') || assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/buggrit.yml@'))"
 gcloud iam service-accounts add-iam-policy-binding $SA --project $PROJECT \
   --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/github/*"

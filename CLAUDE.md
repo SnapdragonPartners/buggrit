@@ -41,6 +41,7 @@ docs/design.md     # The binding design
 docs/database.md   # Setting up the optional database (GCP, roles, migrations)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
+.github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)
 scripts/           # install.sh, the action's download and checksum step, and its tests
 .goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
 .github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck
