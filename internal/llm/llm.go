@@ -21,7 +21,7 @@ import (
 	"github.com/SnapdragonPartners/maestro-llms/llms/providers/google"
 	"github.com/SnapdragonPartners/maestro-llms/llms/providers/ollama"
 	"github.com/SnapdragonPartners/maestro-llms/llms/providers/openai"
-	"github.com/SnapdragonPartners/maestro-llms/llms/providers/vllm"
+	"github.com/SnapdragonPartners/maestro-llms/llms/providers/openaicompat"
 	"github.com/SnapdragonPartners/maestro-llms/llms/ratelimit"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
@@ -211,14 +211,14 @@ func newProviderClient(m *config.Model, apiKey string) (llms.ChatClient, error) 
 		}
 		c, err = ollama.New(opts...)
 	case config.ProviderOpenAICompatible:
-		// maestro-llms' vllm package speaks the generic OpenAI Chat
+		// maestro-llms' openaicompat package speaks the generic OpenAI Chat
 		// Completions surface (ADR-0015), which is what LunaRoute and other
 		// OpenAI-compatible routers expose.
-		opts := []vllm.Option{vllm.WithBaseURL(m.BaseURL), vllm.WithModel(m.Model)}
+		opts := []openaicompat.Option{openaicompat.WithBaseURL(m.BaseURL), openaicompat.WithModel(m.Model)}
 		if apiKey != "" {
-			opts = append(opts, vllm.WithAPIKey(apiKey))
+			opts = append(opts, openaicompat.WithAPIKey(apiKey))
 		}
-		c, err = vllm.New(opts...)
+		c, err = openaicompat.New(opts...)
 	default:
 		return nil, fmt.Errorf("unknown provider %q", m.Provider)
 	}

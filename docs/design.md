@@ -355,7 +355,7 @@ Notes:
 - `provider` is a buggrit name, not a `maestro-llms` package name:
   `anthropic | openai | google | ollama | openai-compatible`.
   `openai-compatible` (LunaRoute, vLLM, other Chat Completions endpoints) is
-  currently backed by `maestro-llms`' `vllm` package. The mapping lives in
+  currently backed by `maestro-llms`' `openaicompat` package. The mapping lives in
   one place in `internal/llm`, so a dedicated provider can replace it later
   without changing any config.
 - `limits`: in the `unlimited` profile the token and iteration settings are
@@ -456,8 +456,8 @@ its ADR-0017). buggrit calls `toolloop` from one function in
 - **No submission:** a model that answers in text, or returns an empty
   response (a reasoning model that spent its whole output budget thinking),
   instead of submitting gets one nudge. If it still doesn't submit, or the
-  run hits a ceiling, the deadline or a model error, the pass is reported
-  incomplete with that reason. It never comes back silently empty (§9).
+  run hits a ceiling, the deadline, a context-window overflow or a model
+  error, the pass is reported incomplete with that reason. It never comes back silently empty (§9).
 - **"No ceiling":** `max_tool_iterations: 0` is passed to toolloop as
   `toolloop.NoIterationLimit`, since toolloop reads 0 as its own default
   of 8. The deadline bounds the run (maestro-llms v0.10.0,
@@ -1107,10 +1107,12 @@ v0.8.0), the LunaRoute path
 ([#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
 v0.8.1), and the toolloop preallocation fix
 ([#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73),
-v0.9.0). Since then, buggrit is on maestro-llms v0.11.0, which brought the
+v0.9.0). Since then, buggrit is on maestro-llms v0.14.0, which brought the
 empty-response and deadline outcomes and the unlimited-iteration setting
-(v0.10.0), and per-stage reasoning control (§4,
-[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86)). buggrit
+(v0.10.0), per-stage reasoning control (§4,
+[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86), v0.11.0),
+the context-overflow outcome and the `openaicompat` rename (v0.13.0), and
+toolloop compaction (v0.14.0), which buggrit doesn't use yet. buggrit
 still drops a canceled run's dangling tool-call turn before the wrap-up
 (§9); that isn't toolloop's to fix.
 

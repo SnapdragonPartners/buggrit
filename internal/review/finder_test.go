@@ -251,6 +251,15 @@ func TestFindModelError(t *testing.T) {
 	}
 }
 
+func TestFindContextExceeded(t *testing.T) {
+	overflow := &llms.ProviderError{Provider: llms.ProviderOpenAICompat, Model: "m", Kind: llms.ErrorKindContextLength, Message: "prompt too long"}
+	in := findInput(t, &testllm.FakeChatClient{Err: overflow})
+	res, err := Find(context.Background(), in)
+	if err != nil || res.Complete || !strings.HasPrefix(res.Reason, "context window exceeded: ") || !strings.Contains(res.Reason, "prompt too long") {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+}
+
 func TestFindDeadline(t *testing.T) {
 	fake := &testllm.FakeChatClient{Func: func(ctx context.Context, _ llms.ChatRequest) (llms.ChatResponse, error) {
 		<-ctx.Done()
