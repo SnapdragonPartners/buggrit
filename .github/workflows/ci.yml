@@ -14,10 +14,26 @@ permissions:
 env:
   GOLANGCI_VERSION: v1.64.8
   GOVULNCHECK_VERSION: v1.1.4
+  SQLC_VERSION: v1.31.1
 
 jobs:
   checks:
     runs-on: ubuntu-latest
+
+    # The store's Postgres tests run against this (internal/store).
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          # A throwaway container: trust auth, so no password at all.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v7
@@ -32,19 +48,23 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/go/bin
-          key: go-tools-${{ runner.os }}-golangci-${{ env.GOLANGCI_VERSION }}-vuln-${{ env.GOVULNCHECK_VERSION }}
+          key: go-tools-${{ runner.os }}-golangci-${{ env.GOLANGCI_VERSION }}-vuln-${{ env.GOVULNCHECK_VERSION }}-sqlc-${{ env.SQLC_VERSION }}
 
       - name: Install Go tools
         if: steps.cache-go-tools.outputs.cache-hit != 'true'
         run: |
           go install github.com/golangci/golangci-lint/cmd/golangci-lint@${{ env.GOLANGCI_VERSION }}
           go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@${{ env.SQLC_VERSION }}
 
       - name: Download Go module dependencies
         run: go mod download
 
       - name: Lint
         run: make lint
+
+      - name: Generated code
+        run: make sqlc-verify
 
       - name: Vulnerability check
         run: make vuln
@@ -53,4 +73,8 @@ jobs:
         run: make build
 
       - name: Unit tests
+        env:
+          BUGGRIT_POSTGRES_DSN: postgres://postgres@localhost:5432/postgres?sslmode=disable
+          # Fail rather than skip if the service isn't wired up.
+          BUGGRIT_POSTGRES_REQUIRED: "1"
         run: make test

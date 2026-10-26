@@ -301,7 +301,7 @@ func (c *Client) DeleteReviewComment(ctx context.Context, repo Repo, commentID i
 }
 
 // IssueComments lists a PR's conversation comments (not review comments),
-// where the summary lives.
+// where the database warning lives; the summary is the pass review's body.
 func (c *Client) IssueComments(ctx context.Context, repo Repo, number int) ([]Comment, error) {
 	var out []Comment
 	next := c.rest(repo.segments("issues", strconv.Itoa(number), "comments")...) + "?per_page=100"
@@ -334,8 +334,8 @@ func (c *Client) CreateIssueComment(ctx context.Context, repo Repo, number int, 
 	return &cm, nil
 }
 
-// UpdateIssueComment replaces a conversation comment's body; the summary is
-// updated in place (design §6).
+// UpdateIssueComment replaces a conversation comment's body; the database
+// warning is edited in place (design §6).
 func (c *Client) UpdateIssueComment(ctx context.Context, repo Repo, commentID int64, body string) (*Comment, error) {
 	var rc restComment
 	if _, _, err := c.do(ctx, &request{
@@ -350,8 +350,8 @@ func (c *Client) UpdateIssueComment(ctx context.Context, repo Repo, commentID in
 	return &cm, nil
 }
 
-// DeleteIssueComment deletes a conversation comment. Only the live check
-// uses it, to clean up after itself.
+// DeleteIssueComment deletes a conversation comment: the database warning
+// once it no longer applies, and the live check's own comments.
 func (c *Client) DeleteIssueComment(ctx context.Context, repo Repo, commentID int64) error {
 	if _, _, err := c.do(ctx, &request{
 		method: http.MethodDelete,

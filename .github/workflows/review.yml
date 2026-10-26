@@ -14,6 +14,12 @@ name: buggrit review
 #
 # A push runs a full pass, and so does a dispatch, at the PR's current head
 # (design §2).
+#
+# When the org sets BUGGRIT_CLOUDSQL_INSTANCE, the job also connects to
+# buggrit's optional database through the Cloud SQL Auth Proxy, with keyless
+# federated credentials (design §3, "Database"). That needs the caller to
+# grant id-token: write. If any database step fails, the review runs without
+# it and buggrit warns on the PR.
 on:
   workflow_call:
     inputs:
@@ -30,8 +36,10 @@ on:
         type: string
         default: ''
 
-permissions:
-  contents: read
+# No permissions block: the job takes the caller's, which the README's
+# snippet sets to contents: read and id-token: write. A called workflow
+# that asks for id-token: write fails to start in a caller that doesn't
+# grant it, and the database is optional.
 
 jobs:
   review:
@@ -88,6 +96,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The optional database (design §3, "Database"). A failure here
+      # reaches buggrit as BUGGRIT_DATABASE_ERROR, and the run goes on.
+      - name: Connect to the database
+        id: db
+        if: vars.BUGGRIT_CLOUDSQL_INSTANCE != ''
+        uses: SnapdragonPartners/buggrit/.github/actions/database@v0
+        with:
+          instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
       # buggrit reads .github/buggrit.json from the base branch and stops
       # with a notice if there is none (design §4).
       - name: Review
@@ -97,6 +116,8 @@ jobs:
           # two names this workflow passes through.
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
         with:
           github-token: ${{ steps.app.outputs.token }}
           download-token: ${{ steps.download.outputs.token }}

@@ -338,6 +338,7 @@ func (s *Server) routes() http.Handler {
 	handle("GET /issues/{number}/comments", "GET issue comments", s.listIssueComments)
 	handle("POST /issues/{number}/comments", "POST issue comment", s.postIssueComment)
 	handle("PATCH /issues/comments/{id}", "PATCH issue comment", s.patchIssueComment)
+	handle("DELETE /issues/comments/{id}", "DELETE issue comment", s.deleteIssueComment)
 	handle("GET /collaborators/{login}/permission", "GET permission", s.getPermission)
 	mux.HandleFunc("POST /graphql", s.wrap("graphql", s.graphql))
 	return mux
@@ -637,6 +638,26 @@ func (s *Server) deleteReviewComment(r *http.Request, login string) (int, any) {
 			pr.Threads = kept
 		}
 		return http.StatusNoContent, rawBody("")
+	}
+	return http.StatusNotFound, msg("Not Found")
+}
+
+func (s *Server) deleteIssueComment(r *http.Request, login string) (int, any) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	for _, pr := range s.prs {
+		for i, c := range pr.IssueComments {
+			if c.DatabaseID != id {
+				continue
+			}
+			if c.Author != login {
+				return http.StatusForbidden, msg("Resource not accessible by integration")
+			}
+			pr.IssueComments = append(pr.IssueComments[:i], pr.IssueComments[i+1:]...)
+			return http.StatusNoContent, rawBody("")
+		}
 	}
 	return http.StatusNotFound, msg("Not Found")
 }

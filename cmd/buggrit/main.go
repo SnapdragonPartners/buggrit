@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,9 @@ commands:
                            (run "buggrit review -h" for the flags)
   config validate [path]   validate a config file (default ` + config.Path + `)
                            and print it with defaults applied
+  db migrate [flags]       bring the optional database's schemas up to date
+                           (run as the role that owns them)
+  db status [flags]        show each schema's version
   version                  print the version
 `
 
@@ -41,6 +45,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
+	case "db":
+		// No signalContext: golang-migrate waits for its advisory lock
+		// without a context, so Ctrl-C has to end the process. The lock
+		// goes with the connection.
+		return runDB(context.Background(), defaultDBOps(), args[1:], os.Getenv, stdout, stderr)
 	case "review":
 		ctx, stop := signalContext()
 		defer stop()

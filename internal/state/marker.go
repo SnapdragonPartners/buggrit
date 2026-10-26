@@ -2,8 +2,8 @@
 // finding's state from its thread, and the thread state machine
 // (docs/design.md §6).
 //
-// Comments are buggrit's only store. Every buggrit comment ends with a hidden
-// marker carrying the machine-readable part:
+// Comments are buggrit's only store of review state. Every buggrit comment
+// ends with a hidden marker carrying the machine-readable part:
 //
 //	<!-- buggrit:v1 {"id":"f-7f3a2c","fp":"…","sev":"P1","pass":2,"sha":"abc123"} -->
 //

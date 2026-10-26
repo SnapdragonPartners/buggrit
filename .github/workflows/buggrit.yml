@@ -28,6 +28,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write # the optional database (design §3, "Database")
 
 jobs:
   review:
@@ -100,10 +101,26 @@ jobs:
         if: steps.configured.outputs.ok == 'true'
         run: go build -C buggrit-src -o "$RUNNER_TEMP/buggrit" ./cmd/buggrit
 
+      # The optional database, with main's copy of the action review.yml
+      # uses, so this stays the canary for it too. Skipped while main has no
+      # copy, as before the PR that added it.
+      - name: Connect to the database
+        id: db
+        if: >-
+          steps.configured.outputs.ok == 'true' && vars.BUGGRIT_CLOUDSQL_INSTANCE != '' &&
+          hashFiles('buggrit-src/.github/actions/database/action.yml') != ''
+        uses: ./buggrit-src/.github/actions/database
+        with:
+          instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
       - name: Review
         if: steps.configured.outputs.ok == 'true'
         env:
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           BUGGRIT_PR: ${{ github.event.pull_request.number || inputs.pr }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
         run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'
