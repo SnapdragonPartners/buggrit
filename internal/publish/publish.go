@@ -77,7 +77,7 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 			return out, err
 		}
 	}
-	if res.ReconcileOnly || res.Sync {
+	if res.ReconcileOnly {
 		return out, publishReconcile(ctx, gh, fence, ref, res, out)
 	}
 	if len(res.Transitions) > 0 {
@@ -143,8 +143,8 @@ func publishReview(ctx context.Context, gh GitHub, ref review.PRRef, res *review
 	return nil
 }
 
-// publishReconcile posts a short review for a run that posts no pass
-// review (reconcile-only or sync), when it has something to record: fixed
+// publishReconcile posts a short review for a reconcile-only run, which
+// posts no pass review, when it has something to record: fixed
 // findings it re-verified, which the review's marker records (§6,
 // "Evidence baseline"), or resolutions GitHub refused after a transition
 // from this run (§3). A repair refused again on every run is already known,

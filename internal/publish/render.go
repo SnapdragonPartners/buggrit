@@ -111,15 +111,8 @@ func codeFence(s string) string {
 // summary.
 func Status(res *review.Result) string {
 	at := short(res.HeadSHA)
-	switch {
-	case res.Skipped:
+	if res.Skipped {
 		return fmt.Sprintf("skipped at %s: %s", at, res.SkipReason)
-	case res.Sync:
-		e := earlier(res)
-		if e == "" {
-			e = "nothing to repair"
-		}
-		return fmt.Sprintf("synced at %s: %s", at, e)
 	}
 	var parts []string
 	if !res.ReconcileOnly && res.Complete {

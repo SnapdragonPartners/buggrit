@@ -19,7 +19,7 @@ For SnapdragonPartners repositories, while buggrit is in pilot.
 **Once per org** (done for SnapdragonPartners):
 
 - buggrit → Settings → Actions → General → Access: "Accessible from repositories in the SnapdragonPartners organization". This covers the action and the reusable workflow.
-- The `buggrit-bot` GitHub App installed on buggrit (to download release assets) and on each repository it reviews. Permissions: Pull requests, Contents and Checks, all read and write ([design §3](docs/design.md#3-trigger-packaging-permissions)).
+- The `buggrit-bot` GitHub App installed on buggrit (to download release assets) and on each repository it reviews. Permissions: Pull requests and Contents, both read and write ([design §3](docs/design.md#3-trigger-packaging-permissions)).
 - The org variable `BUGGRIT_APP_ID` and the secrets `BUGGRIT_APP_PRIVATE_KEY` and `LUNAROUTE_API_KEY` visible to the repository.
 
 **Per repository**, add `.github/workflows/buggrit.yml`:
@@ -34,15 +34,9 @@ on:
       pr:
         description: Pull request number to review
         required: true
-      mode:
-        description: full (rerun the pass at the current head) or sync (re-read the threads, no model)
-        type: choice
-        options: [full, sync]
-        default: full
 concurrency:
-  # Sync runs get their own group, so they never replace a pending push run.
-  group: ${{ inputs.mode == 'sync' && 'buggrit-sync' || 'buggrit' }}-${{ github.event.pull_request.number || inputs.pr }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || inputs.mode == 'sync' }}
+  group: buggrit-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
 jobs:
@@ -75,9 +69,9 @@ buggrit reads the config from the PR's base branch, so it starts reviewing once 
 - **Pinning:** `@v0` follows the newest v0 release. For a fixed release, pass `with: { version: v0.1.0 }`, or pin both the workflow and `version`.
 - **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint, and a self-hosted one needs Actions Runner v2.327.1 or later, plus `NODE_USE_ENV_PROXY=1` behind a proxy) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
 - **A different bot login:** set `identity.bot_login` in the config.
-- **The check** to wait on after a push is `buggrit / review`: it means that push's pass finished ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal"). Comments and reviews start no runs.
+- **The check** to wait on after a push is `buggrit / review`: it means that push's pass finished ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal"). Comments and reviews start no runs. To rerun the pass at the current head, say after one hit its deadline, rerun that run (`gh run rerun <run-id>`); its check stays on the PR. A dispatch (`gh workflow run buggrit.yml -f pr=<number>`) also runs a pass, but its check shows on the dispatched branch instead.
 - **Working with findings:** to fix one, push the fix and leave its thread open; buggrit checks on the next push and resolves the thread. Not fixing one? Resolve its thread: that settles it, whoever resolves it, and buggrit won't verify or raise it again. A reply is optional and carries no weight with buggrit. Unresolving a settled thread opens the finding again ([design §6](docs/design.md#6-history-and-state)).
-- **Sync runs:** `gh workflow run buggrit.yml -f pr=<number> -f mode=sync` re-reads the threads and repairs their resolutions, with no model and no checkout, and reports as `buggrit / sync`. The merge gate it will also refresh comes with build step 5 ([design §8](docs/design.md#8-what-the-agent-sees)).
+- **Blocking merges on findings:** require conversation resolution in the branch's ruleset. An open buggrit thread is a finding nobody has fixed or settled, so once every thread is resolved, the PR is clear ([design §8](docs/design.md#8-what-the-agent-sees), "Blocking merges").
 
 ## Development
 

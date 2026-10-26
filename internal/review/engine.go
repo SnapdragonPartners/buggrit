@@ -46,9 +46,6 @@ type Options struct {
 	// OnToolCall, if set, observes each tool call, with the stage that made
 	// it. With both stages running, it's called from both, concurrently.
 	OnToolCall func(config.Stage, toolloop.ToolCallEvent)
-	// Sync runs no model: it re-reads the threads and repairs their
-	// resolutions (design §2). It needs no Workspace.
-	Sync bool
 }
 
 // Result is a pass's outcome, ready to publish.
@@ -93,8 +90,6 @@ type Result struct {
 	Duplicates     int
 	BelowThreshold int
 	Skipped        bool
-	// Sync is set for a sync run (Options.Sync).
-	Sync bool
 	// ReconcileOnly is set when the head already had a complete pass: the
 	// run verifies and publishes transitions, with no finder and no review
 	// (§2, step 0).
@@ -106,10 +101,9 @@ type Result struct {
 }
 
 // Done reports whether the pass finished everything it set out to do: its
-// whole scope searched and every selected finding verified. A sync run
-// sets out to do neither. The status
+// whole scope searched and every selected finding verified. The status
 // line says "incomplete" otherwise (§7 rule 6).
-func (r *Result) Done() bool { return r.Skipped || r.Sync || (r.Complete && len(r.Unverified) == 0) }
+func (r *Result) Done() bool { return r.Skipped || (r.Complete && len(r.Unverified) == 0) }
 
 // Review runs one pass over ref, whose head is checked out as ws: pick the
 // mode, load the PR and its history, verify earlier findings and find new
@@ -148,12 +142,6 @@ func (p *pass) run(ctx context.Context) (*Result, error) {
 	}
 	res, cfg := p.res, p.cfg
 	defer func() { res.UnknownResolver = unknownResolver(p.tracked, res.Transitions) }()
-	if p.opts.Sync {
-		// Repairs need no model and no diff.
-		res.Sync = true
-		res.Transitions = transitions(p.tracked, nil, nil)
-		return res, nil
-	}
 	// Mode (§2, step 0): a full pass unless this head already has a
 	// completed one; then only earlier findings are reconciled.
 	res.ReconcileOnly = p.baseline.CompletedAt(p.ref.HeadSHA)

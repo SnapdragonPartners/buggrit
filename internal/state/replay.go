@@ -28,8 +28,6 @@ type Tracked struct {
 	// Own is buggrit's own comments on the finding, root first: what the
 	// verifier may read of the thread. Nobody else's comments reach it.
 	Own []github.Comment
-	// LastID is the database ID of the comment that carries Last.
-	LastID int64
 	// Settled is set when the thread is resolved by someone other than
 	// buggrit. That settles the finding whatever its markers say: it's
 	// never verified, reopened or counted again (§6).
@@ -89,7 +87,7 @@ func Replay(threads []github.Thread, botLogin string) []Tracked {
 }
 
 func (t *Tracked) apply(m *Marker, c *github.Comment) {
-	t.Last, t.LastID = m, c.DatabaseID
+	t.Last = m
 	t.State = m.To
 	if t.State == StateNeedsHuman {
 		// Earlier versions sent disputed findings to a human and left the
