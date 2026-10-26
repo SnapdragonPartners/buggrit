@@ -20,7 +20,7 @@ buggrit is an automated pull-request reviewer that runs as a GitHub Action. It p
 
 ## Dependency Discipline
 
-Prefer the standard library. If the needed behavior can be written clearly in roughly 200 lines of well-tested Go, write it rather than adding a dependency. A third-party dependency needs both a domain that's complex or risky to get right and a mature, well-used package; justify it in the PR body. `maestro-llms` is first-party and exempt. Its provider packages are imported only in `internal/llm`.
+Prefer the standard library. If the needed behavior can be written clearly in roughly 200 lines of well-tested Go, write it rather than adding a dependency. A third-party dependency needs both a domain that's complex or risky to get right and a mature, well-used package; justify it in the PR body. `maestro-llms` is first-party and exempt. Its provider packages are imported only in `internal/llm`. The database stack is pgx and golang-migrate (only its `database/pgx/v5` and `source/iofs` packages), as in morris; both are imported only in `internal/store`. sqlc is a build-time tool, not a dependency.
 
 `govulncheck` runs in CI. Vulnerable indirect dependencies (most arrive through `maestro-llms`' provider SDKs) are fixed by bumping them in `go.mod`, as long as tests stay green.
 
@@ -36,7 +36,9 @@ internal/state/    # Comment markers, the own-comment check, thread replay and t
 internal/glob/     # include/exclude path globs with ** (design §4)
 internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the shared stage loop, agentic verifier and finder, reconcile (design §2, §5, §6, §7)
 internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
+internal/store/    # The optional database: open and check, migrations; sqlc code in db/ (design §6, "The optional database")
 docs/design.md     # The binding design
+docs/database.md   # Setting up the optional database (GCP, roles, migrations)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 scripts/           # install.sh, the action's download and checksum step, and its tests
@@ -52,7 +54,8 @@ scripts/           # install.sh, the action's download and checksum step, and it
 - `make test`: unit tests with the race detector
 - `make lint`: `go vet` + `golangci-lint run` (v1.64.8, pinned in CI)
 - `make vuln`: `govulncheck ./...`
-- `make check`: everything CI runs (lint, vuln, build, test)
+- `make sqlc-generate`: regenerate `internal/store/db` after changing its queries or migrations; `make sqlc-verify` checks it's current
+- `make check`: everything CI runs (lint, sqlc-verify, vuln, build, test)
 - Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`. **Before tagging, close every open issue labeled `release-blocker`** (`gh issue list --label release-blocker`); file one whenever a change needs work elsewhere before it ships
 - `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
@@ -96,5 +99,5 @@ AI reviewers see only the diff and the PR body, so the body carries the design c
 
 ## Testing
 
-- New behavior comes with tests. Use `llms/testllm` fakes for model calls and `githubtest` for GitHub; tests never touch the network. The one exception is `TestLive`, which runs only when explicitly configured.
+- New behavior comes with tests. Use `llms/testllm` fakes for model calls and `githubtest` for GitHub; tests never touch the network. The exceptions run only when explicitly configured: `TestLive`, and the Postgres tests in `internal/store`, which need `BUGGRIT_POSTGRES_DSN` (CI sets it for a service container).
 - Failing tests on a branch belong to that branch. We don't waive failures as "unrelated"; fix the code or fix the test.

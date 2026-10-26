@@ -350,8 +350,8 @@ func (c *Client) UpdateIssueComment(ctx context.Context, repo Repo, commentID in
 	return &cm, nil
 }
 
-// DeleteIssueComment deletes a conversation comment. Only the live check
-// uses it, to clean up after itself.
+// DeleteIssueComment deletes a conversation comment: the database warning
+// once it no longer applies, and the live check's own comments.
 func (c *Client) DeleteIssueComment(ctx context.Context, repo Repo, commentID int64) error {
 	if _, _, err := c.do(ctx, &request{
 		method: http.MethodDelete,

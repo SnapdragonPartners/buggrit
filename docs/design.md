@@ -134,6 +134,7 @@ internal/github/      REST + GraphQL client, diff parsing, line mapping
 internal/state/       comment markers, finding ledger, thread state machine
 internal/review/      engine: verify / find / reconcile, prompts, tools, output parsing
 internal/publish/     render comments, post review, replies, resolve/unresolve, summary
+internal/store/       the optional database: open and check, migrations (§6)
 ```
 
 The engine entry point is
@@ -170,6 +171,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+  id-token: write # the optional database ("Database" below)
 jobs:
   buggrit:
     uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
@@ -190,6 +192,8 @@ in the reusable workflow, `.github/workflows/review.yml`, whose one job:
   ("Packaging" below);
 - looks up the PR's head now, not the event's (§2), and checks it out with
   `fetch-depth: 0` and `persist-credentials: false`;
+- connects to the optional database when the org has set it up
+  ("Database" below);
 - runs the composite action (`SnapdragonPartners/buggrit@v0`), passing the
   model key from the `LUNAROUTE_API_KEY` or `BUGGRIT_LLM_API_KEY` secret
   (the config's `api_key_env` names one of them);
@@ -197,8 +201,11 @@ in the reusable workflow, `.github/workflows/review.yml`, whose one job:
   (default 70, above the default `pass_deadline`, so buggrit always has time
   to publish) and `version`.
 
-The App token is all it posts with; it uses no `GITHUB_TOKEN` permission
-beyond `contents: read`. A repo on the `GITHUB_TOKEN` fallback ("Identity"
+The App token is all it posts with. The reusable workflow declares no
+permissions, so its job takes the caller's: `contents: read`, plus
+`id-token: write` for the database. A called workflow that asked for
+`id-token: write` would fail to start in a caller that doesn't grant it,
+and the database is optional. A repo on the `GITHUB_TOKEN` fallback ("Identity"
 below) writes its own job around the composite action instead, with
 `pull-requests: write`.
 
@@ -239,6 +246,17 @@ below) writes its own job around the composite action instead, with
   v2.327.1 or later, because `actions/create-github-app-token@v3` runs on
   Node 24. Behind an HTTP proxy, set `NODE_USE_ENV_PROXY=1` alongside
   `HTTP_PROXY`/`HTTPS_PROXY`, since v3 dropped its own proxy handling.
+- **Database:** when the org variable `BUGGRIT_CLOUDSQL_INSTANCE` is set,
+  the job authenticates to Google Cloud with `google-github-actions/auth`
+  through Workload Identity Federation (no key; the variables
+  `BUGGRIT_GCP_WIF_PROVIDER` and `BUGGRIT_GCP_SERVICE_ACCOUNT` name the
+  provider and the service account). It then starts a pinned,
+  checksum-verified Cloud SQL Auth Proxy with IAM database login on
+  localhost, and passes its URL to buggrit as `BUGGRIT_DATABASE_URL`. If any
+  of those steps fails, including a caller that doesn't grant `id-token:
+  write`, the job passes the reason as `BUGGRIT_DATABASE_ERROR` instead,
+  and the review runs without the database (§6, "The optional database").
+  None of this reaches the engine (§2).
 - **Snapshot:** buggrit pins the whole pass to one head SHA, which it reads
   from the PR at startup. The checkout, the diff, line anchors and markers all
   refer to that commit. GitHub's synthetic merge commit is never used. The
@@ -391,6 +409,10 @@ Notes:
   (`github-actions[bot]`) or a differently named App.
 - `buggrit config validate [path]` checks a file and prints it with defaults
   applied.
+- The optional database isn't in the config. It's the org's
+  infrastructure rather than the repository's, and its URL can hold a
+  credential, so a run gets it as `BUGGRIT_DATABASE_URL` in its environment
+  (§3, "Database"; §6, "The optional database").
 
 ## 5. The review engine
 
@@ -548,8 +570,35 @@ user) leaves the author outside. Any other error fails the run rather than
 drop what may be a teammate's thread: a 403 is about the token, not the
 author, and a rate limit buggrit can't wait out is temporary.
 
-A database may come later, for metrics across PRs and model comparisons. For
-now, comments are the only store.
+### The optional database
+
+The threads are the only review state. buggrit also has an optional
+Postgres database, for what a PR can't hold: a rate limit shared across
+repositories, and run telemetry for comparing models. A review never
+depends on it.
+
+- **Optional, inferred:** a run uses the database when
+  `BUGGRIT_DATABASE_URL` is set, and not otherwise.
+- **Degrades with a warning:** when the database is configured but can't be
+  used (no connection, failed authentication, a schema older than the
+  binary needs, or a failed setup step in the workflow), the run goes on
+  without it. It says why in one comment on the PR, edited in place and
+  removed once the database works again or is no longer configured, and in
+  the job summary. The warning carries the failure message as is. The
+  comment has a marker with the ID `database` and passes the own-comment
+  check like any other (§3). Failing to post it is logged, not fatal.
+- **Migrations are an explicit command:** `buggrit db migrate`, run by an
+  operator as the role that owns the schemas; `buggrit db status` shows
+  where each stands. Review runs never run DDL, and their role has DML
+  only. buggrit's tables are in the `buggrit` schema, and maestro-llms'
+  rate-limit tables in `bucket`, from `bucket/postgres.Migrations()`. Each
+  schema has its own golang-migrate table in it. A run checks each schema
+  is at least the version its binary needs, so an older pinned binary keeps
+  working after a migration, and `db migrate` leaves a newer schema alone.
+- **A seam, not a dependency:** the engine never sees the database. The
+  front end opens it and hands the engine small interfaces, such as a
+  limiter or a telemetry sink. The SQL stays generic where it can, so
+  another backend stays cheap.
 
 ### Resolution settles a finding
 
@@ -1023,6 +1072,14 @@ people who already have write access to the repo (§1).
   start no runs, and fork PRs are skipped. An outsider can't settle a
   finding, since that takes resolving its thread, or put text in front of
   the models.
+- **Database credentials** are keyless. A run gets a short-lived Google
+  Cloud token through Workload Identity Federation, and the provider's
+  attribute condition admits only SnapdragonPartners' repositories running
+  buggrit's reusable workflow (`job_workflow_ref` on `review.yml`). The
+  Auth Proxy logs in as the service account's IAM database user, whose
+  role can read and write rows but not change the schema. The token file
+  `google-github-actions/auth` writes is in the job's workspace, outside
+  the PR checkout the model's tools are confined to.
 - Tokens get the minimum permissions listed in §3. The App's Contents
   write access, needed only to resolve threads, could push code; it's
   acceptable because the token lives only in buggrit's process and the
@@ -1051,6 +1108,11 @@ for those.
   - the head moving during publish (the fence stops it);
   - a forged marker in a non-buggrit comment (ignored).
 - Golden tests for diff→line mapping and comment rendering.
+- **Database:** unit tests with fakes cover the degrade paths (the warning
+  posted, edited, removed, and failing to post). The Postgres tests
+  (migrate, schema checks, the DML-only role) run against a real server
+  when `BUGGRIT_POSTGRES_DSN` is set; CI runs them against a service
+  container. The proxy path is checked live by hand.
 - Dogfooding: buggrit reviews its own PRs from the first working milestone.
 
 ## 12. Build order
@@ -1139,7 +1201,11 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   at `low` took 4–7 minutes but found far less, and half of its extras were
   false.
 - Every review uses tools. There's no tool-free mode.
-- Comments are the only store for now. A database may come later.
+- **The threads are the only review state.** An optional Postgres
+  database (October 2026) holds what a PR can't: the cross-repo rate limit
+  and telemetry. It's reached through the Cloud SQL Auth Proxy with
+  federated credentials and IAM login, uses golang-migrate, sqlc and pgx,
+  and degrades to a warning (§6, "The optional database").
 - **LunaRoute** is OpenAI-compatible and is reached through
   `openai-compatible` (§4). Small fixes to routes or validation, if needed,
   are made in `maestro-llms`.

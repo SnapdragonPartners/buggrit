@@ -21,6 +21,7 @@ For SnapdragonPartners repositories, while buggrit is in pilot.
 - buggrit → Settings → Actions → General → Access: "Accessible from repositories in the SnapdragonPartners organization". This covers the action and the reusable workflow.
 - The `buggrit-bot` GitHub App installed on buggrit (to download release assets) and on each repository it reviews. Permissions: Pull requests and Contents, both read and write ([design §3](docs/design.md#3-trigger-packaging-permissions)).
 - The org variable `BUGGRIT_APP_ID` and the secrets `BUGGRIT_APP_PRIVATE_KEY` and `LUNAROUTE_API_KEY` visible to the repository.
+- Optionally, buggrit's database (for the rate limit shared across repositories): the org variables `BUGGRIT_CLOUDSQL_INSTANCE`, `BUGGRIT_GCP_WIF_PROVIDER` and `BUGGRIT_GCP_SERVICE_ACCOUNT`, none of them secret. [docs/database.md](docs/database.md) has the setup. Without them, buggrit runs without a database.
 
 **Per repository**, add `.github/workflows/buggrit.yml`:
 
@@ -39,6 +40,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+  id-token: write # for the optional database; without it, buggrit warns and runs without one
 jobs:
   buggrit:
     uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
@@ -77,9 +79,11 @@ buggrit reads the config from the PR's base branch, so it starts reviewing once 
 
 ```sh
 make deps          # check required tools
-make check         # lint, vulnerability check, build, test
+make check         # lint, generated code, vulnerability check, build, test
 make install-hooks # pre-push: lint + test
 ```
+
+The database tests skip unless `BUGGRIT_POSTGRES_DSN` points at a Postgres server where they may create databases; `internal/store/store_test.go` shows a one-line Docker setup.
 
 Check a config file:
 

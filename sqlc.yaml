@@ -1,0 +1,15 @@
+version: "2"
+sql:
+  - engine: postgresql
+    queries: internal/store/db/queries.sql
+    schema: "internal/store/migrations/*.up.sql"
+    gen:
+      go:
+        package: storedb
+        out: internal/store/db
+        sql_package: pgx/v5
+        emit_interface: false
+        emit_json_tags: false
+        emit_db_tags: false
+        emit_prepared_queries: false
+        emit_empty_slices: true

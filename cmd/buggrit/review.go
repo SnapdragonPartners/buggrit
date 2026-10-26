@@ -25,14 +25,17 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/publish"
 	"github.com/SnapdragonPartners/buggrit/internal/review"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 // reviewDeps are review's seams to the outside world, replaced in tests:
-// the checkout's HEAD and the stages' chat clients. clients reports each
-// model attempt, and what each stage's reasoning_effort became, to obs.
+// the checkout's HEAD, the stages' chat clients and the optional database.
+// clients reports each model attempt, and what each stage's
+// reasoning_effort became, to obs.
 type reviewDeps struct {
-	head    func(dir string) (string, error)
-	clients func(cfg *config.Config, obs modelObserver) (*llm.Clients, error)
+	head      func(dir string) (string, error)
+	clients   func(cfg *config.Config, obs modelObserver) (*llm.Clients, error)
+	openStore func(ctx context.Context, url string) (io.Closer, error)
 }
 
 type modelObserver interface {
@@ -45,6 +48,9 @@ func defaultReviewDeps() reviewDeps {
 		head: gitHead,
 		clients: func(cfg *config.Config, obs modelObserver) (*llm.Clients, error) {
 			return llm.New(cfg, llm.WithObserver(obs), llm.WithReasoningObserver(obs)) //nolint:wrapcheck // already names the stage
+		},
+		openStore: func(ctx context.Context, url string) (io.Closer, error) {
+			return store.Open(ctx, url) //nolint:wrapcheck // the message is shown as is (design §6)
 		},
 	}
 }
@@ -74,17 +80,26 @@ func (l modelLog) Observe(e middleware.Event) {
 }
 
 // reviewArgs are review's settings. Each flag defaults from the environment
-// a GitHub Action provides, so the workflow needs none of them.
+// a GitHub Action provides, so the workflow needs none of them. The
+// database settings come only from the environment, since the URL can hold
+// a password and flag help would print it.
 type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
-	pr                                                      int
-	dryRun                                                  bool
+	// databaseURL is BUGGRIT_DATABASE_URL. databaseError is
+	// BUGGRIT_DATABASE_ERROR: the workflow sets it when it couldn't set up
+	// the database it was configured to use (design §3).
+	databaseURL, databaseError string
+	pr                         int
+	dryRun                     bool
 }
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	a := &reviewArgs{token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY")}
+	a := &reviewArgs{
+		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
+		databaseURL: getenv("BUGGRIT_DATABASE_URL"), databaseError: getenv("BUGGRIT_DATABASE_ERROR"),
+	}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
 	fs.IntVar(&a.pr, "pr", pr, "pull request number (default $BUGGRIT_PR)")
@@ -139,6 +154,9 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
 	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
+	if r.dbProblem != "" {
+		summary += databaseSummary(r.dbProblem)
+	}
 	if a.stepSummary != "" && summary != "" {
 		if err := appendFile(a.stepSummary, summary); err != nil {
 			say(stderr, "buggrit review: write job summary: %v\n", err)
@@ -154,6 +172,8 @@ type reviewer struct {
 	stdout io.Writer
 	stderr io.Writer
 	repo   github.Repo
+	// dbProblem is why the configured database couldn't be used, or "".
+	dbProblem string
 }
 
 // run does the pass and returns the exit code and the job summary.
@@ -178,6 +198,9 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	}
 	if err != nil {
 		return r.fail(err)
+	}
+	if db := r.openDatabase(ctx, cfg, pr.Number); db != nil {
+		defer func() { _ = db.Close() }()
 	}
 	clients, err := r.deps.clients(cfg, modelLog{r.stderr})
 	if err != nil {

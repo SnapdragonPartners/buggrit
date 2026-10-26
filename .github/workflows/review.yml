@@ -14,6 +14,12 @@ name: buggrit review
 #
 # A push runs a full pass, and so does a dispatch, at the PR's current head
 # (design §2).
+#
+# When the org sets BUGGRIT_CLOUDSQL_INSTANCE, the job also connects to
+# buggrit's optional database through the Cloud SQL Auth Proxy, with keyless
+# federated credentials (design §3, "Database"). That needs the caller to
+# grant id-token: write. If any database step fails, the review runs without
+# it and buggrit warns on the PR.
 on:
   workflow_call:
     inputs:
@@ -30,8 +36,10 @@ on:
         type: string
         default: ''
 
-permissions:
-  contents: read
+# No permissions block: the job takes the caller's, which the README's
+# snippet sets to contents: read and id-token: write. A called workflow
+# that asks for id-token: write fails to start in a caller that doesn't
+# grant it, and the database is optional.
 
 jobs:
   review:
@@ -88,6 +96,80 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The optional database (design §3, "Database"). A failure in these
+      # steps reaches buggrit as BUGGRIT_DATABASE_ERROR, and the run goes on.
+      - name: Check for an OIDC token
+        id: oidc
+        if: vars.BUGGRIT_CLOUDSQL_INSTANCE != ''
+        run: |
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "error=no OIDC token for Google Cloud: the calling workflow must grant id-token: write" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: gcp
+        if: vars.BUGGRIT_CLOUDSQL_INSTANCE != '' && steps.oidc.outputs.error == ''
+        continue-on-error: true
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
+      - name: Start the Cloud SQL Auth Proxy
+        id: db
+        if: vars.BUGGRIT_CLOUDSQL_INSTANCE != ''
+        env:
+          OIDC_ERROR: ${{ steps.oidc.outputs.error }}
+          GCP_OUTCOME: ${{ steps.gcp.outcome }}
+          INSTANCE: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          SERVICE_ACCOUNT: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+          # Pinned, with the checksums from the release notes.
+          PROXY_VERSION: v2.26.2
+        run: |
+          set -uo pipefail
+          fail() {
+            echo "::warning::buggrit database: $1"
+            echo "error=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          [ -z "$OIDC_ERROR" ] || fail "$OIDC_ERROR"
+          [ "$GCP_OUTCOME" = success ] || fail "Google Cloud authentication failed; the job log's \"Authenticate to Google Cloud\" step says why"
+          case "$RUNNER_OS/$RUNNER_ARCH" in
+            Linux/X64)   asset=linux.amd64  sum=787d23b4b396186f307b6b274c94099d25b15a81b7e60c91ceed18c07558e9d7 ;;
+            Linux/ARM64) asset=linux.arm64  sum=f93d277d7f14b973c1aa3e6b4727559712789e8a62ccaab89208955203af3de6 ;;
+            macOS/X64)   asset=darwin.amd64 sum=8a2182d3168ce5a46ce0684907af7f723daa07b80f959d8118323735ab1b86e1 ;;
+            macOS/ARM64) asset=darwin.arm64 sum=8bb59840174bbd7f2c29e740235dd1bbce8eff87082fdec8083b6dc6c9fc76a2 ;;
+            *) fail "no cloud-sql-proxy build for $RUNNER_OS/$RUNNER_ARCH" ;;
+          esac
+          proxy="$RUNNER_TEMP/cloud-sql-proxy"
+          curl -fsSL --retry 3 -o "$proxy" \
+            "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/$PROXY_VERSION/cloud-sql-proxy.$asset" ||
+            fail "couldn't download cloud-sql-proxy $PROXY_VERSION"
+          if command -v sha256sum >/dev/null; then got=$(sha256sum "$proxy"); else got=$(shasum -a 256 "$proxy"); fi
+          [ "${got%% *}" = "$sum" ] || fail "cloud-sql-proxy $PROXY_VERSION failed its checksum"
+          chmod +x "$proxy"
+          log="$RUNNER_TEMP/cloud-sql-proxy.log"
+          # --run-connection-test exits at startup if the instance can't be
+          # reached; /startup answers once the proxy is listening.
+          "$proxy" --auto-iam-authn --run-connection-test \
+            --address 127.0.0.1 --port 5432 \
+            --health-check --http-address 127.0.0.1 --http-port 9801 \
+            "$INSTANCE" > "$log" 2>&1 &
+          pid=$!
+          for _ in $(seq 30); do
+            if curl -fs http://127.0.0.1:9801/startup >/dev/null; then
+              # The IAM database user is the service account without
+              # .gserviceaccount.com; the proxy supplies its token.
+              user=${SERVICE_ACCOUNT%.gserviceaccount.com}
+              echo "url=postgres://${user//@/%40}@127.0.0.1:5432/buggrit?sslmode=disable" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          cat "$log"
+          fail "cloud-sql-proxy didn't start: $(tail -n 1 "$log")"
+
       # buggrit reads .github/buggrit.json from the base branch and stops
       # with a notice if there is none (design §4).
       - name: Review
@@ -97,6 +179,8 @@ jobs:
           # two names this workflow passes through.
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           BUGGRIT_LLM_API_KEY: ${{ secrets.BUGGRIT_LLM_API_KEY }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
         with:
           github-token: ${{ steps.app.outputs.token }}
           download-token: ${{ steps.download.outputs.token }}
