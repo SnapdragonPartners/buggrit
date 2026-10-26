@@ -123,4 +123,7 @@ jobs:
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
           BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
+          # The rate limits shared across repositories (design §9); used only
+          # with the database.
+          BUGGRIT_RATE_LIMITS: ${{ vars.BUGGRIT_RATE_LIMITS }}
         run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'

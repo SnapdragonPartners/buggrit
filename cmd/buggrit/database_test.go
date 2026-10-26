@@ -9,16 +9,31 @@ import (
 	"strings"
 	"testing"
 
+	bucketpg "github.com/SnapdragonPartners/maestro-llms/bucket/postgres"
+
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
-	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
-type fakeStore struct{ closed bool }
+type fakeStore struct {
+	buckets    *fakeBuckets
+	bucketsErr error
+	closed     bool
+}
 
 func (f *fakeStore) Close() error { f.closed = true; return nil }
+
+func (f *fakeStore) Buckets(context.Context, bucketpg.Config) (sharedBuckets, error) {
+	if f.bucketsErr != nil {
+		return nil, f.bucketsErr
+	}
+	if f.buckets == nil {
+		f.buckets = &fakeBuckets{}
+	}
+	return f.buckets, nil
+}
 
 // dbEnv drives openDatabase against the fake GitHub's PR 7.
 type dbEnv struct {
@@ -50,7 +65,7 @@ func (e *dbEnv) open(t *testing.T, args reviewArgs) io.Closer {
 	r := &reviewer{
 		args: &args, repo: repo, stderr: &e.stderr, stdout: io.Discard,
 		gh: github.NewClient(githubtest.DefaultToken, github.WithBaseURL(e.fake.URL())),
-		deps: reviewDeps{openStore: func(_ context.Context, url string) (io.Closer, error) {
+		deps: reviewDeps{openStore: func(_ context.Context, url string) (database, error) {
 			e.opened = append(e.opened, url)
 			if e.openErr != nil {
 				return nil, e.openErr
@@ -59,7 +74,7 @@ func (e *dbEnv) open(t *testing.T, args reviewArgs) io.Closer {
 			return e.store, nil
 		}},
 	}
-	db := r.openDatabase(context.Background(), e.cfg, 7)
+	db, _ := r.openDatabase(context.Background(), e.cfg, 7)
 	if (r.dbProblem != "") != strings.Contains(e.stderr.String(), "can't be used") {
 		t.Errorf("dbProblem %q but stderr %q", r.dbProblem, e.stderr.String())
 	}
@@ -70,7 +85,7 @@ func (e *dbEnv) open(t *testing.T, args reviewArgs) io.Closer {
 func (e *dbEnv) warnings() []string {
 	var out []string
 	for _, c := range e.fake.PR(7).IssueComments {
-		if strings.Contains(c.Body, "couldn't use its database") {
+		if strings.Contains(c.Body, "had a problem this run") {
 			out = append(out, c.Body)
 		}
 	}
@@ -210,7 +225,7 @@ func TestDatabaseWarningPostFails(t *testing.T) {
 func TestReviewWithoutDatabase(t *testing.T) {
 	e := setupReview(t, submit(finding))
 	e.env["BUGGRIT_DATABASE_URL"] = "postgres://runner@127.0.0.1/buggrit"
-	e.deps.openStore = func(context.Context, string) (io.Closer, error) {
+	e.deps.openStore = func(context.Context, string) (database, error) {
 		return nil, errors.New("connection refused")
 	}
 	code, out, errOut := e.run(t)
@@ -254,9 +269,9 @@ func TestDatabaseWarningHidesPassword(t *testing.T) {
 	r := &reviewer{
 		args: &reviewArgs{databaseURL: url}, repo: repo, stderr: &e.stderr, stdout: io.Discard,
 		gh:   github.NewClient(githubtest.DefaultToken, github.WithBaseURL(e.fake.URL())),
-		deps: reviewDeps{openStore: func(ctx context.Context, url string) (io.Closer, error) { return store.Open(ctx, url) }},
+		deps: defaultReviewDeps(),
 	}
-	if db := r.openDatabase(context.Background(), e.cfg, 7); db != nil {
+	if db, _ := r.openDatabase(context.Background(), e.cfg, 7); db != nil {
 		t.Fatal("opened a malformed URL")
 	}
 	out := r.dbProblem + e.stderr.String() + strings.Join(e.warnings(), "")

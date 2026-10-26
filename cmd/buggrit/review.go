@@ -34,8 +34,8 @@ import (
 // reasoning_effort became, to obs.
 type reviewDeps struct {
 	head      func(dir string) (string, error)
-	clients   func(cfg *config.Config, obs modelObserver) (*llm.Clients, error)
-	openStore func(ctx context.Context, url string) (io.Closer, error)
+	clients   func(cfg *config.Config, obs modelObserver, shared *llm.Shared) (*llm.Clients, error)
+	openStore func(ctx context.Context, url string) (database, error)
 }
 
 type modelObserver interface {
@@ -46,11 +46,15 @@ type modelObserver interface {
 func defaultReviewDeps() reviewDeps {
 	return reviewDeps{
 		head: gitHead,
-		clients: func(cfg *config.Config, obs modelObserver) (*llm.Clients, error) {
-			return llm.New(cfg, llm.WithObserver(obs), llm.WithReasoningObserver(obs)) //nolint:wrapcheck // already names the stage
+		clients: func(cfg *config.Config, obs modelObserver, shared *llm.Shared) (*llm.Clients, error) {
+			return llm.New(cfg, llm.WithObserver(obs), llm.WithReasoningObserver(obs), llm.WithShared(shared)) //nolint:wrapcheck // already names the stage
 		},
-		openStore: func(ctx context.Context, url string) (io.Closer, error) {
-			return store.Open(ctx, url) //nolint:wrapcheck // the message is shown as is (design §6)
+		openStore: func(ctx context.Context, url string) (database, error) {
+			s, err := store.Open(ctx, url)
+			if err != nil {
+				return nil, err //nolint:wrapcheck // the message is shown as is (design §6)
+			}
+			return storeDB{s}, nil
 		},
 	}
 }
@@ -87,10 +91,11 @@ type reviewArgs struct {
 	repo, apiURL, workspace, configPath, stepSummary, token string
 	// databaseURL is BUGGRIT_DATABASE_URL. databaseError is
 	// BUGGRIT_DATABASE_ERROR: the workflow sets it when it couldn't set up
-	// the database it was configured to use (design §3).
-	databaseURL, databaseError string
-	pr                         int
-	dryRun                     bool
+	// the database it was configured to use (design §3). rateLimits is
+	// BUGGRIT_RATE_LIMITS, the shared rate limits (design §9).
+	databaseURL, databaseError, rateLimits string
+	pr                                     int
+	dryRun                                 bool
 }
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
@@ -99,6 +104,7 @@ func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer
 	a := &reviewArgs{
 		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
 		databaseURL: getenv("BUGGRIT_DATABASE_URL"), databaseError: getenv("BUGGRIT_DATABASE_ERROR"),
+		rateLimits: getenv(rateLimitsEnv),
 	}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
@@ -154,6 +160,7 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
 	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
 	code, summary := r.run(ctx)
+	summary += sharedSummary(r.shared)
 	if r.dbProblem != "" {
 		summary += databaseSummary(r.dbProblem)
 	}
@@ -172,8 +179,13 @@ type reviewer struct {
 	stdout io.Writer
 	stderr io.Writer
 	repo   github.Repo
+	// shared is what happened with the shared rate limit; nil without one.
+	shared *llm.SharedState
 	// dbProblem is why the configured database couldn't be used, or "".
 	dbProblem string
+	// stopped means the run stopped without publishing, perhaps because
+	// the head moved and a newer run owns the PR (design §2).
+	stopped bool
 }
 
 // run does the pass and returns the exit code and the job summary.
@@ -199,13 +211,16 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if err != nil {
 		return r.fail(err)
 	}
-	if db := r.openDatabase(ctx, cfg, pr.Number); db != nil {
+	db, shared := r.openDatabase(ctx, cfg, pr.Number)
+	if db != nil {
 		defer func() { _ = db.Close() }()
 	}
-	clients, err := r.deps.clients(cfg, modelLog{r.stderr})
+	clients, err := r.deps.clients(cfg, modelLog{r.stderr}, shared)
 	if err != nil {
 		return r.fail(err)
 	}
+	r.shared = clients.Shared
+	defer r.noteShared(ctx, cfg, pr.Number, clients.Shared)
 	ws, closeWS, err := review.OpenDir(r.args.workspace)
 	if err != nil {
 		return r.fail(err)
@@ -264,6 +279,7 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 
 // stop ends a run that has nothing to do; that isn't a failure.
 func (r *reviewer) stop(reason string) (int, string) {
+	r.stopped = true
 	say(r.stdout, "buggrit: nothing to do: %s\n", reason)
 	return 0, "## buggrit\n\nNothing to do: " + reason + "\n"
 }

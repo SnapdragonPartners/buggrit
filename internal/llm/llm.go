@@ -4,8 +4,8 @@
 // Every client is wrapped in maestro-llms' recommended middleware chain
 // (validation, retry, per-attempt timeout, circuit breaker, rate limit), and
 // all stages share one limiter. That limiter is the single place model-call
-// concurrency is bounded, today by limits.max_concurrency and later by
-// lane limits.
+// concurrency is bounded: by limits.max_concurrency for the run, and, for
+// stages that share a rate limit across runs, by that limit too.
 package llm
 
 import (
@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
@@ -32,8 +33,10 @@ type Clients struct {
 	Find   llms.ChatClient
 	Verify llms.ChatClient
 	Dedupe llms.ChatClient
-	// Limiter is shared by every client above.
+	// Limiter is the run's own limit, shared by every client above.
 	Limiter ratelimit.Limiter
+	// Shared is what happened with the shared rate limit; nil without one.
+	Shared *SharedState
 }
 
 // For returns the client for a stage.
@@ -58,10 +61,17 @@ type options struct {
 	newBase   baseFactory
 	observer  middleware.Observer
 	reasoning ReasoningObserver
+	shared    *Shared
 }
 
 // Option customizes New.
 type Option func(*options)
+
+// WithBase replaces the provider clients New wraps, so a test can run the
+// real middleware over fakes.
+func WithBase(f func(m *config.Model, apiKey string) (llms.ChatClient, error)) Option {
+	return func(o *options) { o.newBase = f }
+}
 
 // WithGetenv replaces os.Getenv for reading API keys.
 func WithGetenv(f func(string) string) Option { return func(o *options) { o.getenv = f } }
@@ -85,7 +95,8 @@ func WithReasoningObserver(obs ReasoningObserver) Option {
 
 // New builds the stage clients for cfg. Stages that resolve to the same model
 // still get separate clients, so each has its own circuit breaker; they share
-// the limiter.
+// the run's limiter, and the stages that share a rate limit across runs use
+// it too (WithShared).
 func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 	o := options{getenv: os.Getenv, newBase: newProviderClient}
 	for _, opt := range opts {
@@ -94,6 +105,9 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 
 	lim := ratelimit.NewInMemoryLimiter(ratelimit.Config{MaxConcurrency: cfg.Limits.MaxConcurrency})
 	out := &Clients{Limiter: lim}
+	if o.shared != nil && len(o.shared.Stages) > 0 {
+		out.Shared = &SharedState{now: time.Now}
+	}
 	for _, s := range config.Stages() {
 		m := cfg.Stage(s)
 		key := ""
@@ -107,8 +121,12 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		if err != nil {
 			return nil, fmt.Errorf("stage %s: %w", s, err)
 		}
+		var stageLim ratelimit.Limiter = lim
+		if st, ok := sharedStage(o.shared, s); ok {
+			stageLim = newSharedLimiter(lim, o.shared.Limiter, st, out.Shared)
+		}
 		c := forStage(middleware.RecommendedChat(base, middleware.RecommendedConfig{
-			Limiter:  lim,
+			Limiter:  stageLim,
 			Observer: o.observer,
 			Retry:    middleware.DefaultRetryConfig(),
 			Timeout:  m.RequestTimeout.Std(),
@@ -123,6 +141,14 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		}
 	}
 	return out, nil
+}
+
+func sharedStage(s *Shared, stage config.Stage) (SharedStage, bool) {
+	if s == nil {
+		return SharedStage{}, false
+	}
+	st, ok := s.Stages[stage]
+	return st, ok
 }
 
 // forStage applies a stage's max_output_tokens and reasoning_effort to every

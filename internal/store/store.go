@@ -1,8 +1,9 @@
 // Package store is buggrit's optional database (docs/design.md §6, "The
 // optional database"). A run uses it only when BUGGRIT_DATABASE_URL is set,
 // and never for review state: the PR's threads stay the only record of a
-// review. The engine never sees it; later work puts small interfaces (a
-// limiter, a telemetry sink) in front of it.
+// review. The engine never sees it: the front end hands the model clients
+// its shared rate limit (Buckets), and later work puts a telemetry sink in
+// front of it.
 //
 // The database holds two schemas, each with its own golang-migrate table:
 // buggrit's own, from this package's migrations, and maestro-llms' bucket
@@ -66,6 +67,14 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{pool: pool}, nil
+}
+
+// Buckets returns the rate limit shared across runs, over this store's
+// connections (design §9). It's maestro-llms' bucket/postgres, whose limits
+// live in the bucket schema and are set with Ensure. It stays usable until
+// Close.
+func (s *Store) Buckets(ctx context.Context, cfg bucketpg.Config) (*bucketpg.Limiter, error) {
+	return bucketpg.New(ctx, stdlib.OpenDBFromPool(s.pool), cfg) //nolint:wrapcheck // New says what failed
 }
 
 // Close releases the store's connections.
