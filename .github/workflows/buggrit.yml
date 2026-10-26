@@ -102,10 +102,13 @@ jobs:
         run: go build -C buggrit-src -o "$RUNNER_TEMP/buggrit" ./cmd/buggrit
 
       # The optional database, with main's copy of the action review.yml
-      # uses, so this stays the canary for it too.
+      # uses, so this stays the canary for it too. Skipped while main has no
+      # copy, as before the PR that added it.
       - name: Connect to the database
         id: db
-        if: steps.configured.outputs.ok == 'true' && vars.BUGGRIT_CLOUDSQL_INSTANCE != ''
+        if: >-
+          steps.configured.outputs.ok == 'true' && vars.BUGGRIT_CLOUDSQL_INSTANCE != '' &&
+          hashFiles('buggrit-src/.github/actions/database/action.yml') != ''
         uses: ./buggrit-src/.github/actions/database
         with:
           instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
