@@ -1078,8 +1078,8 @@ people who already have write access to the repo (§1).
 - **Database credentials** are keyless. A run gets a short-lived Google
   Cloud token through Workload Identity Federation, and the provider's
   attribute condition admits only SnapdragonPartners' repositories running
-  buggrit's reusable workflow or its dogfood workflow (`job_workflow_ref`
-  on `review.yml` or `buggrit.yml`). A PR to buggrit could change the
+  buggrit's reusable workflow (`job_workflow_ref` on `review.yml`) or
+  buggrit's own dogfood workflow (`workflow_ref` on `buggrit.yml`). A PR to buggrit could change the
   dogfood workflow, but only the team can open one that gets secrets (§1). The
   Auth Proxy logs in as the service account's IAM database user, whose
   role can read and write rows but not change the schema. The token file

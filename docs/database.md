@@ -33,15 +33,17 @@ for role in roles/cloudsql.client roles/cloudsql.instanceUser; do
 done
 
 # Only buggrit's reusable workflow, called from a SnapdragonPartners
-# repository, and buggrit's own dogfood workflow get credentials.
+# repository, and buggrit's own dogfood workflow get credentials. A job in a
+# reusable workflow is named by job_workflow_ref; a plain workflow's token
+# names it by workflow_ref and may lack job_workflow_ref, hence has().
 gcloud iam workload-identity-pools create github --project $PROJECT \
   --location global --display-name "GitHub Actions"
 gcloud iam workload-identity-pools providers create-oidc buggrit-review --project $PROJECT \
   --location global --workload-identity-pool github \
   --display-name "buggrit review workflow" \
   --issuer-uri https://token.actions.githubusercontent.com \
-  --attribute-mapping "google.subject=assertion.sub,attribute.repository_owner=assertion.repository_owner,attribute.job_workflow_ref=assertion.job_workflow_ref" \
-  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && (assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@') || assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/buggrit.yml@'))"
+  --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
+  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && ((has(assertion.job_workflow_ref) && assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@')) || (assertion.repository == 'SnapdragonPartners/buggrit' && assertion.workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/buggrit.yml@')))"
 gcloud iam service-accounts add-iam-policy-binding $SA --project $PROJECT \
   --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/github/*"
