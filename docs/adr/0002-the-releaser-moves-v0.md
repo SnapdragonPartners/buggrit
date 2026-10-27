@@ -30,7 +30,7 @@ ADR 0001 had taken the earlier releases as evidence that this check doesn't appl
 - A release takes the releaser's terminal until it's published, a few minutes. The pre-push hook also runs twice, once for the tag and once for `v0`.
 - If the releaser stops early, `v0` lags until someone runs `make move-majors`. Pinned callers aren't affected, and `@v0` callers keep the previous release, which is safe.
 - Fewer actors can move release tags: admins only. The org-wide App key no longer can, which removes the trust-model caveat in ADR 0001's consequences.
-- v0.5.0's `v0` was moved by hand after the failed run, the same way `move-majors.sh` does it.
+- After the failed run, v0.5.0's `v0` was moved by running `scripts/move-majors.sh` from this change's branch, which was the script's first live run.
 
 ## Alternatives considered
 
