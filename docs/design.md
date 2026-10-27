@@ -219,7 +219,8 @@ below) writes its own job around the composite action instead, with
   needs `gh`, `tar` and `sha256sum` or `shasum`, as GitHub's hosted runners
   have. The reusable workflow above wraps it, so a consuming repo needs only
   one `uses:` line.
-  - **Releases** ([docs/releasing.md](releasing.md) is the runbook): a
+  - **Releases** ([ADR 0001](adr/0001-immutable-release-references.md);
+    [docs/releasing.md](releasing.md) is the runbook): a
     release is a commit on top of a `main` commit whose only change is
     that `review.yml`'s own `uses:` lines name the release (`@vX.Y.Z`)
     instead of `@v0`. A caller that pins `review.yml` to that commit's SHA
@@ -1306,6 +1307,11 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   at `low` took 4–7 minutes but found far less, and half of its extras were
   false.
 - Every review uses tools. There's no tool-free mode.
+- **A release pins its own actions** (October 2026,
+  [ADR 0001](adr/0001-immutable-release-references.md)): each release's
+  `review.yml` names its own tag, releases are immutable, `v*` tags are
+  protected by a ruleset, and every action is pinned by SHA (§3,
+  "Releases"; §10).
 - **The threads are the only review state.** An optional Postgres
   database (October 2026) holds what a PR can't: the cross-repo rate limit
   and telemetry. It's reached through the Cloud SQL Auth Proxy with

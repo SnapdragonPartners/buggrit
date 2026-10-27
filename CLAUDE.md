@@ -41,6 +41,7 @@ internal/store/    # The optional database: open and check, migrations; sqlc cod
 docs/design.md     # The binding design
 docs/database.md   # Setting up the optional database (GCP, roles, migrations)
 docs/releasing.md  # Cutting a release: the release commit, repo protections, recovery
+docs/adr/          # Architecture decision records (index in its README)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 .github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)

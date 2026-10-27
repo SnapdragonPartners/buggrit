@@ -1,8 +1,10 @@
 # Releasing buggrit
 
 How a buggrit release is made, why it's made this way, and the repository
-settings it relies on. [design §3](design.md#3-trigger-packaging-permissions)
-("Releases", "Which binary") is the binding summary; this is the runbook.
+settings it relies on. [ADR 0001](adr/0001-immutable-release-references.md)
+records the decision and the alternatives;
+[design §3](design.md#3-trigger-packaging-permissions) ("Releases", "Which
+binary") is the binding summary; this is the runbook.
 
 ## Why a release isn't a tag on `main`
 
