@@ -174,9 +174,10 @@ permissions:
   id-token: write # the optional database ("Database" below)
 jobs:
   buggrit:
-    uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
+    # A release commit's SHA ("Releases" below); Dependabot bumps it.
+    uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@<sha> # v0.5.0
     secrets: inherit
-    # with: { runs-on: self-hosted, timeout-minutes: 70, version: v0.1.0 }
+    # with: { runs-on: self-hosted, timeout-minutes: 70 }
 ```
 
 The triggers and the concurrency group stay in the calling workflow,
@@ -194,7 +195,8 @@ in the reusable workflow, `.github/workflows/review.yml`, whose one job:
   `fetch-depth: 0` and `persist-credentials: false`;
 - connects to the optional database when the org has set it up
   ("Database" below);
-- runs the composite action (`SnapdragonPartners/buggrit@v0`), passing the
+- runs the composite action (`SnapdragonPartners/buggrit@v0` on `main`,
+  the release's own tag in a release; "Releases" below), passing the
   model key from the `LUNAROUTE_API_KEY` or `BUGGRIT_LLM_API_KEY` secret
   (the config's `api_key_env` names one of them);
 - has inputs for `runs-on` (default `ubuntu-latest`), `timeout-minutes`
@@ -217,8 +219,23 @@ below) writes its own job around the composite action instead, with
   needs `gh`, `tar` and `sha256sum` or `shasum`, as GitHub's hosted runners
   have. The reusable workflow above wraps it, so a consuming repo needs only
   one `uses:` line.
-  - **Releases:** pushing an immutable `vX.Y.Z` tag runs
-    `.github/workflows/release.yml`. goreleaser builds linux and darwin, on
+  - **Releases** ([docs/releasing.md](releasing.md) is the runbook): a
+    release is a commit on top of a `main` commit whose only change is
+    that `review.yml`'s own `uses:` lines name the release (`@vX.Y.Z`)
+    instead of `@v0`. A caller that pins `review.yml` to that commit's SHA
+    then runs exactly that release: its workflow, its actions and its
+    binary, whatever `v0` does later. Without it, a pinned workflow would
+    still run `@v0`'s actions in a job that can mint the caller's OIDC
+    token. The commit changes a workflow file, which no Actions token may
+    push, so `make release` (`scripts/release.sh`) makes it on the
+    releaser's machine, tags it, and pushes the tag with the releaser's
+    credentials; it refuses while a `release-blocker` issue is open or the
+    protections below are off. The tag push runs
+    `.github/workflows/release.yml`, which first checks that the tag is
+    exactly a `main` commit plus that rewrite (`scripts/verify-release.sh`)
+    and publishes nothing otherwise. That check catches mistakes; the tag
+    ruleset below is what stops anyone else pushing a release tag, since a
+    tag's own copy of `release.yml` runs. goreleaser builds linux and darwin, on
     amd64 and arm64, with `main.version` set to the tag, and uploads plain
     archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. Each tag's
     run has its own concurrency group, so overlapping tags never drop a
@@ -226,6 +243,15 @@ below) writes its own job around the composite action instead, with
     final release of its major, read fresh rather than taken from the run's
     tag, with each run reconciling every major. A patch to an older line never moves it backward, and the last
     run to get there sees every release published before it.
+  - **Protections:** the repository has immutable releases on, so a
+    published release's tag can't move and its assets can't change; a
+    nested `@vX.Y.Z` is as fixed as a SHA (a commit can't name its own
+    SHA). A tag ruleset ("Release tags") stops anyone but admins and the
+    buggrit-bot App creating, moving or deleting `v*` tags; `release.yml`
+    moves `v0` with an App token, since `GITHUB_TOKEN` can't be on a
+    ruleset's bypass list. Every third-party action in buggrit's workflows
+    and actions is pinned by SHA, with its version in a comment for
+    Dependabot.
   - **Which binary:** the action installs the highest tag on the commit it
     was used at whose release is published with the runner's archive and
     `checksums.txt`, by SemVer precedence (a final release outranks its own
@@ -233,9 +259,9 @@ below) writes its own job around the composite action instead, with
     passed over. So `@v0` runs the release `v0` points at, and an
     action pinned by a release's SHA runs that release. A ref with no
     published release on its commit is an error. The `version` input overrides
-    this. A reusable workflow can't learn the ref it was called at, so
-    `review.yml` uses the action at `@v0`; a caller that pins the workflow
-    by SHA should also pass `version` to pin the binary.
+    this. A release's `review.yml` uses the action at its own tag, so the
+    binary follows the workflow's pin. Releases before v0.5.0 still use
+    `@v0` there, so pin v0.5.0 or later.
   - **Private repo:** while buggrit's repository is private, the action and
     the reusable workflow need its Actions access set to "accessible from
     repositories in the organization", and its release assets need an
@@ -1143,6 +1169,20 @@ people who already have write access to the repo (§1).
   role can read and write rows but not change the schema. The token file
   `google-github-actions/auth` writes is in the job's workspace, outside
   the PR checkout the model's tools are confined to.
+- **Pinned code where tokens are.** The review job can mint the caller's
+  GitHub OIDC token (`id-token: write`), so every step in it could log in
+  wherever the caller's cloud trusts that token. A caller that pins
+  `review.yml` to a release's SHA runs only that release's code (§3,
+  "Releases"), every third-party action in buggrit is pinned by SHA, and
+  the binary is checked against its immutable release's `checksums.txt`.
+- **Callers' cloud logins.** A repository that lets GitHub OIDC tokens log
+  in to its cloud should grant each identity on `workflow_ref` or
+  `job_workflow_ref`, or on a protected environment, never on the
+  repository or a branch alone; otherwise any workflow on that branch that
+  can mint a token, buggrit's included, logs in as that identity. A job
+  that logs in should pin every action it uses by SHA. morris's ADR 0057
+  (its deploy identity, granted on its four deploy workflows) is the worked
+  example; buggrit's own provider grants on `job_workflow_ref` (above).
 - Tokens get the minimum permissions listed in §3. The App's Contents
   write access, needed only to resolve threads, could push code; it's
   acceptable because the token lives only in buggrit's process and the

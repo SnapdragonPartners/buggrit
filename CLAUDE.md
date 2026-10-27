@@ -11,6 +11,7 @@ buggrit is an automated pull-request reviewer that runs as a GitHub Action. It p
 ## Durable Rules
 
 - Create a branch and pull request for all changes, and follow the **Branch And Review Workflow** below: **review before push**, and Claude never merges. Dan approves pushes and merges
+- **Pin every action by commit SHA**, with its version in a comment (`@<sha> # v7.0.1`); Dependabot bumps both
 - **The design doc moves with the code.** A change to behavior the design describes updates `docs/design.md` in the same PR. If the code and the design disagree, that's a bug in one of them; decide which, and fix it rather than leaving the drift
 - **Keep the review engine free of GitHub Actions specifics.** Environment variables, event payloads and Action outputs belong in `cmd/buggrit` (or a front-end package), not in the engine. The engine takes a `Workspace`, a `GitHub` interface and a `Config` (design §2), so a local or hosted front end stays cheap to add
 - **Trust model** (design §1): buggrit runs on trusted repos. On a private repo anyone who can comment counts as a human; on a public one only the team does (association or write access), and fork PRs are skipped. Agents never merge, which is the integrity control. Take the cheap precautions in design §10; don't build defenses against people who already have write access
@@ -39,10 +40,11 @@ internal/publish/  # Render and post findings, transitions, resolve/unresolve an
 internal/store/    # The optional database: open and check, migrations; sqlc code in db/ (design §6, "The optional database")
 docs/design.md     # The binding design
 docs/database.md   # Setting up the optional database (GCP, roles, migrations)
+docs/releasing.md  # Cutting a release: the release commit, repo protections, recovery
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 .github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)
-scripts/           # install.sh, the action's download and checksum step, and its tests
+scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh; their tests
 .goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
 .github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck
 ```
@@ -57,7 +59,7 @@ scripts/           # install.sh, the action's download and checksum step, and it
 - `make vuln`: `govulncheck ./...`
 - `make sqlc-generate`: regenerate `internal/store/db` after changing its queries or migrations; `make sqlc-verify` checks it's current
 - `make check`: everything CI runs (lint, sqlc-verify, vuln, build, test)
-- Releasing: push an immutable `vX.Y.Z` tag on `main` (Dan's call); `release.yml` publishes it and moves `v0`. **Before tagging, close every open issue labeled `release-blocker`** (`gh issue list --label release-blocker`); file one whenever a change needs work elsewhere before it ships
+- `make release RELEASE=vX.Y.Z` (Dan's call): from an up-to-date `main`, writes the release commit (`review.yml` pinned to the tag), tags it and pushes the tag; `release.yml` verifies it, publishes it and moves `v0`. Never tag `main` by hand; [docs/releasing.md](docs/releasing.md) is the runbook. **Close every open issue labeled `release-blocker` first** (the script refuses otherwise); file one whenever a change needs work elsewhere before it ships
 - `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
 - `make deps`: check the required tools are installed
