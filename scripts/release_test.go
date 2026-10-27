@@ -120,6 +120,7 @@ func (r *repo) run(script string, env []string, args ...string) (string, error) 
 	cmd := exec.Command("bash", append([]string{path}, args...)...) //nolint:noctx,gosec // a test of local scripts
 	cmd.Dir = r.dir
 	cmd.Env = append(append([]string{}, r.env...), env...)
+	detach(cmd)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -328,6 +329,7 @@ func TestRelease(t *testing.T) {
 	cases := []struct {
 		name    string
 		env     []string
+		ask     bool // prompt instead of RELEASE_CONFIRM=yes
 		setup   func(r *repo)
 		version string
 		wantErr string
@@ -356,6 +358,17 @@ func TestRelease(t *testing.T) {
 		{name: "release blockers", env: []string{"FAKE_BLOCKERS=  #43 fence 404"}, wantErr: "open release-blocker issues:\n  #43 fence 404"},
 		{name: "mutable releases", env: []string{"FAKE_IMMUTABLE=false"}, wantErr: "immutable releases are off"},
 		{name: "no tag ruleset", env: []string{"FAKE_RULESETS="}, wantErr: `no active "Release tags" ruleset`},
+		{name: "no terminal to ask", ask: true, wantErr: "not pushed"},
+		{
+			name: "push rejected",
+			setup: func(r *repo) {
+				hook := filepath.Join(r.origin, "hooks", "pre-receive")
+				if err := os.WriteFile(hook, []byte("#!/bin/sh\necho rejected >&2\nexit 1\n"), 0o755); err != nil { //nolint:gosec // an executable hook
+					t.Fatal(err)
+				}
+			},
+			wantErr: "pushing v0.5.0 failed",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -367,7 +380,11 @@ func TestRelease(t *testing.T) {
 			if version == "" {
 				version = "v0.5.0"
 			}
-			out, err := r.run("release.sh", append(append([]string{}, yes...), tc.env...), version)
+			env := tc.env
+			if !tc.ask {
+				env = append(append([]string{}, yes...), env...)
+			}
+			out, err := r.run("release.sh", env, version)
 			if err == nil || !strings.Contains(out, tc.wantErr) {
 				t.Errorf("err = %v, output %q; want an error with %q", err, out, tc.wantErr)
 			}

@@ -117,8 +117,11 @@ are in place.
    It then writes `R` in a throwaway worktree (`scripts/pin-release.sh`
    rewrites `review.yml`), tags it locally, checks it with
    `scripts/verify-release.sh` exactly as `release.yml` will, and shows the
-   commit and its diff. It asks before pushing. Answer `y` to push the tag;
-   anything else deletes the local tag. The pre-push hook runs lint and
+   commit and its diff. It asks before pushing. Answer `y` to push the tag.
+   Any other answer, no terminal to ask on, or a failed push deletes the
+   local tag, so a rerun starts clean. After a failed push, check whether
+   the tag reached `origin` (`git ls-remote --tags origin`); the rerun
+   refuses if it did. The pre-push hook runs lint and
    tests on the push, as for any push.
 4. Follow the run: `gh run list --workflow release.yml`. `release.yml`:
    - **publish:** checks out the tag and runs `scripts/verify-release.sh`.

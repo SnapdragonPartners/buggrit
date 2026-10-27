@@ -53,26 +53,37 @@ grep -qxF "Release tags" <<< "$rulesets" || fail "$repo has no active \"Release 
 
 # Write the release commit in a throwaway worktree, so this one stays on main.
 work=$(mktemp -d)
-trap 'git worktree remove --force "$work" >/dev/null 2>&1 || rm -rf "$work"' EXIT
+tagged=
+pushed=
+# Whatever stops the script before the push succeeds (a refusal, a declined
+# or unreadable prompt, a failed push) deletes the local tag, so a rerun
+# starts clean. If a failed push did reach the remote, the rerun's check of
+# the remote catches it.
+cleanup() {
+  git worktree remove --force "$work" >/dev/null 2>&1 || rm -rf "$work"
+  if [ -n "$tagged" ] && [ -z "$pushed" ]; then
+    git tag -d "$version" >/dev/null 2>&1 || true
+    echo "release: the local tag $version is deleted" >&2
+  fi
+}
+trap cleanup EXIT
 git worktree add --quiet --detach "$work" "$head"
 "$here/pin-release.sh" "$version" "$work"
 git -C "$work" commit --quiet -am "Release $version" \
   -m "Pins review.yml's own actions to $version (docs/releasing.md)."
 commit=$(git -C "$work" rev-parse HEAD)
 git tag "$version" "$commit"
-if ! "$here/verify-release.sh" "$version" "$remote/main"; then
-  git tag -d "$version" >/dev/null
-  fail "the release commit failed its own check"
-fi
+tagged=1
+"$here/verify-release.sh" "$version" "$remote/main" || fail "the release commit failed its own check"
 
 git --no-pager show --stat --format='%H%n%s' "$commit"
 git --no-pager diff "$head" "$commit"
 if [ "${RELEASE_CONFIRM:-}" != yes ]; then
-  read -r -p "Push tag $version ($commit) to $remote? Published releases can't be changed. [y/N] " answer < /dev/tty
-  if [ "$answer" != y ] && [ "$answer" != Y ]; then
-    git tag -d "$version" >/dev/null
-    fail "not pushed; the local tag is deleted"
-  fi
+  # EOF or no terminal counts as no.
+  answer=
+  read -r -p "Push tag $version ($commit) to $remote? Published releases can't be changed. [y/N] " answer < /dev/tty || answer=
+  [ "$answer" = y ] || [ "$answer" = Y ] || fail "not pushed"
 fi
-git push "$remote" "refs/tags/$version"
+git push "$remote" "refs/tags/$version" || fail "pushing $version failed; check $remote before trying again"
+pushed=1
 echo "Pushed $version. Follow the release with: gh run list --repo $repo --workflow release.yml"
