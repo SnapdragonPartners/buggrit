@@ -27,13 +27,25 @@ jobs:
 // FAKE_RULESETS names the active tag rulesets, FAKE_ADMIN is whether the
 // caller is an admin, FAKE_PUBLISHED=no makes every release still building
 // (a 404), and FAKE_FINALS lists the published releases (default: v0.5.0).
+// FAKE_RACE_SHA plays a concurrent mover: on the first release list, it
+// points the bare origin FAKE_RACE_ORIGIN's v0 at that SHA and touches
+// FAKE_RACE_DONE; later lists answer FAKE_FINALS_AFTER.
 const fakeReleaseGH = `#!/usr/bin/env bash
 case "$1 $2" in
   "issue list") printf '%s' "${FAKE_BLOCKERS:-}" ;;
   "api repos/o/buggrit/releases/tags/"*)
     [ "${FAKE_PUBLISHED:-yes}" = yes ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
     printf 'buggrit_linux_amd64.tar.gz\nchecksums.txt\n' ;;
-  "release list") printf '%b\n' "${FAKE_FINALS-v0.5.0}" ;;
+  "release list")
+    if [ -n "${FAKE_RACE_SHA:-}" ] && [ -e "$FAKE_RACE_DONE" ]; then
+      printf '%b\n' "$FAKE_FINALS_AFTER"
+    else
+      if [ -n "${FAKE_RACE_SHA:-}" ]; then
+        git --git-dir="$FAKE_RACE_ORIGIN" update-ref refs/tags/v0 "$FAKE_RACE_SHA"
+        touch "$FAKE_RACE_DONE"
+      fi
+      printf '%b\n' "${FAKE_FINALS-v0.5.0}"
+    fi ;;
   "api repos/o/buggrit/immutable-releases") echo "${FAKE_IMMUTABLE:-true}" ;;
   "api repos/o/buggrit/rulesets") printf '%s\n' "${FAKE_RULESETS-Release tags}" ;;
   "api repos/o/buggrit") echo "${FAKE_ADMIN:-true}" ;;
@@ -448,6 +460,29 @@ func TestMoveMajors(t *testing.T) {
 		out, err = r.run("move-majors.sh", []string{`FAKE_FINALS=v1.0.0\nv0.5.1`})
 		if err != nil || !strings.Contains(out, "v0 already points at v0.5.1") {
 			t.Errorf("second run: err = %v\n%s", err, out)
+		}
+	})
+
+	t.Run("never moves a tag back past a concurrent mover", func(t *testing.T) {
+		r := newRepo(t)
+		shas := setup(r, "v0.4.0", "v0.5.0", "v0.6.0")
+		// This run reads v0.5.0 as newest; meanwhile another mover, which
+		// saw v0.6.0 published, moves v0 to it.
+		out, err := r.run("move-majors.sh", []string{
+			`FAKE_FINALS=v0.4.0\nv0.5.0`,
+			`FAKE_FINALS_AFTER=v0.4.0\nv0.5.0\nv0.6.0`,
+			"FAKE_RACE_SHA=" + shas["v0.6.0"],
+			"FAKE_RACE_ORIGIN=" + r.origin,
+			"FAKE_RACE_DONE=" + filepath.Join(t.TempDir(), "raced"),
+		})
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if got := r.git(r.origin, "rev-parse", "refs/tags/v0"); got != shas["v0.6.0"] {
+			t.Errorf("v0 = %s, want v0.6.0's %s\n%s", got, shas["v0.6.0"], out)
+		}
+		if !strings.Contains(out, "attempt 1 failed") {
+			t.Errorf("the fenced push wasn't refused:\n%s", out)
 		}
 	})
 

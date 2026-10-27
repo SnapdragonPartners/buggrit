@@ -244,7 +244,8 @@ below) writes its own job around the composite action instead, with
     moves every moving major tag (`v0`) to the newest published final
     release of its major (`scripts/move-majors.sh`, also `make
     move-majors`), read fresh rather than taken from the release just
-    pushed. A patch to an older line never moves it backward, and running
+    pushed. A patch to an older line never moves it backward; each push is
+    fenced on the tag as read, so overlapping runs can't either; and running
     it again is harmless. The releaser's credentials move it, because the
     move changes what `review.yml` says at `v0`, which GitHub refuses from
     any token without the `workflows` permission, App tokens included
