@@ -7,16 +7,20 @@
 # It checks that nothing blocks the release, writes a release commit on top
 # of main (not on any branch) whose review.yml names this release in its
 # own `uses:` lines, tags it, and pushes the tag with your credentials. The
-# tag push starts release.yml, which checks the commit again, builds and
-# publishes the release, and moves v0.
+# tag push starts release.yml, which checks the commit again, then builds
+# and publishes the release. This script waits for the release to be
+# published, then moves v0 to it (scripts/move-majors.sh).
 #
-# A workflow can't make this commit: it changes a workflow file, which
-# GITHUB_TOKEN may never push.
+# A workflow can't do either push: each changes what a workflow file says at
+# that ref, and GitHub refuses that from any token without the workflows
+# permission (ADR 0001, ADR 0002).
 #
 # Environment:
 #   REPO            owner/name on GitHub (default SnapdragonPartners/buggrit)
 #   REMOTE          git remote for that repository (default origin)
 #   RELEASE_CONFIRM yes skips the prompt before the push
+#   RELEASE_WAIT    seconds to wait for the release to publish (default 1200)
+#   RELEASE_POLL    seconds between checks (default 15)
 set -euo pipefail
 
 version=${1:?usage: release.sh <vX.Y.Z>}
@@ -90,4 +94,18 @@ if [ "${RELEASE_CONFIRM:-}" != yes ]; then
 fi
 git push "$remote" "refs/tags/$version" || fail "pushing $version failed; check $remote before trying again"
 pushed=1
-echo "Pushed $version. Follow the release with: gh run list --repo $repo --workflow release.yml"
+echo "Pushed $version. release.yml is building it: gh run list --repo $repo --workflow release.yml"
+
+# Move v0 only once the release is published with its assets: the action
+# installs the release at the commit @v0 names, and a release still building
+# has none.
+wait=${RELEASE_WAIT:-1200}
+poll=${RELEASE_POLL:-15}
+deadline=$((SECONDS + wait))
+until gh api "repos/$repo/releases/tags/$version" --jq '.assets[].name' 2>/dev/null | grep -qxF checksums.txt; do
+  [ "$SECONDS" -lt "$deadline" ] ||
+    fail "$version isn't published after ${wait}s; once release.yml has published it, run make move-majors"
+  sleep "$poll"
+done
+echo "$version is published."
+"$here/move-majors.sh" || fail "moving the major tags failed; fix that and run make move-majors"
