@@ -43,11 +43,13 @@ permissions:
   id-token: write # for the optional database; without it, buggrit warns and runs without one
 jobs:
   buggrit:
-    uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
+    uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@<release commit SHA> # v0.5.0
     secrets: inherit
 ```
 
-and a minimal `.github/buggrit.json`:
+`git ls-remote https://github.com/SnapdragonPartners/buggrit refs/tags/v0.5.0` prints the SHA ("Pinning" below).
+
+Then add a minimal `.github/buggrit.json`:
 
 ```json
 {
@@ -68,7 +70,8 @@ and a minimal `.github/buggrit.json`:
 
 buggrit reads the config from the PR's base branch, so it starts reviewing once the config is merged. Check a config with `buggrit config validate`; [design §4](docs/design.md#4-configuration) has every field.
 
-- **Pinning:** `@v0` follows the newest v0 release. For a fixed release, pass `with: { version: v0.1.0 }`, or pin both the workflow and `version`.
+- **Pinning:** pin the workflow to a release commit's SHA, with the version in a comment, as above. That runs exactly that release: its workflow, its actions and its binary ([docs/releasing.md](docs/releasing.md)). Pin v0.5.0 or later; earlier releases' workflow runs buggrit's own actions at `@v0`. Dependabot keeps the pin current with the `github-actions` ecosystem (`package-ecosystem: github-actions`, `directory: /`). `@v0` also works and follows the newest v0 release, but it's a tag buggrit can move, in a job that can mint your repository's OIDC token.
+- **Cloud logins in your repository:** the review job has `id-token: write`, so every step in it can mint your repository's GitHub OIDC token. If your cloud lets those tokens log in, grant each identity on `workflow_ref` or `job_workflow_ref` (the workflows that need it), or on a protected environment, never on the repository or a branch alone, and pin every action by SHA in the jobs that log in ([design §10](docs/design.md#10-security-proportionate-to-the-trust-model)).
 - **Other inputs:** `runs-on` (default `ubuntu-latest`; the runner must reach the model endpoint, and a self-hosted one needs Actions Runner v2.327.1 or later, plus `NODE_USE_ENV_PROXY=1` behind a proxy) and `timeout-minutes` (default 70; keep it above `pass_deadline`).
 - **A different bot login:** set `identity.bot_login` in the config.
 - **The check** to wait on after a push is `buggrit / review`: it means that push's pass finished ([design §8](docs/design.md#8-what-the-agent-sees), "Completion signal"). Comments and reviews start no runs. To rerun the pass at the current head, say after one hit its deadline, rerun that run (`gh run rerun <run-id>`); its check stays on the PR. A dispatch (`gh workflow run buggrit.yml -f pr=<number>`) also runs a pass, but its check shows on the dispatched branch instead.

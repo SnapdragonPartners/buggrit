@@ -4,8 +4,13 @@ name: buggrit review
 #
 #   jobs:
 #     buggrit:
-#       uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@v0
+#       uses: SnapdragonPartners/buggrit/.github/workflows/review.yml@<release commit SHA> # vX.Y.Z
 #       secrets: inherit
+#
+# On main this workflow uses buggrit's own actions at @v0. Each release's copy
+# names that release instead (scripts/pin-release.sh), so a caller pinned to a
+# release's SHA runs exactly that release; @v0 follows the newest one
+# (docs/releasing.md).
 #
 # The caller keeps its triggers and its concurrency group, since both have to
 # be on the calling workflow (design §3); README.md has the full snippet.
@@ -32,7 +37,7 @@ on:
         type: number
         default: 70
       version:
-        description: buggrit release to run (v0.1.0); defaults to the release v0 points at
+        description: buggrit release to run (v0.1.0); defaults to the release this workflow comes from
         type: string
         default: ''
 
@@ -58,7 +63,7 @@ jobs:
     steps:
       - name: Mint App token
         id: app
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.BUGGRIT_APP_ID }}
           private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
@@ -68,7 +73,7 @@ jobs:
       # nothing else, so the review token stays scoped to the caller's repo.
       - name: Mint release download token
         id: download
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.BUGGRIT_APP_ID }}
           private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
@@ -89,7 +94,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Check out the PR head
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.head.outputs.sha }}
           path: pr

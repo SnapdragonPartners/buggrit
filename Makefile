@@ -1,4 +1,4 @@
-.PHONY: build test lint vuln sqlc-generate sqlc-verify check release-snapshot install-hooks deps clean
+.PHONY: build test lint vuln sqlc-generate sqlc-verify check release release-snapshot install-hooks deps clean
 
 BINARY := buggrit
 VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -35,8 +35,14 @@ sqlc-verify:
 # check is everything CI runs.
 check: lint sqlc-verify vuln build test
 
+# release cuts a release from an up-to-date main: make release RELEASE=v0.5.0
+# (docs/releasing.md). It pushes the release tag after asking.
+release:
+	@test -n "$(RELEASE)" || { echo "usage: make release RELEASE=vX.Y.Z"; exit 1; }
+	@./scripts/release.sh "$(RELEASE)"
+
 # release-snapshot builds the release archives into dist/ without publishing
-# (needs goreleaser v2). Releases come from pushing a vX.Y.Z tag.
+# (needs goreleaser v2). Releases come from make release.
 release-snapshot:
 	goreleaser release --snapshot --clean
 
