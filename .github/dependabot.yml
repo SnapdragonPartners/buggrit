@@ -23,9 +23,10 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
 
-  # Every action is pinned by commit SHA with its version in a comment
-  # (docs/releasing.md); Dependabot moves both. "/" covers the workflows;
-  # the composite actions are listed by directory.
+  # Every third-party action is pinned by commit SHA with its version in a
+  # comment (docs/adr/0001-immutable-release-references.md); Dependabot
+  # moves both. "/" covers the workflows; the composite actions are listed
+  # by directory.
   - package-ecosystem: github-actions
     directories: [/, /.github/actions/database]
     schedule:

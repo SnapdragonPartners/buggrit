@@ -100,7 +100,9 @@ are in place.
 
 1. Close every open issue labeled `release-blocker`
    (`gh issue list --label release-blocker`).
-2. Check out `main`, pull, and make sure CI is green on it.
+2. Check out `main`, pull, and make sure CI is green on it. You need to be
+   an admin of the repository (an org owner is one): the ruleset lets
+   nobody else create `v*` tags.
 3. Run:
 
    ```sh
@@ -112,7 +114,9 @@ are in place.
    - the worktree is clean and `HEAD` is `origin/main`;
    - the tag doesn't exist locally or on `origin`;
    - no `release-blocker` issue is open;
-   - immutable releases are on and the "Release tags" ruleset is active.
+   - immutable releases are on and the "Release tags" ruleset is active;
+   - you're an admin of the repository, so the ruleset lets your push
+     through.
 
    It then writes `R` in a throwaway worktree (`scripts/pin-release.sh`
    rewrites `review.yml`), tags it locally, checks it with

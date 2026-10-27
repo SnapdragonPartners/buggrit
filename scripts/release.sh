@@ -48,6 +48,10 @@ blockers=$(gh issue list --repo "$repo" --label release-blocker --state open \
 # the tag ruleset stops anyone else creating, moving or deleting v* tags.
 [ "$(gh api "repos/$repo/immutable-releases" --jq .enabled)" = true ] ||
   fail "immutable releases are off for $repo"
+# Only admins may create v* tags under that ruleset (the App can, but it
+# doesn't release), so say so now rather than at the push.
+[ "$(gh api "repos/$repo" --jq .permissions.admin)" = true ] ||
+  fail "only an admin of $repo can push a release tag (the \"Release tags\" ruleset)"
 rulesets=$(gh api "repos/$repo/rulesets" --jq '.[] | select(.target == "tag" and .enforcement == "active") | .name')
 grep -qxF "Release tags" <<< "$rulesets" || fail "$repo has no active \"Release tags\" ruleset"
 

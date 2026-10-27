@@ -11,7 +11,7 @@ buggrit is an automated pull-request reviewer that runs as a GitHub Action. It p
 ## Durable Rules
 
 - Create a branch and pull request for all changes, and follow the **Branch And Review Workflow** below: **review before push**, and Claude never merges. Dan approves pushes and merges
-- **Pin every action by commit SHA**, with its version in a comment (`@<sha> # v7.0.1`); Dependabot bumps both
+- **Pin every third-party action by commit SHA**, with its version in a comment (`@<sha> # v7.0.1`); Dependabot bumps both. buggrit's own actions in `review.yml` are the exception: `@v0` on `main`, the release's tag in a release ([ADR 0001](docs/adr/0001-immutable-release-references.md); a commit can't name its own SHA)
 - **The design doc moves with the code.** A change to behavior the design describes updates `docs/design.md` in the same PR. If the code and the design disagree, that's a bug in one of them; decide which, and fix it rather than leaving the drift
 - **Keep the review engine free of GitHub Actions specifics.** Environment variables, event payloads and Action outputs belong in `cmd/buggrit` (or a front-end package), not in the engine. The engine takes a `Workspace`, a `GitHub` interface and a `Config` (design §2), so a local or hosted front end stays cheap to add
 - **Trust model** (design §1): buggrit runs on trusted repos. On a private repo anyone who can comment counts as a human; on a public one only the team does (association or write access), and fork PRs are skipped. Agents never merge, which is the integrity control. Take the cheap precautions in design §10; don't build defenses against people who already have write access

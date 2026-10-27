@@ -23,13 +23,14 @@ jobs:
 
 // fakeReleaseGH answers the gh calls release.sh makes, already filtered as
 // its --jq would: FAKE_BLOCKERS lists open release-blocker issues,
-// FAKE_IMMUTABLE is the immutable-releases setting and FAKE_RULESETS names
-// the active tag rulesets.
+// FAKE_IMMUTABLE is the immutable-releases setting, FAKE_RULESETS names
+// the active tag rulesets and FAKE_ADMIN is whether the caller is an admin.
 const fakeReleaseGH = `#!/usr/bin/env bash
 case "$1 $2" in
   "issue list") printf '%s' "${FAKE_BLOCKERS:-}" ;;
   "api repos/o/buggrit/immutable-releases") echo "${FAKE_IMMUTABLE:-true}" ;;
   "api repos/o/buggrit/rulesets") printf '%s\n' "${FAKE_RULESETS-Release tags}" ;;
+  "api repos/o/buggrit") echo "${FAKE_ADMIN:-true}" ;;
   *) echo "fake gh: unexpected call: $*" >&2; exit 1 ;;
 esac
 `
@@ -358,6 +359,7 @@ func TestRelease(t *testing.T) {
 		{name: "release blockers", env: []string{"FAKE_BLOCKERS=  #43 fence 404"}, wantErr: "open release-blocker issues:\n  #43 fence 404"},
 		{name: "mutable releases", env: []string{"FAKE_IMMUTABLE=false"}, wantErr: "immutable releases are off"},
 		{name: "no tag ruleset", env: []string{"FAKE_RULESETS="}, wantErr: `no active "Release tags" ruleset`},
+		{name: "not an admin", env: []string{"FAKE_ADMIN=false"}, wantErr: "only an admin of o/buggrit"},
 		{name: "no terminal to ask", ask: true, wantErr: "not pushed"},
 		{
 			name: "push rejected",

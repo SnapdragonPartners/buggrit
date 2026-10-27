@@ -49,7 +49,7 @@ jobs:
 
 `git ls-remote https://github.com/SnapdragonPartners/buggrit refs/tags/v0.5.0` prints the SHA ("Pinning" below).
 
-and a minimal `.github/buggrit.json`:
+Then add a minimal `.github/buggrit.json`:
 
 ```json
 {
