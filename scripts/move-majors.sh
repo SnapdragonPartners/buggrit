@@ -50,9 +50,11 @@ move_once() {
       echo "$major already points at $newest."
       continue
     fi
-    git tag -f "$major" "$target" >/dev/null || return 1
-    # An empty lease means the tag must not exist yet.
-    git push --force-with-lease="refs/tags/$major:$current" "$remote" "refs/tags/$major" || return 1
+    # Push the commit read above, not a local tag: another run in this
+    # checkout, or a linked worktree, shares local tags and could change one
+    # between here and the push. An empty lease means the tag must not
+    # exist yet. The next fetch brings the local tag up to date.
+    git push --force-with-lease="refs/tags/$major:$current" "$remote" "$target:refs/tags/$major" || return 1
     echo "$major now points at $newest."
   done
 }

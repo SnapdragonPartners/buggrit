@@ -486,6 +486,24 @@ func TestMoveMajors(t *testing.T) {
 		}
 	})
 
+	t.Run("pushes the commit it read, not a local tag", func(t *testing.T) {
+		r := newRepo(t)
+		shas := setup(r, "v0.4.0", "v0.5.0")
+		// Another run in this checkout holds the local v0 ref, so writing it
+		// fails. The push mustn't depend on it.
+		lock := filepath.Join(r.dir, ".git", "refs", "tags", "v0.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil { //nolint:gosec // a test lock file
+			t.Fatal(err)
+		}
+		out, err := r.run("move-majors.sh", []string{`FAKE_FINALS=v0.4.0\nv0.5.0`})
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if got := r.git(r.origin, "rev-parse", "refs/tags/v0"); got != shas["v0.5.0"] {
+			t.Errorf("v0 = %s, want v0.5.0's %s", got, shas["v0.5.0"])
+		}
+	})
+
 	t.Run("no published releases", func(t *testing.T) {
 		r := newRepo(t)
 		setup(r, "v0.4.0")
