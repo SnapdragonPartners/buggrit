@@ -13,3 +13,4 @@ status points to it.
 | ADR | Decision |
 |---|---|
 | [0001](0001-immutable-release-references.md) | A release pins its own actions, and release tags are protected |
+| [0002](0002-the-releaser-moves-v0.md) | The releaser moves `v0`, not a workflow |

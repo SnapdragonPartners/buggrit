@@ -45,7 +45,7 @@ docs/adr/          # Architecture decision records (index in its README)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 .github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)
-scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh; their tests
+scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh, move-majors.sh; their tests
 .goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
 .github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck
 ```
@@ -60,7 +60,7 @@ scripts/           # install.sh (the action's download and checksum step); relea
 - `make vuln`: `govulncheck ./...`
 - `make sqlc-generate`: regenerate `internal/store/db` after changing its queries or migrations; `make sqlc-verify` checks it's current
 - `make check`: everything CI runs (lint, sqlc-verify, vuln, build, test)
-- `make release RELEASE=vX.Y.Z` (Dan's call): from an up-to-date `main`, writes the release commit (`review.yml` pinned to the tag), tags it and pushes the tag; `release.yml` verifies it, publishes it and moves `v0`. Never tag `main` by hand; [docs/releasing.md](docs/releasing.md) is the runbook. **Close every open issue labeled `release-blocker` first** (the script refuses otherwise); file one whenever a change needs work elsewhere before it ships
+- `make release RELEASE=vX.Y.Z` (Dan's call): from an up-to-date `main`, writes the release commit (`review.yml` pinned to the tag), tags it and pushes the tag; `release.yml` verifies it and publishes it; the script waits for that, then moves `v0` (`make move-majors` finishes that step by hand). Never tag `main` by hand; [docs/releasing.md](docs/releasing.md) is the runbook. **Close every open issue labeled `release-blocker` first** (the script refuses otherwise); file one whenever a change needs work elsewhere before it ships
 - `make release-snapshot`: build the release archives into `dist/` without publishing (needs goreleaser v2)
 - `make install-hooks`: install the pre-push hook
 - `make deps`: check the required tools are installed

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (Dan, 2026-10-27). Resolves [#44](https://github.com/SnapdragonPartners/buggrit/issues/44), which buggrit's review of morris [#516](https://github.com/SnapdragonPartners/morris/pull/516) raised (threads f-2b7c86, f-762b10). morris's side of the same finding is its ADR 0057.
+Accepted (Dan, 2026-10-27). Decision 4's way of moving `v0` (an App token, with the App on the ruleset's bypass list) is superseded by [ADR 0002](0002-the-releaser-moves-v0.md): the releaser moves `v0`, and only admins bypass the ruleset. Resolves [#44](https://github.com/SnapdragonPartners/buggrit/issues/44), which buggrit's review of morris [#516](https://github.com/SnapdragonPartners/morris/pull/516) raised (threads f-2b7c86, f-762b10). morris's side of the same finding is its ADR 0057.
 
 ## Date
 

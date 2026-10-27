@@ -70,9 +70,7 @@ are in place.
    then publishes it, which is the order immutable releases need.
 
 2. **The "Release tags" ruleset.** It blocks creating, updating and deleting
-   `v*` tags, except for repository and organization admins and the
-   buggrit-bot App (App ID 5339613), which the `major` job uses to move
-   `v0`:
+   `v*` tags, except for repository and organization admins:
 
    ```sh
    gh api -X POST repos/SnapdragonPartners/buggrit/rulesets --input - <<'EOF'
@@ -84,17 +82,16 @@ are in place.
      "rules": [{ "type": "creation" }, { "type": "update" }, { "type": "deletion" }],
      "bypass_actors": [
        { "actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always" },
-       { "actor_type": "OrganizationAdmin", "actor_id": 1, "bypass_mode": "always" },
-       { "actor_type": "Integration", "actor_id": 5339613, "bypass_mode": "always" }
+       { "actor_type": "OrganizationAdmin", "actor_id": 1, "bypass_mode": "always" }
      ]
    }
    EOF
    ```
 
-   (`RepositoryRole` 5 is the admin role.) The `GITHUB_TOKEN` can't be put
-   on a ruleset's bypass list, which is why `v0` moves with an App token.
-   The App already has Contents read and write, which it needs to resolve
-   threads (design §3, "Identity").
+   (`RepositoryRole` 5 is the admin role.) No App or workflow token is on
+   the list: nothing in a workflow may create or move these tags.
+   [ADR 0002](adr/0002-the-releaser-moves-v0.md) says why `v0` moves with
+   the releaser's credentials too.
 
 ## Cutting a release
 
@@ -127,15 +124,21 @@ are in place.
    the tag reached `origin` (`git ls-remote --tags origin`); the rerun
    refuses if it did. The pre-push hook runs lint and
    tests on the push, as for any push.
-4. Follow the run: `gh run list --workflow release.yml`. `release.yml`:
-   - **publish:** checks out the tag and runs `scripts/verify-release.sh`.
-     A tag that isn't exactly a `main` commit plus the pinned `review.yml`
-     fails here, before anything is built. Then it runs the tests and
-     goreleaser, which publishes the release with the four archives and
-     `checksums.txt`.
-   - **major:** moves each major tag (`v0`) to its newest published final
-     release, pushing with a buggrit-bot App token.
-5. Check:
+4. The tag push starts `release.yml` (`gh run list --workflow release.yml`).
+   It checks out the tag and runs `scripts/verify-release.sh`: a tag that
+   isn't exactly a `main` commit plus the pinned `review.yml` fails here,
+   before anything is built. Then it runs the tests and goreleaser, which
+   publishes the release with the four archives and `checksums.txt`.
+5. Meanwhile the script waits, up to 20 minutes, for the release to be
+   published with its assets. Then it moves each major tag (`v0`) to its
+   newest published final release (`scripts/move-majors.sh`), with your
+   credentials; the pre-push hook runs again for that push. It waits because
+   `@v0` callers install the release at `v0`'s commit, and a release still
+   building has nothing to install. A workflow can't move `v0`: the move
+   changes what `review.yml` says at `v0`, and GitHub refuses that from any
+   token without the `workflows` permission, App tokens included
+   ([ADR 0002](adr/0002-the-releaser-moves-v0.md)).
+6. Check:
 
    ```sh
    gh release view v0.5.0                       # four archives + checksums.txt
@@ -163,13 +166,15 @@ move to it.
   reused by anyone but an admin; cut the next version with `make release`.
   The check catches mistakes, not intent: the workflow runs from the tagged
   commit, whose `release.yml` could leave the check out. The ruleset, which
-  lets only admins and the App create `v*` tags, is the control there.
+  lets only admins create `v*` tags, is the control there.
 - **The release is published but broken.** It can't be changed. Cut the
   next patch; `v0` moves to it. Callers pinned to the broken release move
   when Dependabot bumps them, or by hand.
-- **The `major` job failed.** The release is out but `v0` didn't move.
-  Re-run the job. If the App token can't push, check that buggrit-bot is
-  still on the ruleset's bypass list and installed on buggrit.
+- **`make release` stopped before moving `v0`** (the wait ran out, the
+  terminal closed, or the push failed). The release is out, or will be once
+  `release.yml` finishes, but `v0` didn't move. Once the release is
+  published, run `make move-majors`; it reads the published releases
+  fresh, so running it again, or late, is harmless.
 
 ## For callers
 

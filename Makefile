@@ -1,4 +1,4 @@
-.PHONY: build test lint vuln sqlc-generate sqlc-verify check release release-snapshot install-hooks deps clean
+.PHONY: build test lint vuln sqlc-generate sqlc-verify check release move-majors release-snapshot install-hooks deps clean
 
 BINARY := buggrit
 VERSION := $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -40,6 +40,11 @@ check: lint sqlc-verify vuln build test
 release:
 	@test -n "$(RELEASE)" || { echo "usage: make release RELEASE=vX.Y.Z"; exit 1; }
 	@./scripts/release.sh "$(RELEASE)"
+
+# move-majors moves v0 to the newest published final release; make release
+# runs it, so this is for finishing a release whose last step failed.
+move-majors:
+	@./scripts/move-majors.sh
 
 # release-snapshot builds the release archives into dist/ without publishing
 # (needs goreleaser v2). Releases come from make release.

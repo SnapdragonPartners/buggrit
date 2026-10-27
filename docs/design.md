@@ -240,17 +240,22 @@ below) writes its own job around the composite action instead, with
     amd64 and arm64, with `main.version` set to the tag, and uploads plain
     archives (`buggrit_<os>_<arch>.tar.gz`) and `checksums.txt`. Each tag's
     run has its own concurrency group, so overlapping tags never drop a
-    release. Then every moving major tag (`v0`) moves to the newest published
-    final release of its major, read fresh rather than taken from the run's
-    tag, with each run reconciling every major. A patch to an older line never moves it backward, and the last
-    run to get there sees every release published before it.
+    release. `make release` waits for the release to be published, then
+    moves every moving major tag (`v0`) to the newest published final
+    release of its major (`scripts/move-majors.sh`, also `make
+    move-majors`), read fresh rather than taken from the release just
+    pushed. A patch to an older line never moves it backward; each push is
+    fenced on the tag as read, so overlapping runs can't either; and running
+    it again is harmless. The releaser's credentials move it, because the
+    move changes what `review.yml` says at `v0`, which GitHub refuses from
+    any token without the `workflows` permission, App tokens included
+    ([ADR 0002](adr/0002-the-releaser-moves-v0.md)).
   - **Protections:** the repository has immutable releases on, so a
     published release's tag can't move and its assets can't change; a
     nested `@vX.Y.Z` is as fixed as a SHA (a commit can't name its own
-    SHA). A tag ruleset ("Release tags") stops anyone but admins and the
-    buggrit-bot App creating, moving or deleting `v*` tags; `release.yml`
-    moves `v0` with an App token, since `GITHUB_TOKEN` can't be on a
-    ruleset's bypass list. Every third-party action in buggrit's workflows
+    SHA). A tag ruleset ("Release tags") stops anyone but admins creating,
+    moving or deleting `v*` tags; no workflow token is on its bypass list.
+    Every third-party action in buggrit's workflows
     and actions is pinned by SHA, with its version in a comment for
     Dependabot.
   - **Which binary:** the action installs the highest tag on the commit it
