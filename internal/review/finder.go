@@ -12,6 +12,7 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/glob"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // FindInput is everything one finder run needs.
@@ -23,7 +24,9 @@ type FindInput struct {
 	// lines changed since the last completed pass (§7 rule 2).
 	Incremental *Incremental
 	// OnToolCall, if set, observes each tool call (for logs and stats).
-	OnToolCall       func(toolloop.ToolCallEvent)
+	OnToolCall func(toolloop.ToolCallEvent)
+	// Session records the run's telemetry; nil records nothing.
+	Session          *telemetry.Session
 	PR               Context
 	Instructions     string
 	InstructionFiles []string
@@ -68,13 +71,16 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 	}
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
 	submit := &submitTool{env: env, inScope: in.Scope.InScope, incremental: in.Incremental}
+	pk := &packing{}
 	st := &stage{
 		client:        in.Client,
 		onToolCall:    in.OnToolCall,
+		session:       in.Session,
+		packing:       pk,
 		submitted:     func() bool { return submit.result != nil },
 		purpose:       "buggrit.find",
 		system:        systemPrompt,
-		opening:       openingMessage(in),
+		opening:       openingMessage(in, pk),
 		nudge:         nudge,
 		timeUp:        timeUp,
 		tools:         readOnlyTools(env),

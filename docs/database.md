@@ -138,3 +138,18 @@ A binary needs each schema at its version or newer, so migrating ahead of
 older pinned callers is safe. `db migrate` leaves a newer schema alone, and
 refuses a dirty one (a migration that failed partway), which needs fixing
 by hand.
+
+## Reading the data
+
+To look at run telemetry ([telemetry.md](telemetry.md)), connect through
+the proxy as yourself and read as `buggrit_owner`, in read-only
+transactions. A proxy that logs in IAM users can't also take
+`--gcloud-auth`, so pass it your access token for both:
+
+```sh
+TOKEN="$(gcloud auth print-access-token)"
+cloud-sql-proxy --auto-iam-authn --token "$TOKEN" --login-token "$TOKEN" --port 5433 buggrit:us-east1:buggrit-db &
+PGOPTIONS='-c role=buggrit_owner -c default_transaction_read_only=on' \
+  psql 'host=127.0.0.1 port=5433 user=dan@snapdragonpartners.com dbname=buggrit sslmode=disable' \
+  -v run=<uuid> -f query.sql
+```

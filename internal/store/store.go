@@ -30,7 +30,7 @@ import (
 // SchemaVersion is the buggrit schema version this binary requires. A test
 // keeps it equal to the highest migration. A newer schema is fine, so an
 // older pinned binary keeps working after a migration.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS

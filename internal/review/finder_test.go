@@ -65,7 +65,7 @@ func TestFindHappyPath(t *testing.T) {
 }
 
 func TestFindOpeningMessage(t *testing.T) {
-	msg := openingMessage(findInput(t, &testllm.FakeChatClient{}))
+	msg := openingMessage(findInput(t, &testllm.FakeChatClient{}), &packing{})
 	for _, want := range []string{
 		"# Pull request #7: Add Put to Cache",
 		"## What this PR does NOT do",
@@ -97,7 +97,7 @@ func TestFindLargeDiffDefersToTools(t *testing.T) {
 	second := in.Diff.Files[0]
 	second.NewPath, second.OldPath = "internal/cache/cache2.go", "internal/cache/cache2.go"
 	in.Diff.Files = append(in.Diff.Files, second)
-	msg := openingMessage(in)
+	msg := openingMessage(in, &packing{})
 	// The first large file is shown up to the per-file cap, with a hint to
 	// page on; the second no longer fits and is deferred to get_diff.
 	if !strings.Contains(msg, `call get_diff with path "internal/cache/cache.go" and offset`) {
@@ -122,7 +122,7 @@ func TestFindOpeningMessageSymlinkedInstructions(t *testing.T) {
 	ws["SNEAKY.md"] = &fstest.MapFile{Data: []byte(".git/config"), Mode: fs.ModeSymlink}
 	in.Workspace = ws
 	in.InstructionFiles = []string{"CLAUDE.md", "AGENTS.md", "COPILOT.md", "SNEAKY.md"}
-	msg := openingMessage(in)
+	msg := openingMessage(in, &packing{})
 	if !strings.Contains(msg, "### AGENTS.md → docs/rules.md\n\nWrap every error.") {
 		t.Error("symlinked instruction file not followed")
 	}
@@ -153,7 +153,7 @@ func TestFindOpeningMessageBudgets(t *testing.T) {
 		p := fmt.Sprintf("gen/file%04d.go", i)
 		in.Diff.Files = append(in.Diff.Files, github.FileDiff{OldPath: p, NewPath: p, Status: github.StatusModified})
 	}
-	msg := openingMessage(in)
+	msg := openingMessage(in, &packing{})
 	if len(msg) > maxPromptDiffBytes {
 		t.Errorf("opening message is %d bytes, over the %d budget", len(msg), maxPromptDiffBytes)
 	}

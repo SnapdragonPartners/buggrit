@@ -26,6 +26,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/review"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
 	"github.com/SnapdragonPartners/buggrit/internal/store"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // reviewDeps are review's seams to the outside world, replaced in tests:
@@ -60,8 +61,12 @@ func defaultReviewDeps() reviewDeps {
 }
 
 // modelLog logs each model attempt, so a slow or failing endpoint shows in
-// the job log, and what each stage's reasoning_effort became.
-type modelLog struct{ w io.Writer }
+// the job log, and what each stage's reasoning_effort became. It records
+// each attempt in the run's telemetry, with the call its context names.
+type modelLog struct {
+	w   io.Writer
+	rec *telemetry.Recorder
+}
 
 // ObserveReasoning logs what the provider received for a stage's
 // reasoning_effort; a provider without that level leaves the model default.
@@ -71,6 +76,15 @@ func (l modelLog) ObserveReasoning(s config.Stage, effort string, applied *llms.
 		return
 	}
 	say(l.w, "buggrit: %s reasoning_effort %s: sent as %s\n", s, effort, applied.Effort)
+}
+
+// ObserveContext makes modelLog a middleware.ContextObserver, which the
+// metrics middleware calls instead of Observe.
+//
+//nolint:gocritic // hugeParam: the signature is fixed by middleware.ContextObserver
+func (l modelLog) ObserveContext(ctx context.Context, e middleware.Event) {
+	l.rec.Attempt(ctx, e)
+	l.Observe(e)
 }
 
 //nolint:gocritic // hugeParam: the signature is fixed by middleware.Observer
@@ -94,8 +108,11 @@ type reviewArgs struct {
 	// the database it was configured to use (design §3). rateLimits is
 	// BUGGRIT_RATE_LIMITS, the shared rate limits (design §9).
 	databaseURL, databaseError, rateLimits string
-	pr                                     int
-	dryRun                                 bool
+	// telemetryLabel is BUGGRIT_TELEMETRY_LABEL; runID, runAttempt and
+	// eventName say which workflow run this is, for telemetry.
+	telemetryLabel, runID, runAttempt, eventName string
+	pr                                           int
+	dryRun                                       bool
 }
 
 func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer) (*reviewArgs, error) {
@@ -104,7 +121,9 @@ func parseReviewArgs(args []string, getenv func(string) string, stderr io.Writer
 	a := &reviewArgs{
 		token: getenv("GITHUB_TOKEN"), stepSummary: getenv("GITHUB_STEP_SUMMARY"),
 		databaseURL: getenv("BUGGRIT_DATABASE_URL"), databaseError: getenv("BUGGRIT_DATABASE_ERROR"),
-		rateLimits: getenv(rateLimitsEnv),
+		rateLimits:     getenv(rateLimitsEnv),
+		telemetryLabel: getenv(telemetryLabelEnv),
+		runID:          getenv("GITHUB_RUN_ID"), runAttempt: getenv("GITHUB_RUN_ATTEMPT"), eventName: getenv("GITHUB_EVENT_NAME"),
 	}
 	pr, _ := strconv.Atoi(getenv("BUGGRIT_PR"))
 	fs.StringVar(&a.repo, "repo", getenv("GITHUB_REPOSITORY"), "repository, owner/name (default $GITHUB_REPOSITORY)")
@@ -173,23 +192,28 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 }
 
 type reviewer struct {
-	args   *reviewArgs
 	deps   reviewDeps
-	gh     *github.Client
 	stdout io.Writer
 	stderr io.Writer
-	repo   github.Repo
+	args   *reviewArgs
+	gh     *github.Client
 	// shared is what happened with the shared rate limit; nil without one.
 	shared *llm.SharedState
+	// writer and rec record the run's telemetry; both are nil without it.
+	writer *telemetry.Writer
+	rec    *telemetry.Recorder
+	repo   github.Repo
 	// dbProblem is why the configured database couldn't be used, or "".
 	dbProblem string
+	// outcome is how the run ended, for telemetry.
+	outcome runOutcome
 	// stopped means the run stopped without publishing, perhaps because
 	// the head moved and a newer run owns the PR (design §2).
 	stopped bool
 }
 
 // run does the pass and returns the exit code and the job summary.
-func (r *reviewer) run(ctx context.Context) (int, string) {
+func (r *reviewer) run(ctx context.Context) (code int, summary string) {
 	pr, err := r.gh.PullRequest(ctx, r.repo, r.args.pr)
 	if err != nil {
 		return r.fail(err)
@@ -215,12 +239,13 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 	if db != nil {
 		defer func() { _ = db.Close() }()
 	}
-	clients, err := r.deps.clients(cfg, modelLog{r.stderr}, shared)
+	r.startTelemetry(db, cfg, pr) //nolint:contextcheck // the writer outlives ctx, to write a canceled run's last events
+	defer func() { r.endDatabase(ctx, cfg, pr.Number, code) }()
+	clients, err := r.deps.clients(cfg, modelLog{w: r.stderr, rec: r.rec}, shared)
 	if err != nil {
 		return r.fail(err)
 	}
 	r.shared = clients.Shared
-	defer r.noteShared(ctx, cfg, pr.Number, clients.Shared)
 	ws, closeWS, err := review.OpenDir(r.args.workspace)
 	if err != nil {
 		return r.fail(err)
@@ -229,7 +254,7 @@ func (r *reviewer) run(ctx context.Context) (int, string) {
 
 	ref := review.PRRef{Repo: r.repo, Number: pr.Number, HeadSHA: head}
 	say(r.stderr, "buggrit: reviewing %s#%d at %s with %s\n", r.repo, pr.Number, short(head), cfg.Stage(config.StageFind).Model)
-	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool}
+	opts := &review.Options{Config: cfg, Find: clients.Find, Verify: clients.Verify, OnToolCall: r.logTool, Telemetry: r.rec}
 	res, err := review.Review(ctx, ref, ws, r.gh, opts)
 	if errors.Is(err, github.ErrHeadMoved) {
 		return r.stop(err.Error())
@@ -253,8 +278,10 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 	var manual []publish.Manual
 	if r.args.dryRun {
 		r.print(res)
+		r.rec.Emit(telemetry.KindPublish, &publishRecord{DryRun: true})
 	} else {
 		posted, err := publish.Publish(ctx, r.gh, ref, res)
+		r.rec.Emit(telemetry.KindPublish, newPublishRecord(posted, err))
 		switch {
 		case errors.Is(err, github.ErrHeadMoved):
 			return r.stop(err.Error())
@@ -269,7 +296,8 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 		}
 		manual = posted.Manual
 	}
-	say(r.stdout, "buggrit: %s\n", publish.Status(res))
+	r.outcome.Status = publish.Status(res)
+	say(r.stdout, "buggrit: %s\n", r.outcome.Status)
 	code := 0
 	if !res.Done() {
 		code = 1
@@ -280,11 +308,13 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 // stop ends a run that has nothing to do; that isn't a failure.
 func (r *reviewer) stop(reason string) (int, string) {
 	r.stopped = true
+	r.outcome.Stopped = reason
 	say(r.stdout, "buggrit: nothing to do: %s\n", reason)
 	return 0, "## buggrit\n\nNothing to do: " + reason + "\n"
 }
 
 func (r *reviewer) fail(err error) (int, string) {
+	r.outcome.Error = err.Error()
 	say(r.stderr, "buggrit review: %v\n", err)
 	return 1, "## buggrit\n\nFailed: " + err.Error() + "\n"
 }

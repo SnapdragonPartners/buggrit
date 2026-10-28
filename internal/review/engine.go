@@ -15,6 +15,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/glob"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // GitHub is what the engine reads from GitHub. *github.Client implements it;
@@ -46,6 +47,8 @@ type Options struct {
 	// OnToolCall, if set, observes each tool call, with the stage that made
 	// it. With both stages running, it's called from both, concurrently.
 	OnToolCall func(config.Stage, toolloop.ToolCallEvent)
+	// Telemetry records the pass; nil records nothing (§6, "Telemetry").
+	Telemetry *telemetry.Recorder
 }
 
 // Result is a pass's outcome, ready to publish.
@@ -119,6 +122,7 @@ func Review(ctx context.Context, ref PRRef, ws Workspace, gh GitHub, opts *Optio
 	if res != nil {
 		res.Elapsed = time.Since(start)
 	}
+	opts.Telemetry.Emit(telemetry.KindResult, newResultRecord(res, err))
 	return res, err
 }
 
@@ -165,7 +169,16 @@ func (p *pass) run(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if res.Verify, res.Find, err = runStages(ctx, cfg.Limits.PassDeadline.Std(), p.verifyInput(), fin); err != nil {
+	vin := p.verifyInput()
+	rec := p.opts.Telemetry
+	rec.Emit(telemetry.KindPass, p.record(fin))
+	if vin != nil {
+		vin.Session = rec.Session(string(config.StageVerify))
+	}
+	if fin != nil {
+		fin.Session = rec.Session(string(config.StageFind))
+	}
+	if res.Verify, res.Find, err = runStages(ctx, cfg.Limits.PassDeadline.Std(), vin, fin); err != nil {
 		return nil, fmt.Errorf("review: %w", err)
 	}
 	p.collect()

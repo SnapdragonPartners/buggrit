@@ -82,21 +82,42 @@ type ThreadNote struct {
 	Resolved bool
 }
 
-// openingMessage builds the finder's first user message.
-func openingMessage(in *FindInput) string {
+// packing is what an opening message carried and what it left to the
+// tools, for telemetry: the first experiments tune it (docs/telemetry.md).
+// Sizes are in bytes.
+type packing struct {
+	Instructions        []packedFile `json:"instructions"`
+	InstructionsOmitted []string     `json:"instructions_omitted"`
+	Diff                []packedFile `json:"diff"`
+	// Deferred are the files, or for the verifier the findings, left to
+	// get_diff or get_thread.
+	Deferred []string `json:"deferred"`
+	// Checks are the findings the verifier's opening shows in full.
+	Checks               []string `json:"checks,omitempty"`
+	Bytes                int      `json:"bytes"`
+	DescriptionBytes     int      `json:"description_bytes"`
+	ReviewInstructions   int      `json:"review_instructions_bytes"`
+	OtherThreads         int      `json:"other_threads"`
+	OtherThreadsShown    int      `json:"other_threads_shown"`
+	DescriptionTruncated bool     `json:"description_truncated"`
+	ReviewTruncated      bool     `json:"review_instructions_truncated"`
+}
+
+type packedFile struct {
+	Path      string `json:"path"`
+	Bytes     int    `json:"bytes"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// openingMessage builds the finder's first user message, and records in pk
+// what it carried.
+func openingMessage(in *FindInput, pk *packing) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Pull request #%d: %s\n\n", in.PR.Number, in.PR.Title)
 	fmt.Fprintf(&b, "Base branch: %s. Reviewed head commit: %s.\n\n", in.PR.BaseRef, in.PR.HeadSHA)
-	b.WriteString("## Description\n\n")
-	if body := strings.TrimSpace(in.PR.Body); body != "" {
-		b.WriteString(truncate(body, maxDescriptionBytes))
-	} else {
-		b.WriteString("(no description)")
-	}
-	b.WriteString("\n\n")
-
-	writeInstructions(&b, in.Workspace, in.Instructions, in.InstructionFiles)
-	writeOtherThreads(&b, in.OtherThreads)
+	writeDescription(&b, in.PR.Body, pk)
+	writeInstructions(&b, in.Workspace, in.Instructions, in.InstructionFiles, pk)
+	writeOtherThreads(&b, in.OtherThreads, pk)
 
 	b.WriteString("## Changed files\n\n")
 	b.WriteString(fileList(in.Diff, in.Scope.InScope, 0, maxPromptFileList))
@@ -112,6 +133,7 @@ func openingMessage(in *FindInput) string {
 			skipped = append(skipped, f.Path())
 			continue
 		}
+		pk.Diff = append(pk.Diff, packedFile{Path: f.Path(), Bytes: len(text), Truncated: strings.Contains(text, "\n"+diffTruncated)})
 		b.WriteString(text)
 		b.WriteByte('\n')
 	}
@@ -128,7 +150,21 @@ func openingMessage(in *FindInput) string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
+	pk.Deferred, pk.Bytes = skipped, b.Len()
 	return b.String()
+}
+
+// writeDescription adds the PR description, within maxDescriptionBytes.
+func writeDescription(b *strings.Builder, body string, pk *packing) {
+	b.WriteString("## Description\n\n")
+	if body = strings.TrimSpace(body); body != "" {
+		text := truncate(body, maxDescriptionBytes)
+		pk.DescriptionBytes, pk.DescriptionTruncated = len(text), len(text) < len(body)
+		b.WriteString(text)
+	} else {
+		b.WriteString("(no description)")
+	}
+	b.WriteString("\n\n")
 }
 
 // diffOrder returns the in-scope files to show in the diff. On an
@@ -176,10 +212,12 @@ func writeIncremental(b *strings.Builder, inc *Incremental) {
 // review.instructions, within maxInstructionsTotal. review.instructions comes
 // first, since the repository wrote it for buggrit. Files that don't fit are
 // named, so the model can read them with read_file.
-func writeInstructions(b *strings.Builder, ws Workspace, instructions string, instructionFiles []string) {
+func writeInstructions(b *strings.Builder, ws Workspace, instructions string, instructionFiles []string, pk *packing) {
 	budget := maxInstructionsTotal
-	extra := truncate(strings.TrimSpace(instructions), maxInstructionBytes)
+	trimmed := strings.TrimSpace(instructions)
+	extra := truncate(trimmed, maxInstructionBytes)
 	budget -= len(extra)
+	pk.ReviewInstructions, pk.ReviewTruncated = len(extra), len(extra) < len(trimmed)
 
 	files := make([]string, 0, len(instructionFiles))
 	var omitted []string
@@ -200,9 +238,11 @@ func writeInstructions(b *strings.Builder, ws Workspace, instructions string, in
 		case !complete:
 			text += "\n[truncated; read_file " + p + " for the rest]"
 		}
+		pk.Instructions = append(pk.Instructions, packedFile{Path: p, Bytes: len(text), Truncated: !complete})
 		budget -= len(text)
 		files = append(files, fmt.Sprintf("### %s\n\n%s\n", label, strings.TrimSpace(text)))
 	}
+	pk.InstructionsOmitted = omitted
 	if len(files) == 0 && len(omitted) == 0 && extra == "" {
 		return
 	}
@@ -266,7 +306,8 @@ func readPrefix(ws Workspace, name string, limit int) (text string, complete boo
 	return sb.String(), complete, err
 }
 
-func writeOtherThreads(b *strings.Builder, threads []ThreadNote) {
+func writeOtherThreads(b *strings.Builder, threads []ThreadNote, pk *packing) {
+	pk.OtherThreads, pk.OtherThreadsShown = len(threads), min(len(threads), maxOtherThreads)
 	if len(threads) == 0 {
 		return
 	}

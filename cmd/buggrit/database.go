@@ -15,6 +15,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
 	"github.com/SnapdragonPartners/buggrit/internal/store"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // databaseWarningID is the marker ID of the PR comment that says the
@@ -29,6 +30,7 @@ const openTimeout = 30 * time.Second
 type database interface {
 	io.Closer
 	Buckets(ctx context.Context, cfg bucketpg.Config) (sharedBuckets, error)
+	Telemetry() telemetry.Sink
 }
 
 // storeDB adapts store.Store to database.
@@ -46,7 +48,7 @@ func (s storeDB) Buckets(ctx context.Context, cfg bucketpg.Config) (sharedBucket
 // removed once the database works again or is no longer configured. It
 // returns nil when there's no database to use, and the shared limit when
 // a stage has one.
-func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number int) (io.Closer, *llm.Shared) {
+func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number int) (database, *llm.Shared) {
 	var (
 		db     database
 		shared *llm.Shared
@@ -94,22 +96,20 @@ func (r *reviewer) openShared(ctx context.Context, cfg *config.Config, db databa
 	return shared
 }
 
-// noteShared adds what went wrong with the shared rate limit during the
-// pass to the database warning. A run that stopped doesn't publish it,
-// since a newer run may own the PR.
-func (r *reviewer) noteShared(ctx context.Context, cfg *config.Config, number int, s *llm.SharedState) {
-	if s == nil {
-		return
+// endDatabase adds what went wrong with the database during the pass to
+// its warning: the shared rate limit's problems, and telemetry that
+// couldn't be written. A run that stopped doesn't publish it, since a newer
+// run may own the PR.
+func (r *reviewer) endDatabase(ctx context.Context, cfg *config.Config, number, code int) {
+	before := r.dbProblem
+	if r.shared != nil {
+		for _, p := range r.shared.Problems() {
+			say(r.stderr, "buggrit: warning: %s\n", p)
+			r.addDatabaseProblem(p)
+		}
 	}
-	problems := s.Problems()
-	if len(problems) == 0 {
-		return
-	}
-	for _, p := range problems {
-		say(r.stderr, "buggrit: warning: %s\n", p)
-		r.addDatabaseProblem(p)
-	}
-	if !r.stopped {
+	r.endTelemetry(ctx, code)
+	if r.dbProblem != before && !r.stopped {
 		r.publishDatabaseWarning(ctx, cfg, number)
 	}
 }

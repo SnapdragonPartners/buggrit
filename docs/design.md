@@ -135,6 +135,7 @@ internal/state/       comment markers, finding ledger, thread state machine
 internal/review/      engine: verify / find / reconcile, prompts, tools, output parsing
 internal/publish/     render comments, post review, replies, resolve/unresolve, summary
 internal/store/       the optional database: open and check, migrations (§6)
+internal/telemetry/   run telemetry: recorder, sessions, the batching writer (§6)
 ```
 
 The engine entry point is
@@ -399,7 +400,8 @@ error. Settings left out take defaults from code, and `version` is required.
   "convergence": {
     "warn_after_pass": 5
   },
-  "identity": { "bot_login": "buggrit-bot[bot]" }
+  "identity": { "bot_login": "buggrit-bot[bot]" },
+  "telemetry": { "enabled": true }
 }
 ```
 
@@ -445,6 +447,9 @@ Notes:
 - `identity.bot_login` is the login buggrit's own comments must be authored
   by (§3, "Own comments"). Change it when using `GITHUB_TOKEN`
   (`github-actions[bot]`) or a differently named App.
+- `telemetry.enabled` (default `true`) lets a run with the database record
+  its telemetry there. Set it to `false` for a repository whose code
+  shouldn't be in the database (§6, "Telemetry").
 - `buggrit config validate [path]` checks a file and prints it with defaults
   applied.
 - The optional database isn't in the config. It's the org's
@@ -629,7 +634,8 @@ depends on it.
   with the shared rate limit are database problems too: an invalid
   `BUGGRIT_RATE_LIMITS`, a bucket that can't be set up, and, added at the
   end of the run, a bucket that failed or a lease lost mid-run (§9,
-  "Shared rate limit"). The
+  "Shared rate limit"), and telemetry that couldn't be written ("Telemetry",
+  below). The
   comment has a marker with the ID `database` and passes the own-comment
   check like any other (§3). Failing to post it is logged, not fatal.
 - **Migrations are an explicit command:** `buggrit db migrate`, run by an
@@ -644,6 +650,43 @@ depends on it.
   front end opens it and hands the engine small interfaces, such as a
   limiter or a telemetry sink. The SQL stays generic where it can, so
   another backend stays cheap.
+
+### Telemetry
+
+With the database, every run records what it did, for comparing models
+and tuning what the opening request carries
+([docs/telemetry.md](telemetry.md) has the schema and the queries). It is
+raw data for optimization, not a forensic record.
+
+- **On with the database.** Only an owner can configure the database, so
+  there's no separate opt-in. A repository turns it off with
+  `telemetry.enabled: false` (§4), since payloads include its code.
+  `BUGGRIT_TELEMETRY_LABEL` names an experiment for the runs it's set on,
+  and dry runs are marked as such.
+- **What's recorded:** the run (versions, effective models and limits, the
+  workflow run, the outcome); the pass's inputs (description, diff,
+  instructions, other threads, the checks); per stage, what the opening
+  message carried and what it deferred to the tools; every model call
+  with its response, every provider attempt (maestro-llms'
+  `ContextObserver`), and every tool call under the call that asked for
+  it; how each stage ended; what the pass decided and what publishing did.
+  Keys never are: the config names key variables, not keys.
+- **Requests are deltas.** A stage run is one session. Each call records
+  how many of the previous request's messages it kept and the ones it
+  added, plus the tools it offered, its tool choice and its purpose. This
+  is faithful because buggrit never compacts (§13), and it keeps a run
+  linear in size instead of quadratic.
+- **Never in the way.** The engine records through a recorder it gets from
+  the front end, and a nil one records nothing. Events are encoded when
+  recorded and written in batches by a background writer, so a callback
+  never waits on the database. A full buffer drops events rather than
+  block.
+- **No spool.** Events that can't be written are counted and dropped. The
+  run's row records how many were emitted and written, and is complete
+  only when it ended and wrote everything, so a cut-off run never looks
+  complete. Lost events are a database problem: the warning says how many
+  (§6, "The optional database"). Writes are idempotent by run and
+  sequence number, so a retried batch is harmless.
 
 ### Resolution settles a finding
 
@@ -1258,7 +1301,8 @@ pinned release instead of copying the dogfood workflow, which changes with
 every merge to `main`. The release workflow, the composite action and the
 reusable workflow (§3) are in; running in morris alongside Copilot is
 still to come. A wide rollout waits for step 5; the rate limit shared
-across repos is in (#29, §9). Step 4 took two PRs. #9 added the verifier, the
+across repos is in (#29, §9), and so is run telemetry (#26, §6), the
+baseline for tuning models and packing. Step 4 took two PRs. #9 added the verifier, the
 §6 state machine, transitions, and resolve, unresolve and repair. #16 added
 reply-triggered runs. Dogfooding then showed comment-triggered runs bumping
 pending push runs out of the queue, the completion signal going missing
@@ -1285,7 +1329,7 @@ empty-response and deadline outcomes and the unlimited-iteration setting
 (v0.10.0), per-stage reasoning control (§4,
 [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86), v0.11.0),
 the context-overflow outcome and the `openaicompat` rename (v0.13.0), and
-toolloop compaction (v0.14.0), which buggrit doesn't use yet. buggrit
+toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit
 still drops a canceled run's dangling tool-call turn before the wrap-up
 (§9); that isn't toolloop's to fix.
 
@@ -1322,6 +1366,17 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   and telemetry. It's reached through the Cloud SQL Auth Proxy with
   federated credentials and IAM login, uses golang-migrate, sqlc and pgx,
   and degrades to a warning (§6, "The optional database").
+- **Run telemetry** (October 2026,
+  [#26](https://github.com/SnapdragonPartners/buggrit/issues/26)) goes to
+  that database whenever it's configured, with a per-repository off
+  switch. Requests are stored as deltas, and there's no spool: a run that
+  couldn't write everything says so and is marked incomplete (§6,
+  "Telemetry").
+- **buggrit never compacts** a transcript (toolloop's compaction stays
+  off). A model that outgrows its context ends the stage incomplete, which
+  the next pass picks up; compaction would hide what the model saw, and
+  telemetry's deltas rely on transcripts that only grow, or drop a
+  dangling tool-call turn.
 - **LunaRoute** is OpenAI-compatible and is reached through
   `openai-compatible` (§4). Small fixes to routes or validation, if needed,
   are made in `maestro-llms`.

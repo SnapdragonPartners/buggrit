@@ -37,9 +37,11 @@ internal/state/    # Comment markers, the own-comment check, thread replay and t
 internal/glob/     # include/exclude path globs with ** (design §4)
 internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the shared stage loop, agentic verifier and finder, reconcile (design §2, §5, §6, §7)
 internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
-internal/store/    # The optional database: open and check, migrations; sqlc code in db/ (design §6, "The optional database")
+internal/store/    # The optional database: open and check, migrations, the telemetry sink; sqlc code in db/ (design §6, "The optional database")
+internal/telemetry/  # Run telemetry: recorder, per-stage sessions, the batching writer (design §6, "Telemetry")
 docs/design.md     # The binding design
-docs/database.md   # Setting up the optional database (GCP, roles, migrations)
+docs/database.md   # Setting up the optional database (GCP, roles, migrations, reading it)
+docs/telemetry.md  # Run telemetry: what's recorded, the schema, analysis queries
 docs/releasing.md  # Cutting a release: the release commit, repo protections, recovery
 docs/adr/          # Architecture decision records (index in its README)
 hooks/             # Git hooks (pre-push: lint + test)

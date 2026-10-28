@@ -8,6 +8,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type BuggritEvent struct {
+	RunID   pgtype.UUID
+	Seq     int32
+	At      pgtype.Timestamptz
+	Kind    string
+	Session pgtype.Text
+	Call    pgtype.Int4
+	Payload []byte
+}
+
+type BuggritRun struct {
+	ID            pgtype.UUID
+	StartedAt     pgtype.Timestamptz
+	EndedAt       pgtype.Timestamptz
+	Repo          string
+	Pr            int32
+	HeadSha       string
+	DryRun        bool
+	Label         string
+	Meta          []byte
+	Outcome       []byte
+	EventsEmitted pgtype.Int4
+	EventsWritten pgtype.Int4
+	Complete      bool
+}
+
 type BuggritSchemaVersion struct {
 	Version   int32
 	AppliedAt pgtype.Timestamptz
