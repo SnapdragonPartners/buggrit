@@ -164,17 +164,27 @@ func TestWriterNeverBlocks(t *testing.T) {
 	}
 }
 
-// Close gives up when its context ends, and says so.
+// Close gives up when its context ends, and says so, and stops the worker:
+// nothing queued is written after it returns, even once the sink would
+// accept it.
 func TestWriterCloseTimesOut(t *testing.T) {
 	sink := newMemSink()
 	sink.block = make(chan struct{})
-	defer close(sink.block)
-	w := NewWriter(sink, &Run{ID: "r"}, fast)
-	emitN(w, 1)
+	opts := fast
+	opts.MaxBatch = 1
+	w := NewWriter(sink, &Run{ID: "r"}, opts)
+	emitN(w, 3)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	rep := w.Close(ctx, nil)
-	if !errors.Is(rep.Err, context.DeadlineExceeded) || rep.Emitted != 1 {
+	if !errors.Is(rep.Err, context.DeadlineExceeded) || rep.Emitted != 3 || rep.Written != 0 {
 		t.Fatalf("report = %+v", rep)
+	}
+	close(sink.block)
+	time.Sleep(50 * time.Millisecond)
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.events) != 0 || sink.end != nil {
+		t.Errorf("after Close gave up: %d events written, end %+v", len(sink.events), sink.end)
 	}
 }

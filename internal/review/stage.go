@@ -64,7 +64,7 @@ const wrapUpTurns = 3
 func (s *stage) run(ctx context.Context) (*stageRun, error) {
 	s.client = s.session.Chat(s.client)
 	if s.session != nil {
-		s.session.Emit(telemetry.KindOpening, s.packing)
+		s.session.Emit(telemetry.KindOpening, s.packing.record())
 		observe := s.onToolCall
 		s.onToolCall = func(e toolloop.ToolCallEvent) { //nolint:gocritic // hugeParam: fixed by toolloop
 			s.session.Tool(e)

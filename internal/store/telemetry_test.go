@@ -83,7 +83,10 @@ func TestTelemetryRoundTrip(t *testing.T) {
 			s.Tool(toolloop.ToolCallEvent{Call: llms.ToolCall{ID: "t", Name: "get_diff", Parameters: json.RawMessage(`{"path": "a.go"}`)}})
 		}
 	}
-	rec.Emit(telemetry.KindResult, map[string]any{"elapsed_ms": 1200, "done": true, "kept": []any{map[string]string{"id": "f-1"}}})
+	// A clean pass, and a verifier whose opening showed no diff: the
+	// documented queries take empty lists.
+	rec.Session("verify").Emit(telemetry.KindOpening, map[string]any{"diff": []any{}})
+	rec.Emit(telemetry.KindResult, map[string]any{"elapsed_ms": 1200, "done": true, "kept": []any{}})
 	rep := w.Close(ctx, map[string]any{"exit_code": 0, "status": "complete"})
 	if rep.Err != nil || rep.Written != rep.Emitted {
 		t.Fatalf("report = %+v", rep)

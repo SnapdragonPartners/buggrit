@@ -48,9 +48,13 @@ type Writer struct {
 	err  error // the first failure; the worker's until done closes
 	ch   chan *Event
 	done chan struct{}
-	run  *Run
-	opts WriterOptions
-	mu   sync.RWMutex
+	// ctx bounds the worker's sink calls; Close cancels it when it gives
+	// up, so nothing is written after Close returns.
+	ctx    context.Context //nolint:containedctx // the worker's lifetime, not a request's
+	cancel context.CancelFunc
+	run    *Run
+	opts   WriterOptions
+	mu     sync.RWMutex
 	// emitted and dropped are guarded by mu; written is the worker's.
 	emitted, dropped, written int
 	closed                    bool
@@ -96,6 +100,7 @@ func (o *WriterOptions) defaults() {
 func NewWriter(sink Sink, run *Run, opts WriterOptions) *Writer {
 	opts.defaults()
 	w := &Writer{sink: sink, run: run, opts: opts, ch: make(chan *Event, opts.Buffer), done: make(chan struct{})}
+	w.ctx, w.cancel = context.WithCancel(context.Background())
 	go w.loop()
 	return w
 }
@@ -135,9 +140,11 @@ func (r *Report) Problem() string {
 }
 
 // Close writes what's queued and ends the run's row with out as its
-// outcome. It waits until ctx is done at most; whatever isn't written by
-// then is lost.
+// outcome. It waits until ctx is done at most. Then it cancels the worker
+// and waits for it to stop, so nothing is written after Close returns:
+// whatever wasn't written is lost, and the run's row stays incomplete.
 func (w *Writer) Close(ctx context.Context, outcome any) *Report {
+	defer w.cancel()
 	w.mu.Lock()
 	if !w.closed {
 		w.closed = true
@@ -147,9 +154,11 @@ func (w *Writer) Close(ctx context.Context, outcome any) *Report {
 	select {
 	case <-w.done:
 	case <-ctx.Done():
+		w.cancel()
+		<-w.done
 		w.mu.RLock()
 		defer w.mu.RUnlock()
-		return &Report{Emitted: w.emitted, Err: fmt.Errorf("gave up waiting to write events: %w", ctx.Err())}
+		return &Report{Emitted: w.emitted, Written: w.written, Err: fmt.Errorf("gave up waiting to write events: %w", ctx.Err())}
 	}
 
 	w.mu.RLock()
@@ -173,7 +182,7 @@ func (w *Writer) Close(ctx context.Context, outcome any) *Report {
 // channel closes.
 func (w *Writer) loop() {
 	defer close(w.done)
-	ctx := context.Background()
+	ctx := w.ctx
 	started := w.start(ctx)
 	tick := time.NewTicker(w.opts.FlushEvery)
 	defer tick.Stop()
@@ -196,6 +205,9 @@ func (w *Writer) loop() {
 	for {
 		select {
 		case e, ok := <-w.ch:
+			if ctx.Err() != nil {
+				return // Close gave up
+			}
 			if !ok {
 				flush()
 				if !started {

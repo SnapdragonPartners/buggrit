@@ -3,6 +3,7 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 
+	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
@@ -240,5 +242,29 @@ func TestTelemetryRecordsAFailedPass(t *testing.T) {
 	results := rec.of(telemetry.KindResult, "")
 	if len(results) != 1 || decode[resultRecord](t, results[0]).Error == "" {
 		t.Errorf("result events: %v", results)
+	}
+}
+
+// Records of empty inputs encode their lists as [], never null, which the
+// documented queries' array functions can't take (docs/telemetry.md).
+func TestTelemetryRecordsHaveNoNullLists(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Review.InstructionFiles = nil
+	p := &pass{cfg: &cfg, res: &Result{PR: &github.PullRequest{}}, diff: &github.Diff{}}
+	for name, rec := range map[string]any{
+		"packing":      (&packing{}).record(),
+		"pass":         p.record(nil),
+		"pass, finder": p.record(&FindInput{}),
+		"result":       newResultRecord(&Result{Find: &FindResult{}}, nil),
+		"failed":       newResultRecord(nil, errors.New("boom")),
+		"stage":        stageRecord{},
+	} {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "null") {
+			t.Errorf("%s: %s", name, data)
+		}
 	}
 }

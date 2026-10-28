@@ -29,17 +29,41 @@ type checkRecord struct {
 	Why      string             `json:"why"`
 }
 
+// Every list in a record encodes as [], never null: a JSON null isn't SQL's,
+// so it would break array functions in the documented queries
+// (docs/telemetry.md).
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
+// record returns the packing with every list non-nil.
+func (pk *packing) record() *packing {
+	out := *pk
+	out.Instructions, out.InstructionsOmitted = nonNil(pk.Instructions), nonNil(pk.InstructionsOmitted)
+	out.Diff, out.Deferred = nonNil(pk.Diff), nonNil(pk.Deferred)
+	return &out
+}
+
 func (p *pass) record(fin *FindInput) *passRecord {
 	res := p.res
+	diff := github.Diff{}
+	if p.diff != nil {
+		diff = *p.diff
+	}
+	diff.Files = nonNil(diff.Files)
 	rec := &passRecord{
-		Diff: p.diff, PR: p.context(), Mode: "full", Scope: res.Scope, Pass: res.Pass, Finder: fin != nil,
-		Instructions: p.cfg.Review.Instructions, InstructionFiles: p.cfg.Review.InstructionFiles,
+		Diff: &diff, PR: p.context(), Mode: "full", Scope: res.Scope, Pass: res.Pass, Finder: fin != nil,
+		Instructions: p.cfg.Review.Instructions, InstructionFiles: nonNil(p.cfg.Review.InstructionFiles),
+		OtherThreads: []ThreadNote{}, Checks: []checkRecord{},
 	}
 	if res.ReconcileOnly {
 		rec.Mode = "reconcile"
 	}
 	if fin != nil {
-		rec.OtherThreads = fin.OtherThreads
+		rec.OtherThreads = nonNil(fin.OtherThreads)
 		if fin.Incremental != nil {
 			rec.Since = fin.Incremental.Since
 		}
@@ -89,7 +113,7 @@ type transitionRecord struct {
 }
 
 func newResultRecord(res *Result, err error) *resultRecord {
-	rec := &resultRecord{}
+	rec := &resultRecord{Submitted: []Finding{}, Kept: []keptRecord{}, Transitions: []transitionRecord{}, Unverified: []string{}}
 	if err != nil {
 		rec.Error = err.Error()
 	}
@@ -98,9 +122,9 @@ func newResultRecord(res *Result, err error) *resultRecord {
 	}
 	rec.Skipped, rec.SkipReason, rec.Reason, rec.Summary = res.Skipped, res.SkipReason, res.Reason, res.Summary
 	rec.Complete, rec.Done, rec.ElapsedMS = res.Complete, res.Done(), res.Elapsed.Milliseconds()
-	rec.Duplicates, rec.BelowThreshold, rec.Unverified = res.Duplicates, res.BelowThreshold, res.Unverified
+	rec.Duplicates, rec.BelowThreshold, rec.Unverified = res.Duplicates, res.BelowThreshold, nonNil(res.Unverified)
 	if res.Find != nil {
-		rec.Submitted = res.Find.Findings
+		rec.Submitted = nonNil(res.Find.Findings)
 	}
 	if res.Verify != nil {
 		rec.Verdicts = res.Verify.Verdicts
