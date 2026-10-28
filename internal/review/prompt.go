@@ -159,7 +159,9 @@ func writeDescription(b *strings.Builder, body string, pk *packing) {
 	b.WriteString("## Description\n\n")
 	if body = strings.TrimSpace(body); body != "" {
 		text := truncate(body, maxDescriptionBytes)
-		pk.DescriptionBytes, pk.DescriptionTruncated = len(text), len(text) < len(body)
+		// From the input: a cut text ends in "…", so it can be as long
+		// as the whole.
+		pk.DescriptionBytes, pk.DescriptionTruncated = len(text), len(body) > maxDescriptionBytes
 		b.WriteString(text)
 	} else {
 		b.WriteString("(no description)")
@@ -217,7 +219,7 @@ func writeInstructions(b *strings.Builder, ws Workspace, instructions string, in
 	trimmed := strings.TrimSpace(instructions)
 	extra := truncate(trimmed, maxInstructionBytes)
 	budget -= len(extra)
-	pk.ReviewInstructions, pk.ReviewTruncated = len(extra), len(extra) < len(trimmed)
+	pk.ReviewInstructions, pk.ReviewTruncated = len(extra), len(trimmed) > maxInstructionBytes
 
 	files := make([]string, 0, len(instructionFiles))
 	var omitted []string

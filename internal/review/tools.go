@@ -452,6 +452,10 @@ func lineCounts(f *github.FileDiff) (added, deleted int) {
 	return added, deleted
 }
 
+// diffTruncated starts the line that ends a file's diff cut short at its
+// limit.
+const diffTruncated = "[diff truncated"
+
 // renderFileDiff renders one file's diff for the model, skipping its first
 // offset diff lines and stopping near limit bytes with a continuation hint.
 // Each head-side line carries its line number, which is what findings anchor
@@ -461,11 +465,6 @@ func lineCounts(f *github.FileDiff) (added, deleted int) {
 //	    10   ctx line
 //	    11 + added line
 //	       - deleted line
-//
-// diffTruncated starts the line that ends a file's diff cut short at its
-// limit.
-const diffTruncated = "[diff truncated"
-
 func renderFileDiff(f *github.FileDiff, offset, limit int) string {
 	var b strings.Builder
 	header := f.Path()

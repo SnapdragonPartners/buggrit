@@ -268,3 +268,25 @@ func TestTelemetryRecordsHaveNoNullLists(t *testing.T) {
 		}
 	}
 }
+
+// Truncation flags come from the input: a text cut a byte or two past its
+// cap ends in "…" and is no shorter than the whole, but it was still cut.
+func TestTelemetryPackingTruncationAtTheCap(t *testing.T) {
+	for _, tc := range []struct {
+		desc, instr int
+		want        bool
+	}{
+		{maxDescriptionBytes, maxInstructionBytes, false},
+		{maxDescriptionBytes + 1, maxInstructionBytes + 1, true},
+		{maxDescriptionBytes + 2, maxInstructionBytes + 2, true},
+	} {
+		in := findInput(t, &testllm.FakeChatClient{})
+		in.PR.Body, in.Instructions = strings.Repeat("d", tc.desc), strings.Repeat("i", tc.instr)
+		pk := &packing{}
+		openingMessage(in, pk)
+		if pk.DescriptionTruncated != tc.want || pk.ReviewTruncated != tc.want {
+			t.Errorf("%d/%d bytes: description truncated %v, review instructions truncated %v, want %v",
+				tc.desc, tc.instr, pk.DescriptionTruncated, pk.ReviewTruncated, tc.want)
+		}
+	}
+}
