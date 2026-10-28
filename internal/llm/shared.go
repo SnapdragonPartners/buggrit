@@ -140,11 +140,13 @@ func (l *sharedLimiter) Reserve(ctx context.Context, req ratelimit.ReservationRe
 	if !l.state.active() {
 		return own, nil
 	}
+	// The wait starts before its timeout's timer does, so a wait cut off by
+	// max_wait is never recorded as shorter than it.
+	start := l.state.now()
 	wctx, cancel := ctx, context.CancelFunc(func() {})
 	if l.maxWait > 0 {
 		wctx, cancel = context.WithTimeout(ctx, l.maxWait)
 	}
-	start := l.state.now()
 	lease, err := l.shared.Reserve(wctx, req)
 	waited := l.state.now().Sub(start)
 	timedOut := wctx.Err() != nil
