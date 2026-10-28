@@ -120,15 +120,23 @@ func (r *reviewer) endTelemetry(ctx context.Context, code int) {
 
 // publishRecord is what publishing did.
 type publishRecord struct {
-	Error    string           `json:"error,omitempty"`
-	Manual   []publish.Manual `json:"manual,omitempty"`
-	ReviewID int64            `json:"review_id,omitempty"`
-	Threads  int              `json:"threads"`
-	Replies  int              `json:"replies"`
-	Resolved int              `json:"resolved"`
-	Reopened int              `json:"unresolved"`
-	FellBack bool             `json:"fell_back,omitempty"`
-	DryRun   bool             `json:"dry_run,omitempty"`
+	Error    string         `json:"error,omitempty"`
+	Manual   []manualRecord `json:"manual,omitempty"`
+	ReviewID int64          `json:"review_id,omitempty"`
+	Threads  int            `json:"threads"`
+	Replies  int            `json:"replies"`
+	Resolved int            `json:"resolved"`
+	Reopened int            `json:"unresolved"`
+	FellBack bool           `json:"fell_back,omitempty"`
+	DryRun   bool           `json:"dry_run,omitempty"`
+}
+
+// manualRecord is publish.Manual with the keys docs/telemetry.md names.
+type manualRecord struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Resolve bool   `json:"resolve"`
+	New     bool   `json:"new"`
 }
 
 func newPublishRecord(posted *publish.Posted, err error) *publishRecord {
@@ -137,7 +145,10 @@ func newPublishRecord(posted *publish.Posted, err error) *publishRecord {
 		rec.Error = err.Error()
 	}
 	if posted != nil {
-		rec.Manual, rec.ReviewID, rec.Threads, rec.Replies = posted.Manual, posted.ReviewID, posted.Threads, posted.Replies
+		rec.ReviewID, rec.Threads, rec.Replies = posted.ReviewID, posted.Threads, posted.Replies
+		for i := range posted.Manual {
+			rec.Manual = append(rec.Manual, manualRecord(posted.Manual[i]))
+		}
 		rec.Resolved, rec.Reopened, rec.FellBack = posted.Resolved, posted.Unresolved, posted.FellBack
 	}
 	return rec

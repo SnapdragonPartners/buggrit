@@ -209,12 +209,12 @@ func TestTelemetryRecordsAPass(t *testing.T) {
 	}
 	pr := decode[struct {
 		Mode   string
-		PR     Context
+		PR     prRecord
 		Diff   struct{ Files []json.RawMessage }
 		Pass   int
 		Finder bool
 	}](t, passes[0])
-	if pr.Mode != "full" || pr.Pass != 1 || !pr.Finder || len(pr.Diff.Files) != 3 || pr.PR.HeadSHA != engineHead {
+	if pr.Mode != "full" || pr.Pass != 1 || !pr.Finder || len(pr.Diff.Files) != 3 || pr.PR.HeadSHA != engineHead || pr.PR.Number == 0 {
 		t.Errorf("pass record = %+v", pr)
 	}
 	results := rec.of(telemetry.KindResult, "")

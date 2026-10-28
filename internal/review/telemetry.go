@@ -9,17 +9,35 @@ import (
 // stages run: enough to replay the pass or interpret its requests
 // (docs/telemetry.md).
 type passRecord struct {
-	Diff             *github.Diff  `json:"diff"`
-	PR               Context       `json:"pr"`
-	Mode             string        `json:"mode"`
-	Scope            string        `json:"scope,omitempty"`
-	Since            string        `json:"since,omitempty"`
-	Instructions     string        `json:"instructions,omitempty"`
-	InstructionFiles []string      `json:"instruction_files"`
-	OtherThreads     []ThreadNote  `json:"other_threads"`
-	Checks           []checkRecord `json:"checks"`
-	Pass             int           `json:"pass"`
-	Finder           bool          `json:"finder"`
+	Diff             *github.Diff   `json:"diff"`
+	PR               prRecord       `json:"pr"`
+	Mode             string         `json:"mode"`
+	Scope            string         `json:"scope,omitempty"`
+	Since            string         `json:"since,omitempty"`
+	Instructions     string         `json:"instructions,omitempty"`
+	InstructionFiles []string       `json:"instruction_files"`
+	OtherThreads     []threadRecord `json:"other_threads"`
+	Checks           []checkRecord  `json:"checks"`
+	Pass             int            `json:"pass"`
+	Finder           bool           `json:"finder"`
+}
+
+// prRecord and threadRecord are Context and ThreadNote with the keys
+// docs/telemetry.md names, as verdictRecord is state.Verdict.
+type prRecord struct {
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	HeadSHA string `json:"head_sha"`
+	BaseRef string `json:"base_ref"`
+	Number  int    `json:"number"`
+}
+
+type threadRecord struct {
+	Path     string `json:"path"`
+	Author   string `json:"author"`
+	Body     string `json:"body"`
+	Line     int    `json:"line"`
+	Resolved bool   `json:"resolved"`
 }
 
 type checkRecord struct {
@@ -55,15 +73,17 @@ func (p *pass) record(fin *FindInput) *passRecord {
 	}
 	diff.Files = nonNil(diff.Files)
 	rec := &passRecord{
-		Diff: &diff, PR: p.context(), Mode: "full", Scope: res.Scope, Pass: res.Pass, Finder: fin != nil,
+		Diff: &diff, PR: prRecord(p.context()), Mode: "full", Scope: res.Scope, Pass: res.Pass, Finder: fin != nil,
 		Instructions: p.cfg.Review.Instructions, InstructionFiles: nonNil(p.cfg.Review.InstructionFiles),
-		OtherThreads: []ThreadNote{}, Checks: []checkRecord{},
+		OtherThreads: []threadRecord{}, Checks: []checkRecord{},
 	}
 	if res.ReconcileOnly {
 		rec.Mode = "reconcile"
 	}
 	if fin != nil {
-		rec.OtherThreads = nonNil(fin.OtherThreads)
+		for i := range fin.OtherThreads {
+			rec.OtherThreads = append(rec.OtherThreads, threadRecord(fin.OtherThreads[i]))
+		}
 		if fin.Incremental != nil {
 			rec.Since = fin.Incremental.Since
 		}
@@ -79,21 +99,27 @@ func (p *pass) record(fin *FindInput) *passRecord {
 // and those reconcile kept, the verdicts and the transitions. Publishing's
 // outcome is the front end's to record.
 type resultRecord struct {
-	Verdicts       map[string]*state.Verdict `json:"verdicts,omitempty"`
-	Error          string                    `json:"error,omitempty"`
-	SkipReason     string                    `json:"skip_reason,omitempty"`
-	Reason         string                    `json:"reason,omitempty"`
-	Summary        string                    `json:"summary,omitempty"`
-	Submitted      []Finding                 `json:"submitted"`
-	Kept           []keptRecord              `json:"kept"`
-	Transitions    []transitionRecord        `json:"transitions"`
-	Unverified     []string                  `json:"unverified"`
-	Duplicates     int                       `json:"duplicates"`
-	BelowThreshold int                       `json:"below_threshold"`
-	ElapsedMS      int64                     `json:"elapsed_ms"`
-	Skipped        bool                      `json:"skipped"`
-	Complete       bool                      `json:"complete"`
-	Done           bool                      `json:"done"`
+	Verdicts       map[string]verdictRecord `json:"verdicts,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+	SkipReason     string                   `json:"skip_reason,omitempty"`
+	Reason         string                   `json:"reason,omitempty"`
+	Summary        string                   `json:"summary,omitempty"`
+	Submitted      []Finding                `json:"submitted"`
+	Kept           []keptRecord             `json:"kept"`
+	Transitions    []transitionRecord       `json:"transitions"`
+	Unverified     []string                 `json:"unverified"`
+	Duplicates     int                      `json:"duplicates"`
+	BelowThreshold int                      `json:"below_threshold"`
+	ElapsedMS      int64                    `json:"elapsed_ms"`
+	Skipped        bool                     `json:"skipped"`
+	Complete       bool                     `json:"complete"`
+	Done           bool                     `json:"done"`
+}
+
+type verdictRecord struct {
+	State    state.FindingState `json:"state"`
+	Reason   string             `json:"reason"`
+	Evidence []string           `json:"evidence"`
 }
 
 type keptRecord struct {
@@ -127,7 +153,13 @@ func newResultRecord(res *Result, err error) *resultRecord {
 		rec.Submitted = nonNil(res.Find.Findings)
 	}
 	if res.Verify != nil {
-		rec.Verdicts = res.Verify.Verdicts
+		rec.Verdicts = map[string]verdictRecord{}
+		for id, v := range res.Verify.Verdicts {
+			if v == nil {
+				continue
+			}
+			rec.Verdicts[id] = verdictRecord{State: v.State, Reason: v.Reason, Evidence: nonNil(v.Evidence)}
+		}
 	}
 	for i := range res.Findings {
 		c := &res.Findings[i]

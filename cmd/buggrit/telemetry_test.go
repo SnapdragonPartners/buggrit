@@ -195,3 +195,11 @@ func TestNewRunID(t *testing.T) {
 func TestPublishPayloadDocumented(t *testing.T) {
 	telemetrytest.Documented(t, telemetry.KindPublish, publishRecord{})
 }
+
+// The run's meta records config types: they encode with their JSON keys,
+// as docs/telemetry.md names them.
+func TestRunMetaTagged(t *testing.T) {
+	telemetrytest.Tagged(t, config.Model{})
+	telemetrytest.Tagged(t, config.Limits{})
+	telemetrytest.Tagged(t, runOutcome{})
+}
