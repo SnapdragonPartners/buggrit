@@ -15,6 +15,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry/telemetrytest"
 )
 
 // withStore gives the run a database that opens, and returns it.
@@ -188,4 +189,9 @@ func TestNewRunID(t *testing.T) {
 	if a == b || len(a) != 36 || a[14] != '4' || !strings.Contains("89ab", string(a[19])) {
 		t.Errorf("run IDs %s, %s", a, b)
 	}
+}
+
+// Every key of the publish payload is in docs/telemetry.md's table.
+func TestPublishPayloadDocumented(t *testing.T) {
+	telemetrytest.Documented(t, telemetry.KindPublish, publishRecord{})
 }

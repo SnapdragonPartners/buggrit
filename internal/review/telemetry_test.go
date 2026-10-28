@@ -15,6 +15,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry/telemetrytest"
 )
 
 // recorded is a run's telemetry in memory.
@@ -289,4 +290,12 @@ func TestTelemetryPackingTruncationAtTheCap(t *testing.T) {
 				tc.desc, tc.instr, pk.DescriptionTruncated, pk.ReviewTruncated, tc.want)
 		}
 	}
+}
+
+// Every payload key the engine records is in docs/telemetry.md's table.
+func TestPayloadsDocumented(t *testing.T) {
+	telemetrytest.Documented(t, telemetry.KindPass, passRecord{})
+	telemetrytest.Documented(t, telemetry.KindOpening, packing{})
+	telemetrytest.Documented(t, telemetry.KindStage, stageRecord{})
+	telemetrytest.Documented(t, telemetry.KindResult, resultRecord{})
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
+
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry/telemetrytest"
 )
 
 // collector keeps every event, numbered in the order it got them.
@@ -269,4 +271,12 @@ func TestErrKind(t *testing.T) {
 		errKind(fmt.Errorf("w: %w", &llms.ProviderError{Kind: llms.ErrorKindTimeout})) != "timeout" {
 		t.Error("errKind")
 	}
+}
+
+// Every payload key this package records is in docs/telemetry.md's table.
+func TestPayloadsDocumented(t *testing.T) {
+	telemetrytest.Documented(t, KindMessage, messageRecord{})
+	telemetrytest.Documented(t, KindCall, callRecord{})
+	telemetrytest.Documented(t, KindAttempt, attemptRecord{})
+	telemetrytest.Documented(t, KindTool, toolRecord{})
 }

@@ -48,19 +48,21 @@ Both tables are in the `buggrit` schema (migration 2).
 
 `event` has one row per event, keyed by `(run_id, seq)` in emission order.
 `session` is the stage run (`find` or `verify`), and `call` numbers its
-model calls from 1. Both are null outside them. `kind` picks the payload:
+model calls from 1. Both are null outside them. `kind` picks the payload;
+each row names every top-level key its payload can carry, which the tests
+check:
 
 | Kind | Session, call | Payload |
 |---|---|---|
-| `pass` | none | The inputs: `mode` (`full` or `reconcile`), `pass`, `scope`, `since`, `pr` (number, title, body, base, head), the whole `diff`, `instructions`, `instruction_files`, `other_threads`, and the `checks` selected for the verifier |
-| `opening` | session, no call | What the opening message carried: its `bytes`; the description's bytes and whether it was truncated; each instruction file's path, bytes and truncation, and those `instructions_omitted`; review instructions; how many other threads there were and how many were shown; each `diff` file shown, with bytes and whether it was cut at the per-file cap; the files `deferred` to `get_diff`; and for the verifier, the `checks` shown, with the rest deferred to `get_thread` |
+| `pass` | none | The inputs: `mode` (`full` or `reconcile`), `pass`, `finder` (whether the finder runs this pass), `scope`, `since`, `pr` (number, title, body, base, head), the whole `diff`, `instructions`, `instruction_files`, `other_threads`, and the `checks` selected for the verifier |
+| `opening` | session, no call | What the opening message carried: its `bytes`; `description_bytes` and `description_truncated`; `instructions`, each instruction file's path, bytes and truncation, and those `instructions_omitted`; `review_instructions_bytes` and `review_instructions_truncated`; `other_threads` and how many were shown (`other_threads_shown`); `diff`, each file shown, with bytes and whether it was cut at the per-file cap; the files `deferred` to `get_diff`; and for the verifier, the `checks` shown, with the rest deferred to `get_thread` |
 | `message` | session, call | One message the call added to the transcript: `pos` and `message` |
-| `call` | session, call | One logical model call: `phase` (`investigate`, `nudge` or `wrapup`), `purpose`, `keep`, `messages`, `tools` (every tool offered), `tool_defs` (definitions first offered, or changed), `tool_choice`, `system` (on the first call), `latency_ms`, `error` and `error_kind`, and `response` (`message`, `stop_reason`, `usage`, `applied_reasoning`) |
-| `attempt` | session, call | One provider attempt: `attempt` (maestro-llms' retry number), `provider`, `model`, `latency_ms`, `usage`, `error` and `error_kind` |
-| `tool` | session, call | One tool call, under the call whose response asked for it: `iteration`, `id`, `name`, `parameters`, `result`, `is_error`, `error` and `latency_ms` |
+| `call` | session, call | One logical model call: `phase` (`investigate`, `nudge` or `wrapup`), `purpose`, `keep`, `messages`, `tools` (every tool offered), `tool_defs` (definitions first offered, or changed), `tool_choice`, `system` (on the first call), the request's `max_tokens` and `reasoning`, `latency_ms`, `error` and `error_kind`, and `response` (`message`, `stop_reason`, `usage`, `applied_reasoning`) |
+| `attempt` | session, call | One provider attempt: `attempt` (maestro-llms' retry number), `provider`, `model`, `purpose`, `latency_ms`, `usage`, `error` and `error_kind` |
+| `tool` | session, call | One tool call, under the call whose response asked for it: `iteration`, `id`, `name`, `parameters`, `result`, `is_error`, `stop` (the stage's terminal tool accepted it), `error` and `latency_ms` |
 | `stage` | session, last call | How the stage ended: `iterations`, `submitted`, `wrapped_up`, `reason` and the summed `usage` |
-| `result` | none | What the pass decided: the findings `submitted`, those reconcile `kept`, `duplicates`, `below_threshold`, `verdicts`, `transitions`, `unverified`, `complete`, `done`, `reason`, `summary` and `elapsed_ms`, or the pass's `error` |
-| `publish` | none | What publishing did: `threads`, `replies`, `resolved`, `unresolved`, `fell_back`, threads left for a person (`manual`) and the `error`, or `dry_run` |
+| `result` | none | What the pass decided: the findings `submitted`, those reconcile `kept`, `duplicates`, `below_threshold`, `verdicts`, `transitions`, `unverified`, `complete`, `done`, `reason`, `summary` and `elapsed_ms`; `skipped` and `skip_reason` for a pass that didn't review; or the pass's `error` |
+| `publish` | none | What publishing did: the pass's `review_id`, `threads`, `replies`, `resolved`, `unresolved`, `fell_back`, threads left for a person (`manual`) and the `error`, or `dry_run` |
 
 maestro-llms types (`message`, `usage`, `tool_choice` and the like) are
 encoded with their Go field names: `{"Role": "user", "Content": [{"Type":

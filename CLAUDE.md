@@ -39,6 +39,7 @@ internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the 
 internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
 internal/store/    # The optional database: open and check, migrations, the telemetry sink; sqlc code in db/ (design §6, "The optional database")
 internal/telemetry/  # Run telemetry: recorder, per-stage sessions, the batching writer (design §6, "Telemetry")
+internal/telemetry/telemetrytest/  # Checks payload records against docs/telemetry.md's table
 docs/design.md     # The binding design
 docs/database.md   # Setting up the optional database (GCP, roles, migrations, reading it)
 docs/telemetry.md  # Run telemetry: what's recorded, the schema, analysis queries
