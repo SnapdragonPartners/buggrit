@@ -661,8 +661,9 @@ raw data for optimization, not a forensic record.
 - **On with the database.** Only an owner can configure the database, so
   there's no separate opt-in. A repository turns it off with
   `telemetry.enabled: false` (§4), since payloads include its code.
-  `BUGGRIT_TELEMETRY_LABEL` names an experiment for the runs it's set on,
-  and dry runs are marked as such.
+  `BUGGRIT_TELEMETRY_LABEL` names an experiment for the runs it's set on
+  (the workflows pass it from the variable of that name), and dry runs are
+  marked as such.
 - **What's recorded:** the run (versions, effective models and limits, the
   workflow run, the outcome); the pass's inputs (description, diff,
   instructions, other threads, the checks); per stage, what the opening

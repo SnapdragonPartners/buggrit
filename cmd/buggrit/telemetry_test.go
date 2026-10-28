@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
+	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
@@ -105,6 +108,44 @@ func TestReviewTelemetryWriteFails(t *testing.T) {
 	}
 	if fs.sink.end == nil || fs.sink.end.Complete {
 		t.Errorf("end = %+v", fs.sink.end)
+	}
+}
+
+// Problems found during the pass, from the shared limit and from
+// telemetry, are masked like the database's own: whatever error quotes the
+// URL, the warning, the job summary and the log don't carry it (design §10).
+func TestReviewDatabaseProblemsMaskURL(t *testing.T) {
+	const url = "postgres://runner:s3cret@db.internal/buggrit"
+	e := setupReview(t, submit(finding))
+	e.env["BUGGRIT_DATABASE_URL"] = url
+	e.env["BUGGRIT_RATE_LIMITS"] = `{"luna": {"base_url": "https://llm.example/v1", "max_concurrency": 2}}`
+	fs := &fakeStore{buckets: &fakeBuckets{acquireErr: errors.New("acquire: dial " + url + ": refused")}}
+	fs.sink.writeErr = errors.New("write events: dial " + url + ": refused")
+	e.deps.openStore = func(context.Context, string) (database, error) { return fs, nil }
+	e.deps.clients = func(cfg *config.Config, _ modelObserver, shared *llm.Shared) (*llm.Clients, error) {
+		return llm.New(cfg, llm.WithShared(shared),
+			llm.WithBase(func(*config.Model, string) (llms.ChatClient, error) { return e.model, nil }))
+	}
+	code, out, errOut := e.run(t)
+	if code != 0 {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments := e.fake.PR(7).IssueComments
+	var warning string
+	for _, c := range comments {
+		warning += c.Body
+	}
+	for name, text := range map[string]string{"stderr": errOut, "summary": string(summary), "warning": warning} {
+		if strings.Contains(text, "s3cret") || strings.Contains(text, "db.internal") {
+			t.Errorf("%s carries the URL: %q", name, text)
+		}
+	}
+	if !strings.Contains(warning, "telemetry: wrote 0 of") || !strings.Contains(warning, "acquire: dial $BUGGRIT_DATABASE_URL") {
+		t.Errorf("warning = %q", warning)
 	}
 }
 

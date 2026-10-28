@@ -17,7 +17,10 @@ says how many it lost in the database warning, and is marked incomplete.
   every file the model read and the model's reasoning, so turn it off for
   any repository whose code shouldn't be in the database.
 - **Labels:** set `BUGGRIT_TELEMETRY_LABEL` to name an experiment or a
-  packing variant. It's stored in `run.label`. A local
+  packing variant. It's stored in `run.label`. The reusable workflow and
+  buggrit's own pass it from the Actions variable of that name, set on the
+  repository (or the org, for every repository at once); a caller can't
+  add `env` to a reusable workflow's job. A local
   `buggrit review --dry-run` with `BUGGRIT_DATABASE_URL` set records too,
   with `run.dry_run` set, so experiments stay apart from live reviews.
 

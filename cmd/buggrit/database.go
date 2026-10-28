@@ -55,14 +55,15 @@ func (r *reviewer) openDatabase(ctx context.Context, cfg *config.Config, number 
 	)
 	switch {
 	case r.args.databaseError != "":
-		r.dbProblem = r.args.databaseError
+		r.addDatabaseProblem(r.args.databaseError)
 	case r.args.databaseURL != "":
 		octx, cancel := context.WithTimeout(ctx, openTimeout)
 		var err error
 		db, err = r.deps.openStore(octx, r.args.databaseURL)
 		cancel()
 		if err != nil {
-			db, r.dbProblem = nil, redactURL(err.Error(), r.args.databaseURL)
+			db = nil
+			r.addDatabaseProblem(err.Error())
 		}
 	}
 	switch {
@@ -90,7 +91,7 @@ func (r *reviewer) openShared(ctx context.Context, cfg *config.Config, db databa
 	log := func(format string, args ...any) { say(r.stderr, format, args...) }
 	shared, err := sharedLimits(sctx, cfg, r.args.rateLimits, open, log)
 	if err != nil {
-		r.addDatabaseProblem(redactURL(err.Error(), r.args.databaseURL))
+		r.addDatabaseProblem(err.Error())
 		return nil
 	}
 	return shared
@@ -104,8 +105,7 @@ func (r *reviewer) endDatabase(ctx context.Context, cfg *config.Config, number, 
 	before := r.dbProblem
 	if r.shared != nil {
 		for _, p := range r.shared.Problems() {
-			say(r.stderr, "buggrit: warning: %s\n", p)
-			r.addDatabaseProblem(p)
+			r.warnDatabase(p)
 		}
 	}
 	r.endTelemetry(ctx, code)
@@ -114,11 +114,21 @@ func (r *reviewer) endDatabase(ctx context.Context, cfg *config.Config, number, 
 	}
 }
 
-func (r *reviewer) addDatabaseProblem(p string) {
+// addDatabaseProblem adds p to the database warning. Every problem comes
+// through here, so this is where the database URL and any password in it
+// are taken out (design §10), whichever error quoted them.
+func (r *reviewer) addDatabaseProblem(p string) string {
+	p = redactURL(p, r.args.databaseURL)
 	if r.dbProblem != "" {
 		r.dbProblem += "\n"
 	}
 	r.dbProblem += p
+	return p
+}
+
+// warnDatabase adds p to the database warning and logs it.
+func (r *reviewer) warnDatabase(p string) {
+	say(r.stderr, "buggrit: warning: %s\n", r.addDatabaseProblem(p))
 }
 
 // publishDatabaseWarning brings the PR's warning comment up to date, except

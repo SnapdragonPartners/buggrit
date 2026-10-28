@@ -2,7 +2,10 @@
 
 buggrit runs without a database. With one, it can share a rate limit across
 repositories and keep run telemetry ([design §6](design.md#6-history-and-state),
-"The optional database"). This is how SnapdragonPartners' is set up: Cloud
+"The optional database"). Telemetry is on whenever the database is, and it
+includes each repository's code (the description, the diff, every file
+the model read); a repository turns it off with `"telemetry": {"enabled":
+false}` ([telemetry.md](telemetry.md)). This is how SnapdragonPartners' is set up: Cloud
 SQL for PostgreSQL, reached from Actions through the Cloud SQL Auth Proxy
 with Workload Identity Federation and IAM database login, so there are no
 keys or passwords ([design §3](design.md#3-trigger-packaging-permissions),

@@ -112,8 +112,7 @@ func (r *reviewer) endTelemetry(ctx context.Context, code int) {
 	defer cancel()
 	rep := r.writer.Close(fctx, r.outcome)
 	if p := rep.Problem(); p != "" {
-		say(r.stderr, "buggrit: warning: %s\n", p)
-		r.addDatabaseProblem(p)
+		r.warnDatabase(p)
 		return
 	}
 	say(r.stderr, "buggrit: telemetry: wrote %d events\n", rep.Written)
