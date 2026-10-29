@@ -13,6 +13,7 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // Check is an earlier finding the verifier must judge, and why it was
@@ -29,7 +30,9 @@ type VerifyInput struct {
 	Workspace Workspace
 	Diff      *github.Diff
 	// OnToolCall, if set, observes each tool call.
-	OnToolCall       func(toolloop.ToolCallEvent)
+	OnToolCall func(toolloop.ToolCallEvent)
+	// Session records the run's telemetry; nil records nothing.
+	Session          *telemetry.Session
 	PR               Context
 	Instructions     string
 	InstructionFiles []string
@@ -84,14 +87,17 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
 	threads := &threadTool{checks: in.Checks}
 	submit := &verdictTool{checks: in.Checks}
+	pk := &packing{}
 	st := &stage{
 		client:        in.Client,
 		onToolCall:    in.OnToolCall,
+		session:       in.Session,
+		packing:       pk,
 		beforeWrapUp:  func() { submit.partialOK = true },
 		submitted:     func() bool { return submit.result != nil },
 		purpose:       "buggrit.verify",
 		system:        verifySystemPrompt,
-		opening:       verifyOpening(in),
+		opening:       verifyOpening(in, pk),
 		nudge:         verifyNudge,
 		timeUp:        verifyTimeUp,
 		tools:         append(readOnlyTools(env), threads.tool()),
@@ -136,18 +142,12 @@ Verdicts:
 Writing: when a verdict changes a finding's state (an open finding now fixed, or a fixed one whose defect is back), reason is posted as buggrit's reply in the thread, addressed to the author. One or two specific sentences, citing code where it matters.`
 
 // verifyOpening builds the verifier's first user message.
-func verifyOpening(in *VerifyInput) string {
+func verifyOpening(in *VerifyInput, pk *packing) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Pull request #%d: %s\n\n", in.PR.Number, in.PR.Title)
 	fmt.Fprintf(&b, "Base branch: %s. Reviewed head commit: %s.\n\n", in.PR.BaseRef, in.PR.HeadSHA)
-	b.WriteString("## Description\n\n")
-	if body := strings.TrimSpace(in.PR.Body); body != "" {
-		b.WriteString(truncate(body, maxDescriptionBytes))
-	} else {
-		b.WriteString("(no description)")
-	}
-	b.WriteString("\n\n")
-	writeInstructions(&b, in.Workspace, in.Instructions, in.InstructionFiles)
+	writeDescription(&b, in.PR.Body, pk)
+	writeInstructions(&b, in.Workspace, in.Instructions, in.InstructionFiles, pk)
 
 	b.WriteString("## Changed files\n\n")
 	b.WriteString(fileList(in.Diff, nil, 0, maxPromptFileList))
@@ -164,6 +164,7 @@ func verifyOpening(in *VerifyInput) string {
 			skipped = append(skipped, in.Checks[i].Tracked.ID)
 			continue
 		}
+		pk.Checks = append(pk.Checks, in.Checks[i].Tracked.ID)
 		b.WriteString(cb.String())
 	}
 	if len(skipped) > 0 {
@@ -182,6 +183,7 @@ func verifyOpening(in *VerifyInput) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Verify every finding, then call submit_verdicts once with a verdict for each.\n")
+	pk.Deferred, pk.Bytes = skipped, b.Len()
 	return b.String()
 }
 

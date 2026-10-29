@@ -2,7 +2,10 @@
 
 buggrit runs without a database. With one, it can share a rate limit across
 repositories and keep run telemetry ([design §6](design.md#6-history-and-state),
-"The optional database"). This is how SnapdragonPartners' is set up: Cloud
+"The optional database"). Telemetry is on whenever the database is, and it
+includes each repository's code (the description, the diff, every file
+the model read); a repository turns it off with `"telemetry": {"enabled":
+false}` ([telemetry.md](telemetry.md)). This is how SnapdragonPartners' is set up: Cloud
 SQL for PostgreSQL, reached from Actions through the Cloud SQL Auth Proxy
 with Workload Identity Federation and IAM database login, so there are no
 keys or passwords ([design §3](design.md#3-trigger-packaging-permissions),
@@ -138,3 +141,18 @@ A binary needs each schema at its version or newer, so migrating ahead of
 older pinned callers is safe. `db migrate` leaves a newer schema alone, and
 refuses a dirty one (a migration that failed partway), which needs fixing
 by hand.
+
+## Reading the data
+
+To look at run telemetry ([telemetry.md](telemetry.md)), connect through
+the proxy as yourself and read as `buggrit_owner`, in read-only
+transactions. A proxy that logs in IAM users can't also take
+`--gcloud-auth`, so pass it your access token for both:
+
+```sh
+TOKEN="$(gcloud auth print-access-token)"
+cloud-sql-proxy --auto-iam-authn --token "$TOKEN" --login-token "$TOKEN" --port 5433 buggrit:us-east1:buggrit-db &
+PGOPTIONS='-c role=buggrit_owner -c default_transaction_read_only=on' \
+  psql 'host=127.0.0.1 port=5433 user=dan@snapdragonpartners.com dbname=buggrit sslmode=disable' \
+  -v run=<uuid> -f query.sql
+```

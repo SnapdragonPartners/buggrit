@@ -165,7 +165,7 @@ func TestVerifyOpeningBudget(t *testing.T) {
 		tr.Root.Body += strings.Repeat(" More detail.", maxCheckText/10)
 		in.Checks = append(in.Checks, Check{Tracked: tr, Why: "it is open"})
 	}
-	msg := verifyOpening(in)
+	msg := verifyOpening(in, &packing{})
 	if len(msg) > maxPromptDiffBytes {
 		t.Errorf("opening message is %d bytes, over the %d budget", len(msg), maxPromptDiffBytes)
 	}

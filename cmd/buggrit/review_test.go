@@ -303,7 +303,7 @@ func TestJobSummaryUsage(t *testing.T) {
 
 func TestModelLogReportsReasoning(t *testing.T) {
 	var b strings.Builder
-	l := modelLog{&b}
+	l := modelLog{w: &b}
 	l.ObserveReasoning(config.StageFind, "low", &llms.ReasoningConfig{Effort: llms.ReasoningEffortLow})
 	l.ObserveReasoning(config.StageVerify, "xhigh", nil)
 	want := "buggrit: find reasoning_effort low: sent as low\n" +

@@ -7,7 +7,76 @@ package storedb
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const finishRun = `-- name: FinishRun :exec
+UPDATE buggrit.run
+SET ended_at = $1, outcome = $2, events_emitted = $3,
+    events_written = $4, complete = $5
+WHERE id = $6
+`
+
+type FinishRunParams struct {
+	EndedAt       pgtype.Timestamptz
+	Outcome       []byte
+	EventsEmitted pgtype.Int4
+	EventsWritten pgtype.Int4
+	Complete      bool
+	ID            pgtype.UUID
+}
+
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) error {
+	_, err := q.db.Exec(ctx, finishRun,
+		arg.EndedAt,
+		arg.Outcome,
+		arg.EventsEmitted,
+		arg.EventsWritten,
+		arg.Complete,
+		arg.ID,
+	)
+	return err
+}
+
+const insertEvents = `-- name: InsertEvents :exec
+INSERT INTO buggrit.event (run_id, seq, at, kind, session, call, payload)
+SELECT $1::uuid,
+       unnest($2::integer[]),
+       unnest($3::timestamptz[]),
+       unnest($4::text[]),
+       nullif(unnest($5::text[]), ''),
+       nullif(unnest($6::integer[]), 0),
+       unnest($7::text[])::jsonb
+ON CONFLICT (run_id, seq) DO NOTHING
+`
+
+type InsertEventsParams struct {
+	RunID    pgtype.UUID
+	Seqs     []int32
+	Ats      []pgtype.Timestamptz
+	Kinds    []string
+	Sessions []string
+	Calls    []int32
+	Payloads []string
+}
+
+// The arrays are one event per index (set-returning functions in a select
+// list advance together). Events already written, by run and seq, are
+// skipped, so a retried batch is harmless. An empty session or a call of 0
+// is stored as null.
+func (q *Queries) InsertEvents(ctx context.Context, arg InsertEventsParams) error {
+	_, err := q.db.Exec(ctx, insertEvents,
+		arg.RunID,
+		arg.Seqs,
+		arg.Ats,
+		arg.Kinds,
+		arg.Sessions,
+		arg.Calls,
+		arg.Payloads,
+	)
+	return err
+}
 
 const schemaVersion = `-- name: SchemaVersion :one
 SELECT coalesce(max(version), 0)::integer AS version FROM buggrit.schema_version
@@ -18,4 +87,35 @@ func (q *Queries) SchemaVersion(ctx context.Context) (int32, error) {
 	var version int32
 	err := row.Scan(&version)
 	return version, err
+}
+
+const startRun = `-- name: StartRun :exec
+INSERT INTO buggrit.run (id, started_at, repo, pr, head_sha, dry_run, label, meta)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING
+`
+
+type StartRunParams struct {
+	ID        pgtype.UUID
+	StartedAt pgtype.Timestamptz
+	Repo      string
+	Pr        int32
+	HeadSha   string
+	DryRun    bool
+	Label     string
+	Meta      []byte
+}
+
+func (q *Queries) StartRun(ctx context.Context, arg StartRunParams) error {
+	_, err := q.db.Exec(ctx, startRun,
+		arg.ID,
+		arg.StartedAt,
+		arg.Repo,
+		arg.Pr,
+		arg.HeadSha,
+		arg.DryRun,
+		arg.Label,
+		arg.Meta,
+	)
+	return err
 }

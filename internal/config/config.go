@@ -74,7 +74,15 @@ type Config struct {
 	Identity    Identity    `json:"identity"`
 	Convergence Convergence `json:"convergence"`
 	Limits      Limits      `json:"limits"`
+	Telemetry   Telemetry   `json:"telemetry"`
 	Version     int         `json:"version"`
+}
+
+// Telemetry says whether a run with the optional database records its
+// telemetry there (§6, "Telemetry"). It's on by default: the database is
+// the org's, and only an owner can configure it.
+type Telemetry struct {
+	Enabled bool `json:"enabled"`
 }
 
 // Models holds the default model and optional per-stage overrides. A stage
@@ -189,6 +197,7 @@ func Defaults() Config {
 			InstructionFiles: []string{"CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md"},
 		},
 		Convergence: Convergence{WarnAfterPass: 5},
+		Telemetry:   Telemetry{Enabled: true},
 		Identity:    Identity{BotLogin: "buggrit-bot[bot]"},
 	}
 }

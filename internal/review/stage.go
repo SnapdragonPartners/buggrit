@@ -7,6 +7,8 @@ import (
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/toolloop"
+
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 // stage is one agentic stage, the finder or the verifier: a toolloop run
@@ -16,6 +18,10 @@ type stage struct {
 	client llms.ChatClient
 	// onToolCall, if set, observes each tool call.
 	onToolCall func(toolloop.ToolCallEvent)
+	// session records the run's telemetry; nil records nothing.
+	session *telemetry.Session
+	// packing is what the opening message carried, for telemetry.
+	packing *packing
 	// beforeWrapUp, if set, runs before the wrap-up turn, so the terminal
 	// tool can relax what it accepts from a model that's out of time.
 	beforeWrapUp func()
@@ -56,6 +62,36 @@ const wrapUpTurns = 3
 // run runs the stage. It returns an error only for a programming or
 // configuration fault; model and deadline problems come back in the run.
 func (s *stage) run(ctx context.Context) (*stageRun, error) {
+	s.client = s.session.Chat(s.client)
+	if s.session != nil {
+		s.session.Emit(telemetry.KindOpening, s.packing.record())
+		observe := s.onToolCall
+		s.onToolCall = func(e toolloop.ToolCallEvent) { //nolint:gocritic // hugeParam: fixed by toolloop
+			s.session.Tool(e)
+			if observe != nil {
+				observe(e)
+			}
+		}
+	}
+	res, err := s.runStage(ctx)
+	if res != nil {
+		s.session.Emit(telemetry.KindStage, stageRecord{
+			Reason: res.reason, Iterations: res.iterations, Submitted: res.submitted, WrappedUp: res.wrappedUp, Usage: res.usage,
+		})
+	}
+	return res, err
+}
+
+// stageRecord is a stage run's telemetry.
+type stageRecord struct {
+	Reason     string     `json:"reason,omitempty"`
+	Usage      llms.Usage `json:"usage"`
+	Iterations int        `json:"iterations"`
+	Submitted  bool       `json:"submitted"`
+	WrappedUp  bool       `json:"wrapped_up"`
+}
+
+func (s *stage) runStage(ctx context.Context) (*stageRun, error) {
 	clock := newPassClock(ctx, time.Now(), s.wrapUp)
 	tools := clock.timed(append(append([]toolloop.Tool(nil), s.tools...), s.terminal))
 	maxIter := s.maxIterations
@@ -91,6 +127,11 @@ func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter 
 	res := &stageRun{}
 	messages := []llms.Message{llms.UserText(s.opening + budget)}
 	for attempt := 0; ; attempt++ {
+		phase := "investigate"
+		if attempt > 0 {
+			phase = "nudge"
+		}
+		s.session.SetPhase(phase)
 		out := toolloop.Run(ctx, toolloop.Config{
 			Client: s.client,
 			Request: llms.ChatRequest{
@@ -127,6 +168,7 @@ func (s *stage) wrapUpTurn(ctx context.Context, res *stageRun, out *toolloop.Out
 		s.beforeWrapUp()
 	}
 	messages := append(wellFormed(out.Messages), llms.UserText(s.timeUp))
+	s.session.SetPhase("wrapup")
 	fin := toolloop.Run(ctx, toolloop.Config{
 		Client: s.client,
 		Request: llms.ChatRequest{

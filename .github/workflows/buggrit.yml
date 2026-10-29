@@ -126,4 +126,6 @@ jobs:
           # The rate limits shared across repositories (design §9); used only
           # with the database.
           BUGGRIT_RATE_LIMITS: ${{ vars.BUGGRIT_RATE_LIMITS }}
+          # Names an experiment in the run's telemetry (docs/telemetry.md).
+          BUGGRIT_TELEMETRY_LABEL: ${{ vars.BUGGRIT_TELEMETRY_LABEL }}
         run: '"$RUNNER_TEMP/buggrit" review --workspace "$GITHUB_WORKSPACE/pr"'

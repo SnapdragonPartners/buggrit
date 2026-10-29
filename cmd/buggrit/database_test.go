@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	bucketpg "github.com/SnapdragonPartners/maestro-llms/bucket/postgres"
@@ -15,12 +16,60 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
 	"github.com/SnapdragonPartners/buggrit/internal/state"
+	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
 type fakeStore struct {
 	buckets    *fakeBuckets
 	bucketsErr error
+	sink       fakeSink
 	closed     bool
+}
+
+func (f *fakeStore) Telemetry() telemetry.Sink { return &f.sink }
+
+// fakeSink keeps a run's telemetry; writeErr fails every event write.
+type fakeSink struct {
+	writeErr error
+	run      *telemetry.Run
+	end      *telemetry.End
+	events   []*telemetry.Event
+	mu       sync.Mutex
+}
+
+func (f *fakeSink) StartRun(_ context.Context, run *telemetry.Run) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.run = run
+	return nil
+}
+
+func (f *fakeSink) WriteEvents(_ context.Context, _ string, events []*telemetry.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	f.events = append(f.events, events...)
+	return nil
+}
+
+func (f *fakeSink) FinishRun(_ context.Context, _ string, end *telemetry.End) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.end = end
+	return nil
+}
+
+// kinds counts the events written by kind.
+func (f *fakeSink) kinds() map[string]int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := map[string]int{}
+	for _, e := range f.events {
+		n[e.Kind]++
+	}
+	return n
 }
 
 func (f *fakeStore) Close() error { f.closed = true; return nil }

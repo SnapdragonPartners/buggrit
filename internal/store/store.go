@@ -2,12 +2,13 @@
 // optional database"). A run uses it only when BUGGRIT_DATABASE_URL is set,
 // and never for review state: the PR's threads stay the only record of a
 // review. The engine never sees it: the front end hands the model clients
-// its shared rate limit (Buckets), and later work puts a telemetry sink in
-// front of it.
+// its shared rate limit (Buckets), and the run's telemetry writer its sink
+// (Telemetry), which the engine records to through internal/telemetry.
 //
 // The database holds two schemas, each with its own golang-migrate table:
-// buggrit's own, from this package's migrations, and maestro-llms' bucket
-// schema for the shared rate limit. `buggrit db migrate` applies both;
+// buggrit's own, from this package's migrations, with the run telemetry
+// tables (run, event), and maestro-llms' bucket schema for the shared rate
+// limit. `buggrit db migrate` applies both;
 // review runs never run DDL, and their role has DML only.
 package store
 
@@ -30,7 +31,7 @@ import (
 // SchemaVersion is the buggrit schema version this binary requires. A test
 // keeps it equal to the highest migration. A newer schema is fine, so an
 // older pinned binary keeps working after a migration.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
