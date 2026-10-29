@@ -49,19 +49,19 @@ Both tables are in the `buggrit` schema (migration 2).
 `event` has one row per event, keyed by `(run_id, seq)` in emission order.
 `session` is the stage run (`find` or `verify`), and `call` numbers its
 model calls from 1. Both are null outside them. `kind` picks the payload;
-each row names every top-level key its payload can carry, which the tests
-check:
+each row names every key its payload can carry, with the larger nested
+shapes under [Shared shapes](#shared-shapes), which the tests check:
 
 | Kind | Session, call | Payload |
 |---|---|---|
-| `pass` | none | The inputs: `mode` (`full` or `reconcile`), `pass`, `finder` (whether the finder runs this pass), `scope`, `since`, `pr` (`number`, `title`, `body`, `base_ref`, `head_sha`), the whole `diff`, `instructions`, `instruction_files`, `other_threads` (each with `path`, `line`, `author`, `body` and `resolved`), and the `checks` selected for the verifier |
-| `opening` | session, no call | What the opening message carried: its `bytes`; `description_bytes` and `description_truncated`; `instructions`, each instruction file's path, bytes and truncation, and those `instructions_omitted`; `review_instructions_bytes` and `review_instructions_truncated`; `other_threads` and how many were shown (`other_threads_shown`); `diff`, each file shown, with bytes and whether it was cut at the per-file cap; the files `deferred` to `get_diff`; and for the verifier, the `checks` shown, with the rest deferred to `get_thread` |
+| `pass` | none | The inputs: `mode` (`full` or `reconcile`), `pass`, `finder` (whether the finder runs this pass), `scope`, `since`, `pr` (`number`, `title`, `body`, `base_ref`, `head_sha`), the whole `diff` (see below), `instructions`, `instruction_files`, `other_threads` (each with `path`, `line`, `author`, `body` and `resolved`), and the `checks` selected for the verifier, each with `id`, `state`, `severity` and `why` |
+| `opening` | session, no call | What the opening message carried: its `bytes`; `description_bytes` and `description_truncated`; `instructions`, each instruction file's `path`, `bytes` and whether it was `truncated`, and those `instructions_omitted`; `review_instructions_bytes` and `review_instructions_truncated`; `other_threads` and how many were shown (`other_threads_shown`); `diff`, each file shown, with bytes and whether it was cut at the per-file cap; the files `deferred` to `get_diff`; and for the verifier, the `checks` shown, with the rest deferred to `get_thread` |
 | `message` | session, call | One message the call added to the transcript: `pos` and `message` |
 | `call` | session, call | One logical model call: `phase` (`investigate`, `nudge` or `wrapup`), `purpose`, `keep`, `messages`, `tools` (every tool offered), `tool_defs` (definitions first offered, or changed), `tool_choice`, `system` (on the first call), the request's `max_tokens` and `reasoning`, `latency_ms`, `error` and `error_kind`, and `response` (`message`, `stop_reason`, `usage`, `applied_reasoning`) |
 | `attempt` | session, call | One provider attempt: `attempt` (maestro-llms' retry number), `provider`, `model`, `purpose`, `latency_ms`, `usage`, `error` and `error_kind` |
 | `tool` | session, call | One tool call, under the call whose response asked for it: `iteration`, `id`, `name`, `parameters`, `result`, `is_error`, `stop` (the stage's terminal tool accepted it), `error` and `latency_ms` |
 | `stage` | session, last call | How the stage ended: `iterations`, `submitted`, `wrapped_up`, `reason` and the summed `usage` |
-| `result` | none | What the pass decided: the findings `submitted`, those reconcile `kept`, `duplicates`, `below_threshold`, `verdicts` (by finding ID: `state`, `reason`, `evidence`), `transitions`, `unverified`, `complete`, `done`, `reason`, `summary` and `elapsed_ms`; `skipped` and `skip_reason` for a pass that didn't review; or the pass's `error` |
+| `result` | none | What the pass decided: the findings `submitted` (see below), those reconcile `kept` (each with `id`, `fp`, `path`, `line`, `severity` and `title`), `duplicates`, `below_threshold`, `verdicts` (by finding ID: `state`, `reason`, `evidence`), `transitions` (each with the finding's `id`, its `kind` (`fixed`, `regressed`, `reopened`, `rebutted`, `needs_human`, `dismissed` or `settled`), the `reason` and the thread resolution it `want`s: 1 to resolve, 2 to reopen, absent to keep), `unverified`, `complete`, `done`, `reason`, `summary` and `elapsed_ms`; `skipped` and `skip_reason` for a pass that didn't review; or the pass's `error` |
 | `publish` | none | What publishing did: the pass's `review_id`, `threads`, `replies`, `resolved`, `unresolved`, `fell_back`, threads left for a person (`manual`: `id`, `url`, `resolve`, `new`) and the `error`, or `dry_run` |
 
 buggrit's own keys are snake_case, nested ones included; the tests check
@@ -72,6 +72,24 @@ their Go field names: `{"Role": "user", "Content": [{"Type":
 `ReasoningTokens`, `CacheReadTokens` and so on. jsonb can't hold NUL, so a
 NUL in a payload (a tool result read from a binary file, say) is stored as
 U+FFFD.
+
+### Shared shapes
+
+Two nested shapes are too big for the table:
+
+- **The diff** (`pass`'s `diff`): `files`, each with `old_path` (absent
+  for an added file), `new_path` (absent for a deleted one), `status`
+  (`added`, `modified`, `deleted` or `renamed`), `binary`, `mode_changed`
+  and `hunks`. Each hunk has `old_start`, `old_lines`, `new_start`,
+  `new_lines` and `lines`, and each line its `text`, its `kind` (`" "`,
+  `"+"` or `"-"`) and its `old` and `new` line numbers, where it has them.
+- **A finding** (`result`'s `submitted`), as the finder submitted it:
+  `path`, `line`, `start_line`, `side`, `severity`, `category`,
+  `confidence`, `title`, `problem`, `impact`, `fix`, `suggestion`, `class`
+  and the `instances` of its class, each a `path` and `line`.
+
+The tests check that this section and the table name every key, nested
+ones included.
 
 ### Requests are deltas
 
