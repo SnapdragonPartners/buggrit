@@ -109,7 +109,12 @@ type APIError struct {
 	// RateLimited marks a 403 or 429 that is GitHub's rate limit, not a
 	// refusal: the request may succeed later, so it isn't IsForbidden.
 	RateLimited bool
+	// err is the failure behind a rate limit whose body was cut off.
+	err error
 }
+
+// Unwrap returns the failure behind a rate limit whose body was cut off.
+func (e *APIError) Unwrap() error { return e.err }
 
 func (e *APIError) Error() string {
 	switch {
@@ -212,7 +217,13 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return resp, nil, fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
+		err = fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
+		if resp.StatusCode > 299 && rateLimited(resp, "") {
+			// The headers still say it's a rate limit; keep that, so callers
+			// see it like any other (design §9).
+			return resp, nil, &APIError{Status: resp.StatusCode, Message: err.Error(), RateLimited: true, err: err}
+		}
+		return resp, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := errorMessage(body)

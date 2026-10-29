@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -290,29 +291,53 @@ func TestSecondaryRateLimitMessageRetried(t *testing.T) {
 }
 
 // The fence's head read retries a 404, but leaves rate limits to do's
-// policy: no outer retry after it gives up (#43).
+// policy: no outer retry after it gives up, even when the rate limit's body
+// was cut off (#43).
 func TestHeadSHALeavesRateLimitsToDo(t *testing.T) {
 	tests := []struct {
 		name     string
-		header   map[string]string
+		retry    string
+		waits    []time.Duration
 		status   int
 		attempts int32
-		waits    []time.Duration
+		truncate bool
 	}{
 		{name: "404 retried with backoff", status: 404, attempts: 4,
 			waits: []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second}},
-		{name: "Retry-After too long", status: 429, header: map[string]string{"Retry-After": "120"}, attempts: 1},
-		{name: "rate limit outlasts do's retries", status: 429, header: map[string]string{"Retry-After": "60"}, attempts: 3,
+		{name: "Retry-After too long", status: 429, retry: "120", attempts: 1},
+		{name: "rate limit outlasts do's retries", status: 429, retry: "60", attempts: 3,
 			waits: []time.Duration{60 * time.Second, 60 * time.Second}},
+		{name: "cut-off 429", status: 429, retry: "120", attempts: 1, truncate: true},
+		{name: "cut-off rate-limited 403", status: 403, retry: "120", attempts: 1, truncate: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, n, waits := retryServer(t, 100, tt.status, tt.header)
-			if _, err := c.HeadSHA(context.Background(), Repo{Owner: "o", Name: "r"}, 1); err == nil {
-				t.Fatal("HeadSHA succeeded")
+			var n atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				n.Add(1)
+				if tt.retry != "" {
+					w.Header().Set("Retry-After", tt.retry)
+				}
+				if tt.truncate {
+					w.Header().Set("Content-Length", "100")
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(`{"mess`))
+			}))
+			t.Cleanup(srv.Close)
+			var waits []time.Duration
+			c := NewClient("t", WithBaseURL(srv.URL), WithSleep(func(_ context.Context, d time.Duration) error {
+				waits = append(waits, d)
+				return nil
+			}))
+			_, err := c.HeadSHA(context.Background(), Repo{Owner: "o", Name: "r"}, 1)
+			var e *APIError
+			if !errors.As(err, &e) || e.Status != tt.status || e.RateLimited != (tt.status != 404) ||
+				errors.Is(err, errBodyRead) != tt.truncate {
+				t.Fatalf("err = %#v", err)
 			}
-			if n.Load() != tt.attempts || !slices.Equal(*waits, tt.waits) {
-				t.Errorf("attempts = %d, waits = %v; want %d, %v", n.Load(), *waits, tt.attempts, tt.waits)
+			if n.Load() != tt.attempts || !slices.Equal(waits, tt.waits) {
+				t.Errorf("attempts = %d, waits = %v; want %d, %v", n.Load(), waits, tt.attempts, tt.waits)
 			}
 		})
 	}
