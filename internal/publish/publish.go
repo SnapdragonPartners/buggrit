@@ -62,7 +62,8 @@ type Manual struct {
 //
 // It checks the fence first and before each state-changing mutation. If
 // the head moved, it returns an error matching github.ErrHeadMoved and
-// posts nothing more: a newer run owns the PR.
+// posts nothing more: a newer run owns the PR. On any error it still
+// returns what it posted, so the caller can say what didn't land.
 func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Result) (*Posted, error) {
 	out := &Posted{}
 	if res.Skipped {
@@ -70,7 +71,7 @@ func Publish(ctx context.Context, gh GitHub, ref review.PRRef, res *review.Resul
 	}
 	fence := github.NewFence(gh, ref.Repo, ref.Number, res.HeadSHA)
 	if err := fence.Check(ctx); err != nil {
-		return nil, fmt.Errorf("publish: %w", err)
+		return out, fmt.Errorf("publish: %w", err)
 	}
 	for i := range res.Transitions {
 		if err := publishTransition(ctx, gh, fence, ref, res, &res.Transitions[i], out); err != nil {

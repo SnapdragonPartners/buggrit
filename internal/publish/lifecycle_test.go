@@ -475,6 +475,29 @@ func TestLifecycleFenceStopsMidPublish(t *testing.T) {
 	}
 }
 
+// The head becoming unreadable mid-publish stops the run before its next
+// mutation, and Publish still reports what it posted (#43).
+func TestLifecycleUnreadableHeadStopsMidPublish(t *testing.T) {
+	w := newWorld(t)
+	th, id := w.raise("P1")
+	w.push("cache.go")
+	replied := false
+	w.fake.OnRequest = func(op string) int {
+		switch {
+		case op == "POST reply":
+			replied = true
+		case op == "GET pull" && replied:
+			return http.StatusNotFound
+		}
+		return 0
+	}
+	p := w.pass("", verdict(id, "fixed", "Initialized in New.", "cache.go"))
+	if !errors.Is(p.err, github.ErrHeadUnreadable) || p.posted == nil || p.posted.Replies != 1 ||
+		th.Resolved || len(w.fake.PR(7).Reviews) != 1 {
+		t.Fatalf("err %v, posted %+v, resolved %v, %d reviews", p.err, p.posted, th.Resolved, len(w.fake.PR(7).Reviews))
+	}
+}
+
 // Without resolve permission, the state lives on in the markers and the
 // review lists what to do by hand (§3).
 func TestLifecycleResolveForbidden(t *testing.T) {

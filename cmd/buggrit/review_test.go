@@ -3,15 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
 	"github.com/SnapdragonPartners/buggrit/internal/llm"
 	"github.com/SnapdragonPartners/buggrit/internal/publish"
@@ -65,7 +69,8 @@ func setupReview(t *testing.T, model *testllm.FakeChatClient) *reviewEnv {
 	}}
 
 	e.deps = reviewDeps{
-		head: func(string) (string, error) { return head, nil },
+		head:      func(string) (string, error) { return head, nil },
+		ghOptions: []github.Option{github.WithSleep(func(ctx context.Context, _ time.Duration) error { return ctx.Err() })},
 		clients: func(cfg *config.Config, _ modelObserver, _ *llm.Shared) (*llm.Clients, error) {
 			if cfg.Stage(config.StageFind).Model != "glm-5.3" {
 				t.Errorf("config not read from the base branch: %+v", cfg.Models)
@@ -114,6 +119,79 @@ func TestReviewPostsAndThenSkips(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "complete at 1111111: earlier findings: 1 unchanged") ||
 		len(e.fake.PR(7).Reviews) != 1 || len(pr.Threads[0].Comments) != 1 {
 		t.Errorf("second run: exit %d, %s", code, out)
+	}
+}
+
+// The fence can't read the head after the pass's model work: the run
+// retries, then fails without posting, and says what the pass found and
+// that nothing landed (#43).
+func TestReviewUnreadableHeadReportsUnposted(t *testing.T) {
+	var answered atomic.Bool
+	e := setupReview(t, &testllm.FakeChatClient{Func: func(context.Context, llms.ChatRequest) (llms.ChatResponse, error) {
+		answered.Store(true)
+		return testllm.ToolCallResponse("1", "submit_findings", finding), nil
+	}})
+	var reads atomic.Int32
+	e.fake.OnRequest = func(op string) int {
+		// Once the model has answered, every PR read is the fence's.
+		if op == "GET pull" && answered.Load() {
+			reads.Add(1)
+			return http.StatusNotFound
+		}
+		return 0
+	}
+	code, _, errOut := e.run(t)
+	want := "It found: complete at 1111111: 1 new finding (1 blocking, 0 advisory). Confirmed posted before the failure: nothing ("
+	if code != 1 || !strings.Contains(errOut, "can't read the pull request head") || !strings.Contains(errOut, want) {
+		t.Fatalf("exit %d\nstderr: %s", code, errOut)
+	}
+	if n := reads.Load(); n != 4 {
+		t.Errorf("the fence read the PR %d times, want 4", n)
+	}
+	if pr := e.fake.PR(7); len(pr.Threads) != 0 || len(pr.Reviews) != 0 {
+		t.Error("an unfenced pass posted")
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "Failed: publish: fence: can't read the pull request head") ||
+		!strings.Contains(string(summary), want) {
+		t.Errorf("job summary = %q, %v", summary, err)
+	}
+}
+
+// A resolve GitHub refused, then a fence that can't read the head: no
+// review will list the refusal, so the job summary does (design §8).
+func TestReviewUnreadableHeadListsRefusedResolves(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, out, errOut := e.run(t); code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	th := e.fake.PR(7).Threads[0]
+	m, err := state.Parse(th.Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake.ForbidResolve = true
+	var refused atomic.Bool
+	e.fake.OnRequest = func(op string) int {
+		switch {
+		case op == "graphql ResolveThread":
+			refused.Store(true)
+		case op == "GET pull" && refused.Load():
+			return http.StatusNotFound
+		}
+		return 0
+	}
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "fixed", "reason": "Initialized.", "evidence_files": ["cache.go"]}]}`)}}
+	code, _, errOut := e.run(t)
+	if code != 1 || !strings.Contains(errOut, "can't read the pull request head") ||
+		!strings.Contains(errOut, "GitHub refused to change the resolution of "+m.ID) {
+		t.Fatalf("exit %d\nstderr: %s", code, errOut)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "Confirmed posted before the failure: 1 reply (") ||
+		!strings.Contains(string(summary), "please do it by hand:\n- resolve "+m.ID) {
+		t.Errorf("job summary = %s, %v", summary, err)
 	}
 }
 

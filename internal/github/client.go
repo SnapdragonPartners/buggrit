@@ -73,6 +73,12 @@ func WithBaseURL(root string) Option {
 // WithHTTPClient replaces the HTTP client.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
+// WithSleep replaces how the client waits between retries. Tests use it to
+// skip the waits.
+func WithSleep(sleep func(context.Context, time.Duration) error) Option {
+	return func(c *Client) { c.sleep = sleep }
+}
+
 // WithRetries sets how many attempts a retryable request gets (default 3).
 func WithRetries(attempts int) Option {
 	return func(c *Client) { c.retries = max(attempts, 1) }
@@ -103,7 +109,12 @@ type APIError struct {
 	// RateLimited marks a 403 or 429 that is GitHub's rate limit, not a
 	// refusal: the request may succeed later, so it isn't IsForbidden.
 	RateLimited bool
+	// err is the failure behind a rate limit whose body was cut off.
+	err error
 }
+
+// Unwrap returns the failure behind a rate limit whose body was cut off.
+func (e *APIError) Unwrap() error { return e.err }
 
 func (e *APIError) Error() string {
 	switch {
@@ -206,7 +217,13 @@ func (c *Client) once(ctx context.Context, r *request, payload []byte) (*http.Re
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if err != nil {
-		return resp, nil, fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
+		err = fmt.Errorf("%s %s: %w: %w", r.method, r.url, errBodyRead, err)
+		if resp.StatusCode > 299 && rateLimited(resp, "") {
+			// The headers still say it's a rate limit; keep that, so callers
+			// see it like any other (design §9).
+			return resp, nil, &APIError{Status: resp.StatusCode, Message: err.Error(), RateLimited: true, err: err}
+		}
+		return resp, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg := errorMessage(body)

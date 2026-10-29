@@ -15,6 +15,11 @@ type HeadReader interface {
 // so a newer run owns the PR and this one must stop publishing (design §2).
 var ErrHeadMoved = errors.New("pull request head moved")
 
+// ErrHeadUnreadable means the fence couldn't read the PR's head, so the pass
+// posts nothing more: posting unchecked could publish stale results (design
+// §2). The next run redoes the pass.
+var ErrHeadUnreadable = errors.New("can't read the pull request head")
+
 // HeadMovedError reports which head the pass reviewed and which it found.
 type HeadMovedError struct {
 	Reviewed string
@@ -48,11 +53,11 @@ func NewFence(heads HeadReader, repo Repo, number int, sha string) *Fence {
 func (f *Fence) SHA() string { return f.sha }
 
 // Check returns a *HeadMovedError if the PR's head is no longer the reviewed
-// one, or the error from reading it.
+// one, or an error matching ErrHeadUnreadable if reading it failed.
 func (f *Fence) Check(ctx context.Context) error {
 	cur, err := f.heads.HeadSHA(ctx, f.repo, f.number)
 	if err != nil {
-		return fmt.Errorf("fence: %w", err)
+		return fmt.Errorf("fence: %w: %w", ErrHeadUnreadable, err)
 	}
 	if cur != f.sha {
 		return &HeadMovedError{Reviewed: f.sha, Current: cur}

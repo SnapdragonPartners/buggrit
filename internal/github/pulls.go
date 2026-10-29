@@ -86,14 +86,35 @@ func (c *Client) PullRequest(ctx context.Context, repo Repo, number int) (*PullR
 	}, nil
 }
 
+// headReadWaits are the pauses between HeadSHA's attempts.
+var headReadWaits = []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second}
+
 // HeadSHA returns a PR's current head commit. It is what the publish fence
-// re-reads (design §2).
+// re-reads (design §2), after the pass's model work is done, so a failure
+// here throws that work away. It retries every error, a 404 included, over
+// about a minute: the PR was readable when the pass started, so an error now
+// is more likely GitHub's than the PR's (#43). The exception is a rate
+// limit: the request's own retries have already waited it out or given up
+// on it under design §9's policy, and retrying sooner than GitHub allows
+// would only prolong it.
 func (c *Client) HeadSHA(ctx context.Context, repo Repo, number int) (string, error) {
-	pr, err := c.PullRequest(ctx, repo, number)
-	if err != nil {
-		return "", err
+	for attempt := 0; ; attempt++ {
+		pr, err := c.PullRequest(ctx, repo, number)
+		if err == nil {
+			return pr.HeadSHA, nil
+		}
+		if attempt >= len(headReadWaits) || ctx.Err() != nil || isRateLimited(err) {
+			return "", err
+		}
+		if serr := c.sleep(ctx, headReadWaits[attempt]); serr != nil {
+			return "", err
+		}
 	}
-	return pr.HeadSHA, nil
+}
+
+func isRateLimited(err error) bool {
+	var e *APIError
+	return errors.As(err, &e) && e.RateLimited
 }
 
 // ErrDiffTooLarge means GitHub refused to render the PR's diff. Large PRs are
