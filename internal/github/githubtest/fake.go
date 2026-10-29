@@ -8,6 +8,7 @@
 package githubtest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -148,7 +149,7 @@ func (s *Server) URL() string { return s.srv.URL }
 
 // Client returns a github.Client for this fake authenticating with token.
 func (s *Server) Client(token string) *github.Client {
-	return github.NewClient(token, github.WithBaseURL(s.srv.URL), github.WithHTTPClient(s.srv.Client()))
+	return github.NewClient(token, github.WithBaseURL(s.srv.URL), github.WithHTTPClient(s.srv.Client()), github.WithSleep(noSleep))
 }
 
 // AddToken registers a token that authenticates as login.
@@ -745,3 +746,7 @@ func (s *Server) patchIssueComment(r *http.Request, login string) (int, any) {
 	}
 	return http.StatusNotFound, msg("Not Found")
 }
+
+// noSleep skips a client's retry waits, so a test that fails a call doesn't
+// wait out its backoff.
+func noSleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }

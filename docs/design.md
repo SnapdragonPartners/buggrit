@@ -119,7 +119,14 @@ steps 2–4. Before publishing, and again before each state-changing mutation
 moved, the run stops publishing and exits, because the newer run owns the
 PR. Workflow cancellation is asynchronous, so the fence is what keeps a
 stale run from resolving threads on the evidence of an old commit. Anything
-that slips through is caught next pass (§6, stale transitions).
+that slips through is caught next pass (§6, stale transitions). The read
+comes after the pass's model work, so a failed read retries for about a
+minute, on any error, a 404 included: the PR was readable when the run
+started, so an error now is more likely GitHub's than the PR's. If the head
+still can't be read, the run posts nothing more, because posting unchecked
+could publish stale results. It exits 1 and says, in the log and the job
+summary, what the pass found and what had already posted; the next run
+redoes the pass.
 Publishing is idempotent through the markers, and every pass repairs side
 effects that are missing (§6), so a run killed partway through publishing
 leaves nothing broken.
@@ -1258,7 +1265,8 @@ for those.
   - force-push;
   - a pass interrupted by the deadline (the baseline must not advance);
   - a publish killed between the marker and the resolve (repaired next pass);
-  - the head moving during publish (the fence stops it);
+  - the head moving during publish (the fence stops it), or becoming
+    unreadable (the fence retries, then stops it);
   - a forged marker in a non-buggrit comment (ignored).
 - Golden tests for diff→line mapping and comment rendering.
 - **Database:** unit tests with fakes cover the degrade paths (the warning

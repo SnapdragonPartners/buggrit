@@ -37,6 +37,8 @@ type reviewDeps struct {
 	head      func(dir string) (string, error)
 	clients   func(cfg *config.Config, obs modelObserver, shared *llm.Shared) (*llm.Clients, error)
 	openStore func(ctx context.Context, url string) (database, error)
+	// ghOptions configure the GitHub client; tests skip its retry waits.
+	ghOptions []github.Option
 }
 
 type modelObserver interface {
@@ -174,7 +176,7 @@ func runReviewWith(ctx context.Context, deps reviewDeps, args []string, getenv f
 		say(stderr, "buggrit review: %v\n", err)
 		return 2
 	}
-	gh := github.NewClient(a.token, github.WithBaseURL(a.apiURL))
+	gh := github.NewClient(a.token, append([]github.Option{github.WithBaseURL(a.apiURL)}, deps.ghOptions...)...)
 	// The verifier and the finder run at once and both log.
 	stdout, stderr = &lockedWriter{w: stdout}, &lockedWriter{w: stderr}
 	r := &reviewer{args: a, deps: deps, repo: repo, gh: gh, stdout: stdout, stderr: stderr}
@@ -286,7 +288,7 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 		case errors.Is(err, github.ErrHeadMoved):
 			return r.stop(err.Error())
 		case err != nil:
-			return r.fail(err)
+			return r.failPublish(err, res, posted)
 		case posted.FellBack:
 			say(r.stderr, "buggrit: GitHub rejected a line anchor; findings were posted at file level\n")
 		}
@@ -317,6 +319,36 @@ func (r *reviewer) fail(err error) (int, string) {
 	r.outcome.Error = err.Error()
 	say(r.stderr, "buggrit review: %v\n", err)
 	return 1, "## buggrit\n\nFailed: " + err.Error() + "\n"
+}
+
+// failPublish ends a run whose pass finished but didn't all post, as when
+// the fence can't read the head (#43). It says what the pass found and what
+// landed, so a rerun is an informed choice. The review posts last, so it is
+// never among what landed.
+func (r *reviewer) failPublish(err error, res *review.Result, posted *publish.Posted) (int, string) {
+	code, summary := r.fail(err)
+	var landed []string
+	count := func(n int, one, many string) {
+		switch {
+		case n == 1:
+			landed = append(landed, "1 "+one)
+		case n > 1:
+			landed = append(landed, fmt.Sprintf("%d %s", n, many))
+		}
+	}
+	if posted != nil {
+		count(posted.Threads, "finding thread", "finding threads")
+		count(posted.Replies, "reply", "replies")
+		count(posted.Resolved, "thread resolved", "threads resolved")
+		count(posted.Unresolved, "thread reopened", "threads reopened")
+	}
+	if len(landed) == 0 {
+		landed = []string{"nothing"}
+	}
+	note := fmt.Sprintf("The pass finished but wasn't fully posted. It found: %s. Posted before the failure: %s. "+
+		"The review that records the pass posts last, so the next run redoes the pass; rerun this one to start it.", publish.Status(res), strings.Join(landed, ", "))
+	say(r.stderr, "buggrit: %s\n", note)
+	return code, summary + "\n" + note + "\n"
 }
 
 var errNoConfig = errors.New("buggrit is not configured")

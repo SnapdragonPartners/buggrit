@@ -73,6 +73,12 @@ func WithBaseURL(root string) Option {
 // WithHTTPClient replaces the HTTP client.
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
+// WithSleep replaces how the client waits between retries. Tests use it to
+// skip the waits.
+func WithSleep(sleep func(context.Context, time.Duration) error) Option {
+	return func(c *Client) { c.sleep = sleep }
+}
+
 // WithRetries sets how many attempts a retryable request gets (default 3).
 func WithRetries(attempts int) Option {
 	return func(c *Client) { c.retries = max(attempts, 1) }

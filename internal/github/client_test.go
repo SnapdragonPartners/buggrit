@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
@@ -376,6 +377,66 @@ func TestFenceStopsMutationAfterHeadMoves(t *testing.T) {
 	postFindings(t, c)
 	if err := f.Check(ctx); !errors.Is(err, github.ErrHeadMoved) {
 		t.Fatalf("fence before resolve: %v, want ErrHeadMoved", err)
+	}
+}
+
+// The fence's head read comes after the pass's model work, so it retries
+// every error, a 404 included, before giving up (#43).
+func TestFenceRetriesHeadRead(t *testing.T) {
+	fake, _ := setup(t)
+	var waits []time.Duration
+	c := github.NewClient(githubtest.DefaultToken, github.WithBaseURL(fake.URL()),
+		github.WithSleep(func(_ context.Context, d time.Duration) error {
+			waits = append(waits, d)
+			return nil
+		}))
+	f := github.NewFence(c, repo, 7, head)
+	fails := 0
+	fake.OnRequest = func(op string) int {
+		if op == "GET pull" && fails > 0 {
+			fails--
+			return http.StatusNotFound
+		}
+		return 0
+	}
+
+	fails = 3
+	if err := f.Check(context.Background()); err != nil {
+		t.Fatalf("fence after three 404s: %v", err)
+	}
+	want := []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second}
+	if !slices.Equal(waits, want) {
+		t.Errorf("waits = %v, want %v", waits, want)
+	}
+
+	fails, waits = 4, nil
+	err := f.Check(context.Background())
+	if !errors.Is(err, github.ErrHeadUnreadable) || !github.IsNotFound(err) || errors.Is(err, github.ErrHeadMoved) {
+		t.Fatalf("fence after four 404s: %v, want ErrHeadUnreadable wrapping the 404", err)
+	}
+	if !slices.Equal(waits, want) {
+		t.Errorf("waits = %v, want %v", waits, want)
+	}
+}
+
+// A canceled run stops retrying at once.
+func TestFenceHeadReadStopsWhenCanceled(t *testing.T) {
+	fake, c := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	reads := 0
+	fake.OnRequest = func(op string) int {
+		if op == "GET pull" {
+			reads++
+			cancel()
+			return http.StatusNotFound
+		}
+		return 0
+	}
+	if err := github.NewFence(c, repo, 7, head).Check(ctx); !errors.Is(err, github.ErrHeadUnreadable) {
+		t.Fatalf("err = %v, want ErrHeadUnreadable", err)
+	}
+	if reads != 1 {
+		t.Errorf("%d reads after cancellation, want 1", reads)
 	}
 }
 
