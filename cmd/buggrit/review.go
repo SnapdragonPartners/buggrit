@@ -323,8 +323,9 @@ func (r *reviewer) fail(err error) (int, string) {
 
 // failPublish ends a run whose pass finished but didn't all post, as when
 // the fence can't read the head (#43). It says what the pass found and what
-// landed, so a rerun is an informed choice. The review posts last, so it is
-// never among what landed.
+// GitHub confirmed posting, so a rerun is an informed choice. A request
+// that failed may still have landed, so the counts are a floor; the next
+// run works from what is on the PR (design §2, §6).
 func (r *reviewer) failPublish(err error, res *review.Result, posted *publish.Posted) (int, string) {
 	code, summary := r.fail(err)
 	var landed []string
@@ -345,8 +346,10 @@ func (r *reviewer) failPublish(err error, res *review.Result, posted *publish.Po
 	if len(landed) == 0 {
 		landed = []string{"nothing"}
 	}
-	note := fmt.Sprintf("The pass finished but wasn't fully posted. It found: %s. Posted before the failure: %s. "+
-		"The review that records the pass posts last, so the next run redoes the pass; rerun this one to start it.", publish.Status(res), strings.Join(landed, ", "))
+	note := fmt.Sprintf("The pass finished but publishing failed. It found: %s. Confirmed posted before the failure: %s "+
+		"(the failed request may still have landed). The next run picks up from what is on the PR: it redoes the pass "+
+		"unless the pass's review landed, and repairs the rest. Rerun this one to start it.",
+		publish.Status(res), strings.Join(landed, ", "))
 	say(r.stderr, "buggrit: %s\n", note)
 	return code, summary + "\n" + note + "\n"
 }

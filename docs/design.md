@@ -125,8 +125,10 @@ minute, on any error, a 404 included: the PR was readable when the run
 started, so an error now is more likely GitHub's than the PR's. If the head
 still can't be read, the run posts nothing more, because posting unchecked
 could publish stale results. It exits 1 and says, in the log and the job
-summary, what the pass found and what had already posted; the next run
-redoes the pass.
+summary, what the pass found and what GitHub confirmed posting; the next
+run picks up from what is on the PR. The retry leaves rate limits to the
+client's own policy (§9, "GitHub rate limits"), which has already waited
+them out or given up.
 Publishing is idempotent through the markers, and every pass repairs side
 effects that are missing (§6), so a run killed partway through publishing
 leaves nothing broken.
@@ -1189,6 +1191,8 @@ fail the call, so the pass reports itself incomplete. Server errors and
 transport failures are retried only for reads, including GraphQL queries.
 A mutation that fails that way may still have landed, and the next pass's
 replay and repair (§6) finish the job without risking a duplicate.
+The publish fence's head read also retries other errors, a 404 included
+(§2), but never a rate limit this policy has given up on.
 
 ## 10. Security (proportionate to the trust model)
 

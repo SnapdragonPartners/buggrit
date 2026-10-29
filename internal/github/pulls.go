@@ -93,20 +93,27 @@ var headReadWaits = []time.Duration{5 * time.Second, 15 * time.Second, 40 * time
 // re-reads (design §2), after the pass's model work is done, so a failure
 // here throws that work away. It retries every error, a 404 included, over
 // about a minute: the PR was readable when the pass started, so an error now
-// is more likely GitHub's than the PR's (#43).
+// is more likely GitHub's than the PR's (#43). The exception is a rate
+// limit, which do has already waited out or given up on as its policy
+// says; retrying sooner than GitHub allows would only prolong it.
 func (c *Client) HeadSHA(ctx context.Context, repo Repo, number int) (string, error) {
 	for attempt := 0; ; attempt++ {
 		pr, err := c.PullRequest(ctx, repo, number)
 		if err == nil {
 			return pr.HeadSHA, nil
 		}
-		if attempt >= len(headReadWaits) || ctx.Err() != nil {
+		if attempt >= len(headReadWaits) || ctx.Err() != nil || isRateLimited(err) {
 			return "", err
 		}
 		if serr := c.sleep(ctx, headReadWaits[attempt]); serr != nil {
 			return "", err
 		}
 	}
+}
+
+func isRateLimited(err error) bool {
+	var e *APIError
+	return errors.As(err, &e) && e.RateLimited
 }
 
 // ErrDiffTooLarge means GitHub refused to render the PR's diff. Large PRs are

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -285,5 +286,34 @@ func TestSecondaryRateLimitMessageRetried(t *testing.T) {
 	c.sleep = func(context.Context, time.Duration) error { return nil }
 	if _, _, err := c.do(context.Background(), &request{method: http.MethodPost, url: c.restURL + "/x"}); err != nil || n.Load() != 2 {
 		t.Errorf("err = %v, attempts = %d; want a retry and success", err, n.Load())
+	}
+}
+
+// The fence's head read retries a 404, but leaves rate limits to do's
+// policy: no outer retry after it gives up (#43).
+func TestHeadSHALeavesRateLimitsToDo(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   map[string]string
+		status   int
+		attempts int32
+		waits    []time.Duration
+	}{
+		{name: "404 retried with backoff", status: 404, attempts: 4,
+			waits: []time.Duration{5 * time.Second, 15 * time.Second, 40 * time.Second}},
+		{name: "Retry-After too long", status: 429, header: map[string]string{"Retry-After": "120"}, attempts: 1},
+		{name: "rate limit outlasts do's retries", status: 429, header: map[string]string{"Retry-After": "60"}, attempts: 3,
+			waits: []time.Duration{60 * time.Second, 60 * time.Second}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, n, waits := retryServer(t, 100, tt.status, tt.header)
+			if _, err := c.HeadSHA(context.Background(), Repo{Owner: "o", Name: "r"}, 1); err == nil {
+				t.Fatal("HeadSHA succeeded")
+			}
+			if n.Load() != tt.attempts || !slices.Equal(*waits, tt.waits) {
+				t.Errorf("attempts = %d, waits = %v; want %d, %v", n.Load(), *waits, tt.attempts, tt.waits)
+			}
+		})
 	}
 }

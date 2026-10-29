@@ -141,7 +141,7 @@ func TestReviewUnreadableHeadReportsUnposted(t *testing.T) {
 		return 0
 	}
 	code, _, errOut := e.run(t)
-	want := "It found: complete at 1111111: 1 new finding (1 blocking, 0 advisory). Posted before the failure: nothing."
+	want := "It found: complete at 1111111: 1 new finding (1 blocking, 0 advisory). Confirmed posted before the failure: nothing ("
 	if code != 1 || !strings.Contains(errOut, "can't read the pull request head") || !strings.Contains(errOut, want) {
 		t.Fatalf("exit %d\nstderr: %s", code, errOut)
 	}
