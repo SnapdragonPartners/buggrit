@@ -106,7 +106,7 @@ jobs:
       - name: Connect to the database
         id: db
         if: vars.BUGGRIT_CLOUDSQL_INSTANCE != ''
-        uses: SnapdragonPartners/buggrit/.github/actions/database@v0
+        uses: SnapdragonPartners/buggrit/.github/actions/database@v0.6.0
         with:
           instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
           wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
@@ -115,7 +115,7 @@ jobs:
       # buggrit reads .github/buggrit.json from the base branch and stops
       # with a notice if there is none (design §4).
       - name: Review
-        uses: SnapdragonPartners/buggrit@v0
+        uses: SnapdragonPartners/buggrit@v0.6.0
         env:
           # The model key, under the name api_key_env gives. These are the
           # two names this workflow passes through.
