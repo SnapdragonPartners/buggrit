@@ -158,6 +158,43 @@ func TestReviewUnreadableHeadReportsUnposted(t *testing.T) {
 	}
 }
 
+// A resolve GitHub refused, then a fence that can't read the head: no
+// review will list the refusal, so the job summary does (design §8).
+func TestReviewUnreadableHeadListsRefusedResolves(t *testing.T) {
+	e := setupReview(t, submit(finding))
+	if code, out, errOut := e.run(t); code != 0 {
+		t.Fatalf("first run: exit %d\n%s\n%s", code, out, errOut)
+	}
+	th := e.fake.PR(7).Threads[0]
+	m, err := state.Parse(th.Comments[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake.ForbidResolve = true
+	var refused atomic.Bool
+	e.fake.OnRequest = func(op string) int {
+		switch {
+		case op == "graphql ResolveThread":
+			refused.Store(true)
+		case op == "GET pull" && refused.Load():
+			return http.StatusNotFound
+		}
+		return 0
+	}
+	e.verifier = &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("1", "submit_verdicts",
+		`{"verdicts": [{"id": "`+m.ID+`", "state": "fixed", "reason": "Initialized.", "evidence_files": ["cache.go"]}]}`)}}
+	code, _, errOut := e.run(t)
+	if code != 1 || !strings.Contains(errOut, "can't read the pull request head") ||
+		!strings.Contains(errOut, "GitHub refused to change the resolution of "+m.ID) {
+		t.Fatalf("exit %d\nstderr: %s", code, errOut)
+	}
+	summary, err := os.ReadFile(e.summary)
+	if err != nil || !strings.Contains(string(summary), "Confirmed posted before the failure: 1 reply (") ||
+		!strings.Contains(string(summary), "please do it by hand:\n- resolve "+m.ID) {
+		t.Errorf("job summary = %s, %v", summary, err)
+	}
+}
+
 func TestReviewDryRunPostsNothing(t *testing.T) {
 	e := setupReview(t, submit(finding))
 	code, out, errOut := e.run(t, "--dry-run")

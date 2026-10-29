@@ -292,10 +292,7 @@ func (r *reviewer) finish(ctx context.Context, ref review.PRRef, res *review.Res
 		case posted.FellBack:
 			say(r.stderr, "buggrit: GitHub rejected a line anchor; findings were posted at file level\n")
 		}
-		for i := range posted.Manual {
-			m := &posted.Manual[i]
-			say(r.stderr, "buggrit: GitHub refused to change the resolution of %s; do it by hand: %s\n", m.ID, m.URL)
-		}
+		r.sayManual(posted.Manual)
 		manual = posted.Manual
 	}
 	r.outcome.Status = publish.Status(res)
@@ -351,7 +348,22 @@ func (r *reviewer) failPublish(err error, res *review.Result, posted *publish.Po
 		"unless the pass's review landed, and repairs the rest. Rerun this one to start it.",
 		publish.Status(res), strings.Join(landed, ", "))
 	say(r.stderr, "buggrit: %s\n", note)
-	return code, summary + "\n" + note + "\n"
+	summary += "\n" + note + "\n"
+	// No review will list the refused resolutions, so the summary must
+	// (design §8, "Transition replies").
+	if posted != nil && len(posted.Manual) > 0 {
+		r.sayManual(posted.Manual)
+		summary += "\n" + publish.ManualList(posted.Manual)
+	}
+	return code, summary
+}
+
+// sayManual logs the threads GitHub wouldn't let buggrit resolve or reopen.
+func (r *reviewer) sayManual(manual []publish.Manual) {
+	for i := range manual {
+		m := &manual[i]
+		say(r.stderr, "buggrit: GitHub refused to change the resolution of %s; do it by hand: %s\n", m.ID, m.URL)
+	}
 }
 
 var errNoConfig = errors.New("buggrit is not configured")

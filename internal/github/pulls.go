@@ -94,8 +94,9 @@ var headReadWaits = []time.Duration{5 * time.Second, 15 * time.Second, 40 * time
 // here throws that work away. It retries every error, a 404 included, over
 // about a minute: the PR was readable when the pass started, so an error now
 // is more likely GitHub's than the PR's (#43). The exception is a rate
-// limit, which do has already waited out or given up on as its policy
-// says; retrying sooner than GitHub allows would only prolong it.
+// limit: the request's own retries have already waited it out or given up
+// on it under design §9's policy, and retrying sooner than GitHub allows
+// would only prolong it.
 func (c *Client) HeadSHA(ctx context.Context, repo Repo, number int) (string, error) {
 	for attempt := 0; ; attempt++ {
 		pr, err := c.PullRequest(ctx, repo, number)
