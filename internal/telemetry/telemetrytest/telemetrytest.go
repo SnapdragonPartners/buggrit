@@ -27,7 +27,7 @@ const shapes = "### Shared shapes"
 // in the shared shapes section. Each of those structs must give every
 // field a JSON key (see Tagged). So a key can't be added or renamed
 // without the reference following.
-func Documented(t *testing.T, kind string, record any) {
+func Documented(t testing.TB, kind string, record any) {
 	t.Helper()
 	data, err := os.ReadFile(Doc)
 	if err != nil {
@@ -65,7 +65,7 @@ func Documented(t *testing.T, kind string, record any) {
 // pointers, slices and maps, has an exported field without a JSON key: it
 // would encode under its Go name, which the doc reserves for maestro-llms
 // types.
-func Tagged(t *testing.T, v any) {
+func Tagged(t testing.TB, v any) {
 	t.Helper()
 	walk(t, reflect.TypeOf(v), func(reflect.Type, *reflect.StructField, string, bool) {})
 }
@@ -73,7 +73,7 @@ func Tagged(t *testing.T, v any) {
 // walk calls key for each exported field's JSON key in every buggrit
 // struct reachable from root; top is set for root's own fields. A field
 // without a key fails t.
-func walk(t *testing.T, root reflect.Type, key func(typ reflect.Type, f *reflect.StructField, name string, top bool)) {
+func walk(t testing.TB, root reflect.Type, key func(typ reflect.Type, f *reflect.StructField, name string, top bool)) {
 	t.Helper()
 	seen := map[reflect.Type]bool{}
 	var visit func(typ reflect.Type, top bool)
@@ -90,7 +90,9 @@ func walk(t *testing.T, root reflect.Type, key func(typ reflect.Type, f *reflect
 			}
 			break
 		}
-		if typ.Kind() != reflect.Struct || seen[typ] || !strings.HasPrefix(typ.PkgPath()+"/", module) {
+		// An inline struct has no package, and is the record's own.
+		pkg := typ.PkgPath()
+		if typ.Kind() != reflect.Struct || seen[typ] || pkg != "" && !strings.HasPrefix(pkg+"/", module) {
 			return
 		}
 		seen[typ] = true
