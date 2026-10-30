@@ -673,14 +673,22 @@ raw data for optimization, not a forensic record.
   `BUGGRIT_TELEMETRY_LABEL` names an experiment for the runs it's set on
   (the workflows pass it from the variable of that name), and dry runs are
   marked as such.
-- **What's recorded:** the run (versions, effective models and limits, the
-  workflow run, the outcome); the pass's inputs (description, diff,
+- **What's recorded:** the run (versions, effective models and limits, its
+  identity, the workflow run, the outcome); the pass's inputs (description, diff,
   instructions, other threads, the checks); per stage, what the opening
   message carried and what it deferred to the tools; every model call
   with its response, every provider attempt (maestro-llms'
   `ContextObserver`), and every tool call under the call that asked for
   it; how each stage ended; what the pass decided and what publishing did.
   Keys never are: the config names key variables, not keys.
+- **Identity.** Each run records its model/prompt/harness identity, so
+  runs that differ in any of the three can be told apart and compared:
+  the effective models; per stage, content hashes of its standing
+  instructions and of the tools it offers; and the commit it was built
+  from, which covers everything else, such as how the opening message is
+  packed. Compare runs by averaging within a group that shares an
+  identity and placing the groups side by side, never by averaging
+  across groups.
 - **Requests are deltas.** A stage run is one session. Each call records
   how many of the previous request's messages it kept and the ones it
   added, plus the tools it offered, its tool choice and its purpose. This

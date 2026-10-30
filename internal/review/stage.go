@@ -28,12 +28,12 @@ type stage struct {
 	// submitted reports whether the terminal tool accepted a submission.
 	submitted func() bool
 	purpose   llms.Purpose
-	system    string
+	// prompts are the standing instructions: prompts.Nudge is sent once if
+	// the model answers in text, and prompts.TimeUp is the wrap-up turn's
+	// instruction.
+	prompts stagePrompts
 	// opening is the first user message, without the time budget.
 	opening string
-	// nudge is sent once if the model answers in text; timeUp is the
-	// wrap-up turn's instruction.
-	nudge, timeUp string
 	// tools are the read-only tools; terminal is the stage's terminal tool.
 	tools    []toolloop.Tool
 	terminal toolloop.Tool
@@ -135,7 +135,7 @@ func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter 
 		out := toolloop.Run(ctx, toolloop.Config{
 			Client: s.client,
 			Request: llms.ChatRequest{
-				System:   []llms.ContentPart{llms.Text(s.system)},
+				System:   []llms.ContentPart{llms.Text(s.prompts.System)},
 				Messages: messages,
 				Purpose:  s.purpose,
 			},
@@ -152,7 +152,7 @@ func (s *stage) investigate(ctx context.Context, tools []toolloop.Tool, maxIter 
 		}
 		stopped := out.Kind == toolloop.OutcomeFinalAnswer || out.Kind == toolloop.OutcomeEmptyResponse
 		if stopped && attempt == 0 && remaining(maxIter, res.iterations) != 0 {
-			messages = append(wellFormed(out.Messages), llms.UserText(s.nudge))
+			messages = append(wellFormed(out.Messages), llms.UserText(s.prompts.Nudge))
 			continue
 		}
 		reason, err := incompleteReason(ctx, &out, s.maxIterations, s.terminal.Definition.Name)
@@ -167,12 +167,12 @@ func (s *stage) wrapUpTurn(ctx context.Context, res *stageRun, out *toolloop.Out
 	if s.beforeWrapUp != nil {
 		s.beforeWrapUp()
 	}
-	messages := append(wellFormed(out.Messages), llms.UserText(s.timeUp))
+	messages := append(wellFormed(out.Messages), llms.UserText(s.prompts.TimeUp))
 	s.session.SetPhase("wrapup")
 	fin := toolloop.Run(ctx, toolloop.Config{
 		Client: s.client,
 		Request: llms.ChatRequest{
-			System:   []llms.ContentPart{llms.Text(s.system)},
+			System:   []llms.ContentPart{llms.Text(s.prompts.System)},
 			Messages: messages,
 			Purpose:  s.purpose + ".wrapup",
 		},

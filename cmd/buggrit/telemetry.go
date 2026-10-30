@@ -11,6 +11,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/publish"
+	"github.com/SnapdragonPartners/buggrit/internal/review"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 )
 
@@ -58,11 +59,39 @@ func (r *reviewer) runMeta(cfg *config.Config, pr *github.PullRequest) map[strin
 			"include": cfg.Review.Include, "exclude": cfg.Review.Exclude,
 		},
 		"shared_rate_limit": r.args.rateLimits != "",
+		"mph":               runMPH(debug.ReadBuildInfo()),
 	}
 	if r.args.runID != "" {
 		meta["workflow_run"] = map[string]string{"id": r.args.runID, "attempt": r.args.runAttempt, "event": r.args.eventName}
 	}
 	return meta
+}
+
+// mph is the prompt and harness parts of the run's model/prompt/harness
+// identity; the models are meta's models (design §6, "Telemetry").
+type mph struct {
+	Stages map[string]review.StageIdentity `json:"stages"`
+	// Commit and Modified are the build's vcs.revision and vcs.modified:
+	// empty and false for a build without them, such as go run.
+	Commit   string `json:"commit"`
+	Modified bool   `json:"modified"`
+}
+
+// runMPH is the identity of the code running, from the build info.
+func runMPH(info *debug.BuildInfo, ok bool) mph {
+	id := mph{Stages: review.Identity()}
+	if !ok {
+		return id
+	}
+	for i := range info.Settings {
+		switch s := &info.Settings[i]; s.Key {
+		case "vcs.revision":
+			id.Commit = s.Value
+		case "vcs.modified":
+			id.Modified = s.Value == "true"
+		}
+	}
+	return id
 }
 
 // moduleVersion is the version of a module built into the binary, or ""

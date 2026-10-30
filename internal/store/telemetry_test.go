@@ -54,7 +54,14 @@ func TestTelemetryRoundTrip(t *testing.T) {
 	sink := &retryingSink{Sink: st.Telemetry(), failAfterFirst: true}
 	run := &telemetry.Run{
 		ID: "6f1c2a4e-8b3d-4c5e-9f60-718293a4b5c6", StartedAt: time.Now(), Repo: "acme/widgets", PR: 7,
-		HeadSHA: "abc", Label: "packing-a", Meta: map[string]any{"buggrit": "dev", "models": map[string]any{"find": map[string]string{"model": "glm-5.3"}}},
+		HeadSHA: "abc", Label: "packing-a", Meta: map[string]any{
+			"buggrit": "dev",
+			"models":  map[string]any{"find": map[string]string{"model": "glm-5.3", "reasoning_effort": "medium"}},
+			"mph": map[string]any{
+				"commit": "0123456789abcdef0123456789abcdef01234567", "modified": false,
+				"stages": map[string]any{"find": map[string]string{"prompt_hash": "sha256:aa", "tools_hash": "sha256:bb"}},
+			},
+		},
 	}
 	w := telemetry.NewWriter(sink, run, telemetry.WriterOptions{FlushEvery: time.Millisecond, RetryAfter: time.Millisecond, MaxBatch: 3})
 	rec := telemetry.NewRecorder(w.Emit)

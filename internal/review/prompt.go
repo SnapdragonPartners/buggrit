@@ -149,7 +149,7 @@ func openingMessage(in *FindInput, pk *packing) string {
 		}
 		b.WriteByte('\n')
 	}
-	b.WriteString("Investigate as needed, then call submit_findings once with every finding.\n")
+	b.WriteString(findClosing)
 	pk.Deferred, pk.Bytes = skipped, b.Len()
 	return b.String()
 }

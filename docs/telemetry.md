@@ -38,8 +38,9 @@ Both tables are in the `buggrit` schema (migration 2).
 - `repo`, `pr`, `head_sha`, `dry_run` and `label`.
 - `meta`: versions (`buggrit`, `maestro_llms`, `go`), `base_ref`, the
   effective `models` per stage (key variable names, never keys),
-  `limits`, `review` thresholds, `shared_rate_limit`, and `workflow_run`
-  (`id`, `attempt` and `event`) in Actions.
+  `limits`, `review` thresholds, `shared_rate_limit`, `mph` (see
+  [Identity](#identity)), and `workflow_run` (`id`, `attempt` and
+  `event`) in Actions.
 - `outcome`: `exit_code`, plus `status` (the status line), `stopped` or
   `error`.
 - `events_emitted` and `events_written`, then `complete`, which is true
@@ -120,6 +121,37 @@ offered are on each call, with each definition on the call that first
 offered it. The time budget the stage appends to its opening message is
 part of message 0.
 
+## Identity
+
+Each run records what it ran: its model/prompt/harness (MPH) identity,
+the idea borrowed from maestro's benchmark runner. The model is
+`meta.models`. `meta.mph` holds the rest:
+
+- `stages`: for `find` and `verify`, a `prompt_hash` and a `tools_hash`.
+  The prompt hash covers the stage's standing instructions: the system
+  prompt, the closing instruction of the opening message, the nudge and
+  the time-up turn. The tools hash covers every tool definition offered,
+  in order: name, description and schema. Both are `sha256:` hashes of
+  content, so they move only when that text does.
+- `commit` and `modified`: the commit buggrit was built from and whether
+  its tree had uncommitted changes, from the Go build info. A build
+  without VCS information, such as `go run`, `-buildvcs=false` or a build
+  outside a git checkout, records an empty `commit` and `modified` false.
+
+The split says which kind of change a run carries. A prompt edit moves
+`prompt_hash`, and a new or changed tool moves `tools_hash`. How the
+opening message packs the pass's input is code, so a packing change
+moves only `commit`.
+
+**Average within an identity group, and compare groups side by side.**
+A group is runs that share the model settings, `mph`, `limits` and
+`review` thresholds, in one repository and under one label: a label
+names an experiment's variant, and repositories differ in their code
+and instructions. Averaging runs across groups mixes different things
+into one number, while placing two groups' averages next to each other
+is the comparison. Runs from before `mph` was recorded have none and
+form their own group.
+
 ## Reading the data
 
 Connect read-only, as in [database.md](database.md#reading-the-data),
@@ -185,9 +217,23 @@ ORDER BY r.session, r.call;
 ```
 
 ```sql
--- Compare models and labels across live runs: wall time, turns, tool
--- calls, tokens, completion and findings.
-SELECT r.meta->'models'->'find'->>'model' AS find_model, r.label,
+-- Compare identity groups across live runs: wall time, turns, tool
+-- calls, tokens, completion and findings, by identity group (see
+-- Identity): the find columns only label a group, and group tells apart
+-- groups that label alike.
+WITH r AS (
+    SELECT id, repo, label, meta,
+           jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
+                              'limits', meta->'limits', 'review', meta->'review') AS identity
+    FROM buggrit.run
+    WHERE complete AND NOT dry_run
+)
+SELECT r.repo, left(md5(r.identity::text), 8) AS "group",
+       r.identity->'models'->'find'->>'model' AS find_model,
+       r.identity->'models'->'find'->>'reasoning_effort' AS effort,
+       left(r.identity->'mph'->'stages'->'find'->>'prompt_hash', 15) AS prompt,
+       left(r.identity->'mph'->'stages'->'find'->>'tools_hash', 15) AS tools,
+       left(r.identity->'mph'->>'commit', 7) AS commit, r.label,
        count(DISTINCT r.id) AS runs,
        round(avg((res.payload->>'elapsed_ms')::bigint) / 1000.0) AS avg_wall_s,
        round(avg(calls.n), 1) AS avg_calls,
@@ -196,7 +242,7 @@ SELECT r.meta->'models'->'find'->>'model' AS find_model, r.label,
        round(avg(calls.output_tokens)) AS avg_output_tokens,
        round(100.0 * avg(((res.payload->>'done')::boolean)::int), 0) AS pct_done,
        round(avg(jsonb_array_length(coalesce(res.payload->'kept', '[]'))), 2) AS avg_findings_kept
-FROM buggrit.run r
+FROM r
 JOIN buggrit.event res ON res.run_id = r.id AND res.kind = 'result'
 LEFT JOIN LATERAL (
     SELECT count(*) AS n,
@@ -207,9 +253,8 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT count(*) AS n FROM buggrit.event WHERE run_id = r.id AND kind = 'tool'
 ) tools ON true
-WHERE r.complete AND NOT r.dry_run
-GROUP BY 1, 2
-ORDER BY 1, 2;
+GROUP BY r.repo, r.identity, r.label
+ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 ```
 
 ```sql

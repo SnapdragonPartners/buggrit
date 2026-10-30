@@ -61,6 +61,9 @@ const timeUp = "Time is up for this review. Call submit_findings now with every 
 const nudge = "You ended your turn without calling submit_findings. Call submit_findings now with every finding " +
 	"from your review (an empty list if there are none). Do not reply in text."
 
+// findClosing ends the finder's opening message.
+const findClosing = "Investigate as needed, then call submit_findings once with every finding.\n"
+
 // Find runs the agentic finder: the model investigates with the read-only
 // tools and ends by calling submit_findings (design §5). It returns an error
 // only for a programming or configuration fault; model and deadline problems
@@ -72,6 +75,7 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 	env := &toolEnv{ws: in.Workspace, diff: in.Diff}
 	submit := &submitTool{env: env, inScope: in.Scope.InScope, incremental: in.Incremental}
 	pk := &packing{}
+	tools, terminal := findTools(env, submit)
 	st := &stage{
 		client:        in.Client,
 		onToolCall:    in.OnToolCall,
@@ -79,12 +83,10 @@ func Find(ctx context.Context, in *FindInput) (*FindResult, error) {
 		packing:       pk,
 		submitted:     func() bool { return submit.result != nil },
 		purpose:       "buggrit.find",
-		system:        systemPrompt,
+		prompts:       findPrompts(),
 		opening:       openingMessage(in, pk),
-		nudge:         nudge,
-		timeUp:        timeUp,
-		tools:         readOnlyTools(env),
-		terminal:      submit.tool(),
+		tools:         tools,
+		terminal:      terminal,
 		maxIterations: in.MaxIterations,
 		wrapUp:        in.WrapUp,
 	}
