@@ -215,13 +215,22 @@ ORDER BY r.session, r.call;
 
 ```sql
 -- Compare identity groups across live runs: wall time, turns, tool
--- calls, tokens, completion and findings. Add the label, limits or the
--- verifier's identity to the grouping when they vary.
-SELECT r.meta->'models'->'find'->>'model' AS find_model,
-       r.meta->'models'->'find'->>'reasoning_effort' AS effort,
-       left(r.meta->'mph'->'stages'->'find'->>'prompt_hash', 15) AS prompt,
-       left(r.meta->'mph'->'stages'->'find'->>'tools_hash', 15) AS tools,
-       left(r.meta->'mph'->>'commit', 7) AS commit, r.label,
+-- calls, tokens, completion and findings. A group is runs with the same
+-- models, mph, limits, review thresholds and label; the find columns
+-- only label it, and group tells apart groups that label alike.
+WITH r AS (
+    SELECT id, label, meta,
+           jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
+                              'limits', meta->'limits', 'review', meta->'review') AS identity
+    FROM buggrit.run
+    WHERE complete AND NOT dry_run
+)
+SELECT left(md5(r.identity::text), 8) AS "group",
+       r.identity->'models'->'find'->>'model' AS find_model,
+       r.identity->'models'->'find'->>'reasoning_effort' AS effort,
+       left(r.identity->'mph'->'stages'->'find'->>'prompt_hash', 15) AS prompt,
+       left(r.identity->'mph'->'stages'->'find'->>'tools_hash', 15) AS tools,
+       left(r.identity->'mph'->>'commit', 7) AS commit, r.label,
        count(DISTINCT r.id) AS runs,
        round(avg((res.payload->>'elapsed_ms')::bigint) / 1000.0) AS avg_wall_s,
        round(avg(calls.n), 1) AS avg_calls,
@@ -230,7 +239,7 @@ SELECT r.meta->'models'->'find'->>'model' AS find_model,
        round(avg(calls.output_tokens)) AS avg_output_tokens,
        round(100.0 * avg(((res.payload->>'done')::boolean)::int), 0) AS pct_done,
        round(avg(jsonb_array_length(coalesce(res.payload->'kept', '[]'))), 2) AS avg_findings_kept
-FROM buggrit.run r
+FROM r
 JOIN buggrit.event res ON res.run_id = r.id AND res.kind = 'result'
 LEFT JOIN LATERAL (
     SELECT count(*) AS n,
@@ -241,9 +250,8 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT count(*) AS n FROM buggrit.event WHERE run_id = r.id AND kind = 'tool'
 ) tools ON true
-WHERE r.complete AND NOT r.dry_run
-GROUP BY 1, 2, 3, 4, 5, 6
-ORDER BY 1, 2, 3, 4, 5, 6;
+GROUP BY r.identity, r.label
+ORDER BY find_model, effort, prompt, tools, commit, r.label;
 ```
 
 ```sql
