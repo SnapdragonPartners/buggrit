@@ -134,8 +134,9 @@ the idea borrowed from maestro's benchmark runner. The model is
   in order: name, description and schema. Both are `sha256:` hashes of
   content, so they move only when that text does.
 - `commit` and `modified`: the commit buggrit was built from and whether
-  its tree had uncommitted changes, from the Go build info. Both are
-  empty for a build without it, such as `go run`.
+  its tree had uncommitted changes, from the Go build info. A build
+  without VCS information, such as `go run`, `-buildvcs=false` or a build
+  outside a git checkout, records an empty `commit` and `modified` false.
 
 The split says which kind of change a run carries. A prompt edit moves
 `prompt_hash`, and a new or changed tool moves `tools_hash`. How the
@@ -144,10 +145,12 @@ moves only `commit`.
 
 **Average within an identity group, and compare groups side by side.**
 A group is runs that share the model settings, `mph`, `limits` and
-`review` thresholds. Averaging runs across groups mixes different
-things into one number, while placing two groups' averages next to each
-other is the comparison. Runs from before `mph` was recorded have none
-and form their own group.
+`review` thresholds, in one repository and under one label: a label
+names an experiment's variant, and repositories differ in their code
+and instructions. Averaging runs across groups mixes different things
+into one number, while placing two groups' averages next to each other
+is the comparison. Runs from before `mph` was recorded have none and
+form their own group.
 
 ## Reading the data
 
@@ -215,17 +218,17 @@ ORDER BY r.session, r.call;
 
 ```sql
 -- Compare identity groups across live runs: wall time, turns, tool
--- calls, tokens, completion and findings. A group is runs with the same
--- models, mph, limits, review thresholds and label; the find columns
--- only label it, and group tells apart groups that label alike.
+-- calls, tokens, completion and findings, by identity group (see
+-- Identity): the find columns only label a group, and group tells apart
+-- groups that label alike.
 WITH r AS (
-    SELECT id, label, meta,
+    SELECT id, repo, label, meta,
            jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
                               'limits', meta->'limits', 'review', meta->'review') AS identity
     FROM buggrit.run
     WHERE complete AND NOT dry_run
 )
-SELECT left(md5(r.identity::text), 8) AS "group",
+SELECT r.repo, left(md5(r.identity::text), 8) AS "group",
        r.identity->'models'->'find'->>'model' AS find_model,
        r.identity->'models'->'find'->>'reasoning_effort' AS effort,
        left(r.identity->'mph'->'stages'->'find'->>'prompt_hash', 15) AS prompt,
@@ -250,8 +253,8 @@ LEFT JOIN LATERAL (
 LEFT JOIN LATERAL (
     SELECT count(*) AS n FROM buggrit.event WHERE run_id = r.id AND kind = 'tool'
 ) tools ON true
-GROUP BY r.identity, r.label
-ORDER BY find_model, effort, prompt, tools, commit, r.label;
+GROUP BY r.repo, r.identity, r.label
+ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 ```
 
 ```sql
