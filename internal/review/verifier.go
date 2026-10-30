@@ -72,6 +72,9 @@ const verifyTimeUp = "Time is up for this verification. Call submit_verdicts now
 const verifyNudge = "You ended your turn without calling submit_verdicts. Call submit_verdicts now with a verdict for " +
 	"every listed finding. Do not reply in text."
 
+// verifyClosing ends the verifier's opening message.
+const verifyClosing = "Verify every finding, then call submit_verdicts once with a verdict for each.\n"
+
 // Verify runs the agentic verifier: the model checks each earlier finding
 // against the code at the reviewed head and ends by calling submit_verdicts
 // (design §6). It sees buggrit's own comments on each finding, and no one
@@ -88,6 +91,7 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 	threads := &threadTool{checks: in.Checks}
 	submit := &verdictTool{checks: in.Checks}
 	pk := &packing{}
+	tools, terminal := verifyTools(env, threads, submit)
 	st := &stage{
 		client:        in.Client,
 		onToolCall:    in.OnToolCall,
@@ -96,12 +100,10 @@ func Verify(ctx context.Context, in *VerifyInput) (*VerifyResult, error) {
 		beforeWrapUp:  func() { submit.partialOK = true },
 		submitted:     func() bool { return submit.result != nil },
 		purpose:       "buggrit.verify",
-		system:        verifySystemPrompt,
+		prompts:       verifyPrompts(),
 		opening:       verifyOpening(in, pk),
-		nudge:         verifyNudge,
-		timeUp:        verifyTimeUp,
-		tools:         append(readOnlyTools(env), threads.tool()),
-		terminal:      submit.tool(),
+		tools:         tools,
+		terminal:      terminal,
 		maxIterations: in.MaxIterations,
 		wrapUp:        in.WrapUp,
 	}
@@ -182,7 +184,7 @@ func verifyOpening(in *VerifyInput, pk *packing) string {
 		}
 		b.WriteString("\n\n")
 	}
-	b.WriteString("Verify every finding, then call submit_verdicts once with a verdict for each.\n")
+	b.WriteString(verifyClosing)
 	pk.Deferred, pk.Bytes = skipped, b.Len()
 	return b.String()
 }

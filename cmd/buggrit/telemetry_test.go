@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/llm"
+	"github.com/SnapdragonPartners/buggrit/internal/review"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry"
 	"github.com/SnapdragonPartners/buggrit/internal/telemetry/telemetrytest"
 )
@@ -47,6 +49,11 @@ func TestReviewRecordsTelemetry(t *testing.T) {
 	meta, _ := json.Marshal(sink.run.Meta)
 	if !strings.Contains(string(meta), `"BUGGRIT_LLM_API_KEY"`) || !strings.Contains(string(meta), `"id":"4242"`) {
 		t.Errorf("meta = %s", meta)
+	}
+	if m, _ := sink.run.Meta.(map[string]any); m == nil {
+		t.Errorf("meta is %T", sink.run.Meta)
+	} else if id, _ := m["mph"].(mph); id.Stages["find"] != review.Identity()["find"] {
+		t.Errorf("meta mph = %+v", m["mph"])
 	}
 	kinds := sink.kinds()
 	for _, k := range []string{telemetry.KindPass, telemetry.KindOpening, telemetry.KindMessage, telemetry.KindCall,
@@ -202,4 +209,21 @@ func TestRunMetaTagged(t *testing.T) {
 	telemetrytest.Tagged(t, config.Model{})
 	telemetrytest.Tagged(t, config.Limits{})
 	telemetrytest.Tagged(t, runOutcome{})
+	telemetrytest.Tagged(t, mph{})
+	telemetrytest.Tagged(t, review.StageIdentity{})
+}
+
+func TestRunMPH(t *testing.T) {
+	info := &debug.BuildInfo{Settings: []debug.BuildSetting{
+		{Key: "vcs", Value: "git"}, {Key: "vcs.revision", Value: "0123456789abcdef0123456789abcdef01234567"}, {Key: "vcs.modified", Value: "true"},
+	}}
+	id := runMPH(info, true)
+	if id.Commit != "0123456789abcdef0123456789abcdef01234567" || !id.Modified || len(id.Stages) != 2 {
+		t.Errorf("mph = %+v", id)
+	}
+	// A build without VCS stamping (go run, or no git) still records the
+	// stages.
+	if id := runMPH(nil, false); id.Commit != "" || id.Modified || id.Stages["verify"].PromptHash == "" {
+		t.Errorf("mph without build info = %+v", id)
+	}
 }
