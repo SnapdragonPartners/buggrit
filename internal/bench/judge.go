@@ -201,33 +201,58 @@ func (j *Judge) Score(ctx context.Context, b *Benchmark, run *RunResult) (*RunSc
 		if err != nil {
 			return nil, fmt.Errorf("judge run %s: %w", run.ID, err)
 		}
-		call, ok := toolCall(&resp.Message)
-		if !ok {
+		calls := toolCalls(&resp.Message)
+		// The first submit_judgment call is the one checked.
+		judged := slices.IndexFunc(calls, func(c *llms.ToolCall) bool { return c.Name == judgeTool })
+		var problems []string
+		if judged < 0 {
 			last = errors.New("the response didn't call " + judgeTool)
-			msgs = append(msgs, resp.Message, llms.UserText("Call "+judgeTool+" with the judgment."))
-			continue
+		} else {
+			var score *RunScore
+			if score, problems = parseJudgment(calls[judged].Parameters, b, len(run.Findings)); len(problems) == 0 {
+				score.RunID = run.ID
+				return score, nil
+			}
+			last = fmt.Errorf("invalid judgment: %s", strings.Join(problems, "; "))
 		}
-		score, problems := parseJudgment(call.Parameters, b, len(run.Findings))
-		if len(problems) == 0 {
-			score.RunID = run.ID
-			return score, nil
-		}
-		last = fmt.Errorf("invalid judgment: %s", strings.Join(problems, "; "))
-		msgs = append(msgs, resp.Message, llms.ToolResultMessage(llms.ToolResult{
-			ToolCallID: call.ID, IsError: true,
-			Content: "The judgment is invalid; fix every problem and call " + judgeTool + " again:\n- " + strings.Join(problems, "\n- "),
-		}))
+		msgs = append(msgs, resp.Message, retryTurn(calls, judged, problems))
 	}
 	return nil, fmt.Errorf("judge run %s: no valid judgment in %d calls: %w", run.ID, attempts, last)
 }
 
-func toolCall(m *llms.Message) (*llms.ToolCall, bool) {
+func toolCalls(m *llms.Message) []*llms.ToolCall {
+	var out []*llms.ToolCall
 	for i := range m.Content {
-		if c := m.Content[i].ToolCall; c != nil && c.Name == judgeTool {
-			return c, true
+		if c := m.Content[i].ToolCall; c != nil {
+			out = append(out, c)
 		}
 	}
-	return nil, false
+	return out
+}
+
+// retryTurn is what goes back after a response with no valid judgment. A
+// transcript can't end in tool calls without results, so every call gets
+// one: the judged call its problems, any other an error saying it wasn't
+// read. A response with no calls gets a nudge instead.
+func retryTurn(calls []*llms.ToolCall, judged int, problems []string) llms.Message {
+	again := "Call " + judgeTool + " once, with the whole judgment."
+	if len(calls) == 0 {
+		return llms.UserText(again)
+	}
+	results := make([]llms.ToolResult, 0, len(calls))
+	for i, c := range calls {
+		var text string
+		switch {
+		case i == judged:
+			text = "The judgment is invalid; fix every problem and call " + judgeTool + " again:\n- " + strings.Join(problems, "\n- ")
+		case c.Name == judgeTool:
+			text = "Only the first " + judgeTool + " call is read. " + again
+		default:
+			text = "There's no tool " + c.Name + ". " + again
+		}
+		results = append(results, llms.ToolResult{ToolCallID: c.ID, IsError: true, Content: text})
+	}
+	return llms.ToolResultMessage(results...)
 }
 
 // parseJudgment checks a judgment covers every defect once, and every

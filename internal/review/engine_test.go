@@ -72,6 +72,11 @@ func TestReviewFullPass(t *testing.T) {
 	if !res.Findings[1].Anchor.FileLevel() {
 		t.Errorf("file-level finding anchored at %+v", res.Findings[1].Anchor)
 	}
+	// Each kept finding knows its place in the submission: the first, and
+	// the fourth after a duplicate and one below the threshold.
+	if res.Findings[0].Submitted != 1 || res.Findings[1].Submitted != 4 {
+		t.Errorf("submitted positions = %d, %d", res.Findings[0].Submitted, res.Findings[1].Submitted)
+	}
 	// The finder was told about the other reviewer's thread.
 	if msg := model.Calls()[0].Messages[0].Content[0].Text; !strings.Contains(msg, "Consider a constructor.") {
 		t.Error("other reviewer's thread missing from the opening message")

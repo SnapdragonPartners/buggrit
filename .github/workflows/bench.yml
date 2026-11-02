@@ -13,6 +13,9 @@ name: bench
 # Model keys: an arm's or the judge's api_key_env must be one the steps
 # pass, LUNAROUTE_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY.
 #
+# The database's identity provider admits this workflow only as it is on
+# main (docs/database.md), so dispatch it from main.
+#
 # Only this workflow has to be on main: an arm's ref is any pushed branch,
 # tag or SHA at or after #49 (prepare checks).
 on:

@@ -115,14 +115,20 @@ type resultPayload struct {
 		Severity string `json:"severity"`
 		Title    string `json:"title"`
 		Line     int    `json:"line"`
+		// Submitted is the 1-based position in Submitted; 0 in runs
+		// recorded before it was.
+		Submitted int `json:"submitted"`
 	} `json:"kept"`
 	ElapsedMS int64 `json:"elapsed_ms"`
 	Done      bool  `json:"done"`
 }
 
 // ApplyResult fills r from a result event's payload: the kept findings,
-// each with the text of the submitted finding it came from (by path and
-// title), and how the pass ended.
+// each with the text the finder submitted for it, and how the pass ended.
+// A kept finding names its submission by position. One recorded before
+// that, which doesn't, takes the next submission after the previous kept
+// one's with the same path, title and severity, since reconcile keeps
+// findings in submission order; failing that it has only its own fields.
 func (r *RunResult) ApplyResult(payload []byte) error {
 	var p resultPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -132,19 +138,31 @@ func (r *RunResult) ApplyResult(payload []byte) error {
 	if p.Error != "" && r.Error == "" {
 		r.Error = p.Error
 	}
-	used := make([]bool, len(p.Submitted))
+	next := 0 // where the fallback looks from
 	r.Findings = make([]Finding, 0, len(p.Kept))
 	for i := range p.Kept {
 		k := &p.Kept[i]
 		f := Finding{Path: k.Path, Line: k.Line, Severity: k.Severity, Title: k.Title}
-		for j := range p.Submitted {
-			s := &p.Submitted[j]
-			if !used[j] && s.Title == k.Title && s.Path == k.Path {
-				used[j] = true
-				f = *s
-				f.Line, f.Severity = k.Line, k.Severity
-				break
+		at := -1
+		switch {
+		case k.Submitted > 0:
+			if k.Submitted <= len(p.Submitted) {
+				at = k.Submitted - 1
 			}
+		default:
+			for j := next; j < len(p.Submitted); j++ {
+				s := &p.Submitted[j]
+				if s.Path == k.Path && s.Title == k.Title && s.Severity == k.Severity {
+					at = j
+					break
+				}
+			}
+		}
+		if at >= 0 {
+			f = p.Submitted[at]
+			// The anchor reconcile settled on.
+			f.Path, f.Line = k.Path, k.Line
+			next = at + 1
 		}
 		r.Findings = append(r.Findings, f)
 	}

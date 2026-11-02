@@ -117,16 +117,23 @@ func (r *report) tableHead(cols string, n int) {
 	r.w("\n")
 }
 
+// eachRun lists every run. A run whose telemetry wasn't all written has
+// its counts marked as lower bounds (≥): some of its call and tool events
+// may be missing.
 func (r *report) eachRun() {
-	r.w("\n### Runs\n\n")
-	r.tableHead("| Run | Wall | Turns | s/turn | Tools/turn | Tokens in / out / reasoning / cached | Ended | Findings (blocking) |", 8)
+	r.w("\n### Runs\n\nCounts marked ≥ are lower bounds: that run's telemetry wasn't all written.\n\n")
+	r.tableHead("| Run | Wall | Turns | s/turn | Tools/turn | Tokens in / out / reasoning / cached | Ended | Telemetry | Findings (blocking) |", 9)
 	for i := range r.runs {
 		ar := &r.runs[i]
 		run := ar.run
-		r.w("| %s | %s | %d | %s | %s | %d / %d / %d / %d | %s | %d (%d) |", ar.name, dur(run.Wall()), run.Turns,
+		lb, telemetry := "", "complete"
+		if !run.Complete {
+			lb, telemetry = "≥", "incomplete"
+		}
+		r.w("| %s | %s | %s%d | %s | %s | %s%d / %d / %d / %d | %s | %s | %d (%d) |", ar.name, dur(run.Wall()), lb, run.Turns,
 			perTurn(run.Wall().Seconds(), run.Turns, 0), perTurn(float64(run.ToolCalls), run.Turns, 1),
-			run.Tokens.Input, run.Tokens.Output, run.Tokens.Reasoning, run.Tokens.Cached,
-			ended(run), len(run.Findings), blocking(run.Findings))
+			lb, run.Tokens.Input, run.Tokens.Output, run.Tokens.Reasoning, run.Tokens.Cached,
+			ended(run), telemetry, len(run.Findings), blocking(run.Findings))
 		switch {
 		case !r.scored:
 		case ar.score == nil:
@@ -139,22 +146,35 @@ func (r *report) eachRun() {
 	}
 }
 
-// groupStats are an identity group's totals.
+// groupStats are an identity group's totals, each over the runs it's
+// known for: wall time over runs that have one, the call, tool and token
+// counts over runs whose telemetry was all written, and findings over runs
+// that recorded a result.
 type groupStats struct {
-	wall, turns, tools, in, out, findings, recall, nReal, nFalse float64
-	done, scored                                                 int
+	wall, countedWall, turns, tools, in, out, findings, recall, nReal, nFalse float64
+	timed, counted, results, done, scored                                     int
 }
 
 func statsOf(rs []armRun) groupStats {
 	var st groupStats
 	for i := range rs {
 		run, score := rs[i].run, rs[i].score
-		st.wall += run.Wall().Seconds()
-		st.turns += float64(run.Turns)
-		st.tools += float64(run.ToolCalls)
-		st.in += float64(run.Tokens.Input)
-		st.out += float64(run.Tokens.Output)
-		st.findings += float64(len(run.Findings))
+		if w := run.Wall().Seconds(); w > 0 {
+			st.wall += w
+			st.timed++
+		}
+		if run.Complete {
+			st.counted++
+			st.countedWall += run.Wall().Seconds()
+			st.turns += float64(run.Turns)
+			st.tools += float64(run.ToolCalls)
+			st.in += float64(run.Tokens.Input)
+			st.out += float64(run.Tokens.Output)
+		}
+		if run.HasResult {
+			st.results++
+			st.findings += float64(len(run.Findings))
+		}
 		if run.Done {
 			st.done++
 		}
@@ -169,18 +189,28 @@ func statsOf(rs []armRun) groupStats {
 	return st
 }
 
+func avg(sum float64, n int, format string) string {
+	if n == 0 {
+		return dash
+	}
+	return fmt.Sprintf(format, sum/float64(n))
+}
+
 // byArm averages each identity group, and places the groups side by side.
 func (r *report) byArm() {
-	r.w("\n### By arm\n\nAverages within each identity group; groups side by side.\n\n")
-	r.tableHead("| Arm | Group | Runs | Wall | Turns | s/turn | Tools/turn | Tokens in / out | Finished | Findings |", 10)
+	r.w("\n### By arm\n\nAverages within each identity group; groups side by side. Turns, tools and tokens average only the runs whose telemetry was all written.\n\n")
+	r.tableHead("| Arm | Group | Runs | Wall | Turns | s/turn | Tools/turn | Tokens in / out | Finished | Telemetry complete | Findings |", 11)
 	for i := range r.keys {
 		g := &r.keys[i]
 		rs := r.groups[*g]
 		st := statsOf(rs)
-		n := float64(len(rs))
-		r.w("| %s | `%s` | %d | %s | %.1f | %s | %s | %.0f / %.0f | %d of %d | %.1f |", g.arm, g.group, len(rs),
-			dur(time.Duration(st.wall/n*float64(time.Second))), st.turns/n, perTurn(st.wall, int(st.turns), 0), perTurn(st.tools, int(st.turns), 1),
-			st.in/n, st.out/n, st.done, len(rs), st.findings/n)
+		wall := dash
+		if st.timed > 0 {
+			wall = dur(time.Duration(st.wall / float64(st.timed) * float64(time.Second)))
+		}
+		r.w("| %s | `%s` | %d | %s | %s | %s | %s | %s / %s | %d of %d | %d of %d | %s |", g.arm, g.group, len(rs),
+			wall, avg(st.turns, st.counted, "%.1f"), perTurn(st.countedWall, int(st.turns), 0), perTurn(st.tools, int(st.turns), 1),
+			avg(st.in, st.counted, "%.0f"), avg(st.out, st.counted, "%.0f"), st.done, len(rs), st.counted, len(rs), avg(st.findings, st.results, "%.1f"))
 		switch {
 		case !r.scored:
 		case st.scored == 0:

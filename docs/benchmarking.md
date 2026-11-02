@@ -142,8 +142,10 @@ gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
 ```
 
 Only `.github/workflows/bench.yml` has to be on `main`; it runs the
-harness from `main` and each arm from its own ref. One experiment runs at
-a time. The jobs:
+harness from `main` and each arm from its own ref. Dispatch it from `main`
+(the default): the database's identity provider admits it only from
+there ([database.md](database.md)). One experiment runs at a time. The
+jobs:
 
 1. **prepare** validates the experiment, checks every arm's ref contains
    #49, and opens the replay: branches `bench/<experiment>/<run>-<attempt>/base`

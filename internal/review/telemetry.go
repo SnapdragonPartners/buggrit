@@ -129,6 +129,8 @@ type keptRecord struct {
 	Severity string `json:"severity"`
 	Title    string `json:"title"`
 	Line     int    `json:"line"`
+	// Submitted is the finding's 1-based position in submitted.
+	Submitted int `json:"submitted"`
 }
 
 type transitionRecord struct {
@@ -163,7 +165,7 @@ func newResultRecord(res *Result, err error) *resultRecord {
 	}
 	for i := range res.Findings {
 		c := &res.Findings[i]
-		rec.Kept = append(rec.Kept, keptRecord{ID: c.ID, FP: c.FP, Path: c.Anchor.Path, Line: c.Anchor.Line, Severity: c.Severity, Title: c.Title})
+		rec.Kept = append(rec.Kept, keptRecord{ID: c.ID, FP: c.FP, Path: c.Anchor.Path, Line: c.Anchor.Line, Severity: c.Severity, Title: c.Title, Submitted: c.Submitted})
 	}
 	for i := range res.Transitions {
 		t := &res.Transitions[i]

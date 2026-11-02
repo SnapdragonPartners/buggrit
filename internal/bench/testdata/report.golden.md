@@ -15,20 +15,22 @@ Judge: `claude-x` anthropic at high effort. **Its verdicts are drafts**: a perso
 
 ### Runs
 
-| Run | Wall | Turns | s/turn | Tools/turn | Tokens in / out / reasoning / cached | Ended | Findings (blocking) | Recall | Extra real / false |
-|---|---|---|---|---|---|---|---|---|---|
-| deepseek 1 | 20m00s | 20 | 60 | 2.0 | 5000 / 700 / 0 / 0 | complete | 2 (0) | 1 of 2 | 1 / 0 |
-| deepseek 2 | 30m00s | 30 | 60 | 1.0 | 0 / 0 / 0 / 0 | the pass deadline passed | 0 (0) | 0 of 2 | 0 / 0 |
-| glm 1 | 10m00s | 10 | 60 | 2.5 | 1000 / 200 / 50 / 400 | complete | 1 (1) | 0 of 2 | 1 / 0 |
+Counts marked ≥ are lower bounds: that run's telemetry wasn't all written.
+
+| Run | Wall | Turns | s/turn | Tools/turn | Tokens in / out / reasoning / cached | Ended | Telemetry | Findings (blocking) | Recall | Extra real / false |
+|---|---|---|---|---|---|---|---|---|---|---|
+| deepseek 1 | 20m00s | 20 | 60 | 2.0 | 5000 / 700 / 0 / 0 | complete | complete | 2 (0) | 1 of 2 | 1 / 0 |
+| deepseek 2 | 30m00s | 30 | 60 | 1.0 | 0 / 0 / 0 / 0 | the pass deadline passed | complete | 0 (0) | 0 of 2 | 0 / 0 |
+| glm 1 | 10m00s | ≥10 | 60 | 2.5 | ≥1000 / 200 / 50 / 400 | complete | incomplete | 1 (1) | 0 of 2 | 1 / 0 |
 
 ### By arm
 
-Averages within each identity group; groups side by side.
+Averages within each identity group; groups side by side. Turns, tools and tokens average only the runs whose telemetry was all written.
 
-| Arm | Group | Runs | Wall | Turns | s/turn | Tools/turn | Tokens in / out | Finished | Findings | Recall | Extra real / false |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| deepseek | `g1` | 2 | 25m00s | 25.0 | 60 | 1.4 | 2500 / 350 | 1 of 2 | 1.0 | 25% (0.50 of 2) | 0.5 / 0.0 |
-| glm | `g2` | 1 | 10m00s | 10.0 | 60 | 2.5 | 1000 / 200 | 1 of 1 | 1.0 | 0% (0.00 of 2) | 1.0 / 0.0 |
+| Arm | Group | Runs | Wall | Turns | s/turn | Tools/turn | Tokens in / out | Finished | Telemetry complete | Findings | Recall | Extra real / false |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| deepseek | `g1` | 2 | 25m00s | 25.0 | 60 | 1.4 | 2500 / 350 | 1 of 2 | 2 of 2 | 1.0 | 25% (0.50 of 2) | 0.5 / 0.0 |
+| glm | `g2` | 1 | 10m00s | – | – | – | – / – | 1 of 1 | 0 of 1 | 1.0 | 0% (0.00 of 2) | 1.0 / 0.0 |
 
 ### Known defects
 

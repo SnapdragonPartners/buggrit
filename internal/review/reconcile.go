@@ -18,6 +18,10 @@ type Candidate struct {
 	// FP is the deterministic fingerprint used for dedupe (design §7 rule 3).
 	FP string
 	Finding
+	// Submitted is the finding's 1-based position in what the finder
+	// submitted, which telemetry records so a kept finding can be traced
+	// to its submission.
+	Submitted int
 }
 
 // HasSuggestion reports whether the finding's suggestion can be posted: the
@@ -64,7 +68,7 @@ func reconcile(findings []Finding, in *reconcileInput) reconciled {
 			continue
 		}
 		seen[fp] = true
-		out.kept = append(out.kept, Candidate{Finding: *f, ID: "f-" + fp[:6], FP: fp, Anchor: anchor(f, in.diff)})
+		out.kept = append(out.kept, Candidate{Finding: *f, ID: "f-" + fp[:6], FP: fp, Anchor: anchor(f, in.diff), Submitted: i + 1})
 	}
 	return out
 }

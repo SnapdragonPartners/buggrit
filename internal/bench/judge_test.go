@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro-llms/llms"
+	"github.com/SnapdragonPartners/maestro-llms/llms/middleware"
 	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 )
 
@@ -90,6 +91,36 @@ func TestJudgeRetriesAnInvalidJudgment(t *testing.T) {
 	for _, want := range []string{"names finding 7, which doesn't exist", `defect "d2" has no verdict`, `verdict "maybe"`, "finding 2 matches no defect"} {
 		if !strings.Contains(res.Content, want) {
 			t.Errorf("problems lack %q:\n%s", want, res.Content)
+		}
+	}
+}
+
+// A response with several tool calls gets a result for each, so the retry
+// passes maestro-llms' request validation (which the production client
+// runs) and reaches the model.
+func TestJudgeAnswersEveryToolCall(t *testing.T) {
+	invalid := `{"defects": [], "extras": []}`
+	twoCalls := testllm.ToolCallResponse("c1", judgeTool, invalid)
+	second := testllm.ToolCallResponse("c2", judgeTool, validJudgment).Message.Content[0]
+	stray := testllm.ToolCallResponse("c3", "read_file", `{}`).Message.Content[0]
+	twoCalls.Message.Content = append(twoCalls.Message.Content, second, stray)
+	fake := &testllm.FakeChatClient{Responses: []llms.ChatResponse{twoCalls, testllm.ToolCallResponse("c4", judgeTool, validJudgment)}}
+	chat := middleware.RecommendedChat(fake, middleware.RecommendedConfig{})
+	s, err := (&Judge{Chat: chat}).Score(context.Background(), testBenchmark(t), testRun())
+	if err != nil || len(s.Defects) != 2 {
+		t.Fatalf("Score = %+v, %v", s, err)
+	}
+	calls := fake.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("%d calls, want 2", len(calls))
+	}
+	last := calls[1].Messages[len(calls[1].Messages)-1]
+	if len(last.Content) != 3 {
+		t.Fatalf("the retry answers %d of 3 calls: %+v", len(last.Content), last)
+	}
+	for i, want := range []string{"The judgment is invalid", "Only the first submit_judgment call is read", "There's no tool read_file"} {
+		if r := last.Content[i].ToolResult; r == nil || !r.IsError || !strings.Contains(r.Content, want) {
+			t.Errorf("result %d = %+v, want %q", i, r, want)
 		}
 	}
 }

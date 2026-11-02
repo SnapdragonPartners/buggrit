@@ -14,15 +14,16 @@ import (
 var update = flag.Bool("update", false, "rewrite the golden files")
 
 func TestApplyResult(t *testing.T) {
+	// A P3 dropped below the threshold shares the kept P1's path and title.
 	payload := `{
 	  "submitted": [
-	    {"path": "a.go", "line": 3, "severity": "P2", "title": "dup", "problem": "first copy"},
-	    {"path": "a.go", "line": 9, "severity": "P2", "title": "dup", "problem": "second copy"},
-	    {"path": "b.go", "line": 1, "severity": "P3", "title": "dropped", "problem": "below threshold"}
+	    {"path": "a.go", "line": 3, "severity": "P3", "title": "dup", "problem": "the dropped one"},
+	    {"path": "a.go", "line": 9, "severity": "P1", "title": "dup", "problem": "the kept one"},
+	    {"path": "b.go", "line": 1, "severity": "P2", "title": "other", "problem": "kept too"}
 	  ],
 	  "kept": [
-	    {"id": "f-1", "path": "a.go", "line": 4, "severity": "P1", "title": "dup"},
-	    {"id": "f-2", "path": "a.go", "line": 9, "severity": "P2", "title": "dup"}
+	    {"id": "f-1", "path": "a.go", "line": 9, "severity": "P1", "title": "dup", "submitted": 2},
+	    {"id": "f-2", "path": "b.go", "line": 0, "severity": "P2", "title": "other", "submitted": 3}
 	  ],
 	  "done": false, "reason": "the pass deadline passed", "elapsed_ms": 61000
 	}`
@@ -33,11 +34,22 @@ func TestApplyResult(t *testing.T) {
 	if !r.HasResult || r.Done || r.Reason != "the pass deadline passed" || r.Wall() != 61*time.Second {
 		t.Fatalf("result = %+v", r)
 	}
-	// Each kept finding takes the next unused submitted one's text, with
-	// the anchor and severity reconcile settled on.
-	if len(r.Findings) != 2 || r.Findings[0].Problem != "first copy" || r.Findings[0].Line != 4 || r.Findings[0].Severity != "P1" ||
-		r.Findings[1].Problem != "second copy" {
+	if len(r.Findings) != 2 || r.Findings[0].Problem != "the kept one" || r.Findings[1].Problem != "kept too" || r.Findings[1].Line != 0 {
 		t.Fatalf("findings = %+v", r.Findings)
+	}
+
+	// A run recorded before kept findings named their submission: the
+	// next submission in order with the same path, title and severity.
+	var old RunResult
+	legacy := `{"submitted": [
+	    {"path": "a.go", "line": 3, "severity": "P3", "title": "dup", "problem": "the dropped one"},
+	    {"path": "a.go", "line": 9, "severity": "P1", "title": "dup", "problem": "the kept one"}],
+	  "kept": [{"path": "a.go", "line": 9, "severity": "P1", "title": "dup"}, {"path": "c.go", "line": 2, "severity": "P2", "title": "unmatched"}]}`
+	if err := old.ApplyResult([]byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if len(old.Findings) != 2 || old.Findings[0].Problem != "the kept one" || old.Findings[1].Problem != "" || old.Findings[1].Title != "unmatched" {
+		t.Fatalf("legacy findings = %+v", old.Findings)
 	}
 }
 
@@ -71,17 +83,17 @@ func reportInput(t *testing.T) *ReportInput {
 	runs := []RunResult{
 		{
 			ID: "r-glm", Label: "trial/glm", Arm: "glm", Group: "g2", StartedAt: at, Identity: identity("glm-5.3", "medium", "abcdef1234"),
-			HasResult: true, Done: true, ElapsedMS: 600000, Turns: 10, ToolCalls: 25,
+			HasResult: true, Complete: false, Done: true, ElapsedMS: 600000, Turns: 10, ToolCalls: 25,
 			Tokens:   Tokens{Input: 1000, Output: 200, Reasoning: 50, Cached: 400},
 			Findings: []Finding{{Path: "z.go", Line: 1, Severity: "P1", Title: "a | pipe", Problem: "wrong"}},
 		},
 		{
 			ID: "r-ds-2", Label: "trial/deepseek", Arm: "deepseek", Group: "g1", StartedAt: at.Add(time.Minute), Identity: identity("deepseek", "medium", "1234567890"),
-			HasResult: true, Reason: "the pass deadline passed", ElapsedMS: 1800000, Turns: 30, ToolCalls: 30,
+			HasResult: true, Complete: true, Reason: "the pass deadline passed", ElapsedMS: 1800000, Turns: 30, ToolCalls: 30,
 		},
 		{
 			ID: "r-ds-1", Label: "trial/deepseek", Arm: "deepseek", Group: "g1", StartedAt: at, EndedAt: &ended, Identity: identity("deepseek", "medium", "1234567890"),
-			HasResult: true, Done: true, ElapsedMS: 1200000, Turns: 20, ToolCalls: 40,
+			HasResult: true, Complete: true, Done: true, ElapsedMS: 1200000, Turns: 20, ToolCalls: 40,
 			Tokens: Tokens{Input: 5000, Output: 700},
 			Findings: []Finding{
 				{Path: "a.go", Line: 2, Severity: "P2", Title: "first", Problem: "it breaks"},
@@ -106,6 +118,17 @@ func reportInput(t *testing.T) *ReportInput {
 	return &ReportInput{
 		Experiment: &ExperimentRecord{Experiment: e, Benchmark: b, BenchmarkHash: "sha256:0123456789abcdef", Replay: &Replay{Repo: "o/r", PR: 11}},
 		Runs:       runs, Scores: scores, RunURL: "https://github.com/o/r/actions/runs/42/attempts/1",
+	}
+}
+
+// A run whose telemetry wasn't all written has its counts marked as lower
+// bounds, and they're left out of the group's averages.
+func TestReportIncompleteTelemetry(t *testing.T) {
+	got := Report(reportInput(t))
+	for _, want := range []string{"| glm 1 | 10m00s | ≥10 |", "| ≥1000 / 200 / 50 / 400 | complete | incomplete |", "| glm | `g2` | 1 | 10m00s | – | – | – | – / – | 1 of 1 | 0 of 1 | 1.0 |"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report lacks %q:\n%s", want, got)
+		}
 	}
 }
 
