@@ -81,7 +81,7 @@ func newRepo(t *testing.T) *repo {
 		t.Fatal(err)
 	}
 	r := &repo{t: t, dir: filepath.Join(root, "work"), origin: filepath.Join(root, "origin.git")}
-	r.env = append(os.Environ(),
+	r.env = append(isolatedEnv(t),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GIT_CONFIG_GLOBAL="+gitconfig, "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
@@ -97,6 +97,30 @@ func newRepo(t *testing.T) *repo {
 	r.git(r.dir, "push", "-q", "origin", "main")
 	r.git(r.dir, "fetch", "-q", "origin")
 	return r
+}
+
+// isolatedEnv is the test's environment without the variables that point git
+// at a repository, as git itself lists them (git rev-parse --local-env-vars).
+// A pre-push hook exports GIT_DIR, absolute in a linked worktree; inherited,
+// it would aim the fixture's git init and the scripts at the real repo.
+func isolatedEnv(t *testing.T) []string {
+	t.Helper()
+	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output() //nolint:noctx // a test of local scripts
+	if err != nil {
+		t.Fatalf("git rev-parse --local-env-vars: %v", err)
+	}
+	local := map[string]bool{}
+	for _, name := range strings.Fields(string(out)) {
+		local[name] = true
+	}
+	var env []string
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if !local[name] {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
 func (r *repo) git(dir string, args ...string) string {
@@ -512,4 +536,43 @@ func TestMoveMajors(t *testing.T) {
 			t.Errorf("err = %v, output %q", err, out)
 		}
 	})
+}
+
+// A pre-push hook in a linked worktree runs the tests with an absolute GIT_DIR
+// naming the real repo. The fixture must not touch it.
+func TestRepoIgnoresInheritedGitDir(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found")
+	}
+	outer := t.TempDir()
+	gitconfig := filepath.Join(outer, "gitconfig")
+	if err := os.WriteFile(gitconfig, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", outer}, args...)...) //nolint:noctx // a test of local scripts
+		cmd.Env = []string{"GIT_CONFIG_GLOBAL=" + gitconfig, "GIT_CONFIG_NOSYSTEM=1"}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	sentinel("init", "-q", "-b", "main")
+	t.Setenv("GIT_DIR", filepath.Join(outer, ".git"))
+
+	r := newRepo(t)
+	r.write("x.txt", "x\n")
+	r.commit("x")
+
+	if bare := sentinel("config", "--get", "core.bare"); bare != "false" {
+		t.Errorf("sentinel core.bare = %q, want false", bare)
+	}
+	if remotes := sentinel("remote"); remotes != "" {
+		t.Errorf("sentinel remotes = %q, want none", remotes)
+	}
+	if refs := sentinel("for-each-ref"); refs != "" {
+		t.Errorf("sentinel refs = %q, want none", refs)
+	}
 }
