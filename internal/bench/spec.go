@@ -172,9 +172,6 @@ type Experiment struct {
 	// (default 2).
 	Runs     int `json:"runs,omitempty"`
 	Parallel int `json:"parallel,omitempty"`
-	// Issue, if set, gets the report as a comment, in the repository the
-	// harness runs in (--issue-repo, default $GITHUB_REPOSITORY).
-	Issue int `json:"issue,omitempty"`
 }
 
 // Arm is one variant: buggrit built from Ref, with Overlay applied to the
@@ -225,9 +222,6 @@ func ParseExperiment(data []byte) (*Experiment, error) {
 	}
 	if e.Parallel < 1 {
 		errs = append(errs, errors.New("parallel must be at least 1"))
-	}
-	if e.Issue < 0 {
-		errs = append(errs, errors.New("issue must not be negative; 0 or unset means no comment"))
 	}
 	errs = append(errs, e.validateArms()...)
 	if n := len(e.Arms) * e.Runs; n > MaxJobs {
@@ -303,6 +297,35 @@ func JudgeConfig(m *config.Model) (*config.Config, error) {
 		return nil, fmt.Errorf("encode the judge: %w", err)
 	}
 	return config.Parse(data) //nolint:wrapcheck // the caller says it's the judge
+}
+
+// ParseRecordedExperiment parses an experiment as the database recorded
+// it: like ParseExperiment, but a retired field is dropped rather than
+// rejected, so an older experiment's report can still be regenerated. The
+// retired fields are ones an earlier harness accepted and this one
+// doesn't: "issue" named an issue for the report's comment, which the
+// database and the job summary replaced. A new experiment naming one is
+// rejected.
+func ParseRecordedExperiment(data []byte) (*Experiment, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, fmt.Errorf("experiment: %w", err)
+	}
+	dropped := false
+	for _, k := range []string{"issue"} {
+		if _, ok := fields[k]; ok {
+			delete(fields, k)
+			dropped = true
+		}
+	}
+	if !dropped {
+		return ParseExperiment(data)
+	}
+	trimmed, err := json.Marshal(fields)
+	if err != nil {
+		return nil, fmt.Errorf("experiment: %w", err)
+	}
+	return ParseExperiment(trimmed)
 }
 
 // Label is the telemetry label of an arm's runs: the experiment's name and

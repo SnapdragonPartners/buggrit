@@ -160,6 +160,7 @@ func TestParseExperimentErrors(t *testing.T) {
 		{"unknown key", `{"name": "x", ` + target + `, "arms": [{"name": "a"}], "model": "m"}`, "unknown field"},
 		{"too many jobs", `{"name": "x", ` + target + `, "runs": 20, "arms": [` + manyArms(13) + `]}`, "260 review jobs; a workflow's matrix allows 256"},
 		{"trailing", `{"name": "x", ` + target + `, "arms": [{"name": "a"}]} {}`, "trailing data"},
+		{"retired issue", `{"name": "x", ` + target + `, "issue": 19, "arms": [{"name": "a"}]}`, "unknown field \"issue\""},
 	}
 	for _, c := range cases {
 		if _, err := ParseExperiment([]byte(c.spec)); err == nil || !strings.Contains(err.Error(), c.want) {
@@ -168,6 +169,28 @@ func TestParseExperimentErrors(t *testing.T) {
 	}
 	if _, err := ParseExperiment([]byte(`{"name": "x", ` + target + `, "arms": [{"name": "a"}]}`)); err != nil {
 		t.Errorf("a target without a judge: %v", err)
+	}
+}
+
+// A recorded experiment from before "issue" was retired still parses; it's
+// otherwise as strict as a new one.
+func TestParseRecordedExperiment(t *testing.T) {
+	target := `"target": {"repo": "o/r", "base": "` + shaA + `", "head": "` + shaB + `", "title": "T"}`
+	e, err := ParseRecordedExperiment([]byte(`{"name": "x", ` + target + `, "issue": 19, "runs": 1, "arms": [{"name": "a"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Name != "x" || e.Runs != 1 || len(e.Arms) != 1 {
+		t.Fatalf("experiment = %+v", e)
+	}
+	for _, spec := range []string{
+		`{"name": "x", ` + target + `, "issue": 19, "model": "m", "arms": [{"name": "a"}]}`,
+		`{"name": "x", ` + target + `, "arms": [{"name": "a"}]} {}`,
+		`{"name": "x", ` + target + `, "issue": 19, "runs": 99, "arms": [{"name": "a"}]}`,
+	} {
+		if _, err := ParseRecordedExperiment([]byte(spec)); err == nil {
+			t.Errorf("ParseRecordedExperiment(%s) succeeded", spec)
+		}
 	}
 }
 

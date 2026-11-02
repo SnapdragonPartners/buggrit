@@ -218,13 +218,6 @@ jobs:
       - name: Build buggrit-bench
         run: go build -o "$RUNNER_TEMP/buggrit-bench" ./cmd/buggrit-bench
 
-      - name: Mint App token
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.BUGGRIT_APP_ID }}
-          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
-
       - name: Connect to the database
         id: db
         uses: ./.github/actions/database
@@ -235,7 +228,6 @@ jobs:
 
       - name: Score and report
         env:
-          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           EXPERIMENT: ${{ inputs.experiment }}
           REPLAY: ${{ needs.prepare.outputs.replay }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
@@ -246,7 +238,7 @@ jobs:
         run: |
           printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"
           "$RUNNER_TEMP/buggrit-bench" report --experiment "$RUNNER_TEMP/experiment.json" \
-            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md" --comment
+            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md"
 
   cleanup:
     needs: [prepare, review, report]
