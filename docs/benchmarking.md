@@ -118,8 +118,8 @@ A benchmark is a checked-in file, `bench/<name>.json`:
   for model diversity here rather than in the arms: a judge from another
   family (GLM, or Claude) doesn't grade its own kind.
 - `runs` per arm, default 3: questions like "without losing recall" need
-  enough runs to see past the noise, and two is thin. Arms × runs can be
-  at most 256, the jobs a workflow's matrix allows. `parallel` is how
+  enough runs to see past the noise, and two is thin. It must be 1 to 20,
+  and arms × runs at most 256, the jobs a workflow's matrix allows. `parallel` is how
   many reviews run at once, default 2, since the LunaRoute key allows 2
   requests in flight. With `BUGGRIT_RATE_LIMITS` set, the shared rate
   limit holds across runs anyway (design §9).
@@ -165,7 +165,10 @@ jobs:
    minutes.
 3. **report** reads the runs back by workflow run and attempt, has the
    judge score each run not yet scored, records the scores, and writes the
-   report to the job summary and, with `issue`, as a comment. A run the
+   report to the job summary and, with `issue`, as a comment. Its
+   timeout grows with the runs (3 minutes each, plus 10, at most 6
+   hours; `check` prints it). Each score is saved as it's made, so a
+   report cut off keeps what it judged. A run the
    judge fails on is left unscored and fails the step; rerun the report
    locally (below) to score it.
 4. **cleanup** closes the PR and deletes both branches, whatever happened.

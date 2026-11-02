@@ -48,7 +48,7 @@ func TestCheck(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	for _, want := range []string{"2 arm(s) × 2 run(s), 1 at a time", "benchmark pr9-e619281: 10 known defects", "arm glm: ref exp/glm, label trial/glm, job timeout 45m", "arm deepseek: ref main, label trial/deepseek, job timeout 70m"} {
+	for _, want := range []string{"2 arm(s) × 2 run(s), 1 at a time", "benchmark pr9-e619281: 10 known defects", "arm glm: ref exp/glm, label trial/glm, job timeout 45m", "arm deepseek: ref main, label trial/deepseek, job timeout 70m", "report timeout 22m"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -101,6 +101,10 @@ func TestPrepare(t *testing.T) {
 	}
 	if outputs["parallel"] != "1" {
 		t.Errorf("parallel = %q", outputs["parallel"])
+	}
+	// 4 runs to judge, 3 minutes each, plus 10.
+	if outputs["report_timeout"] != "22" {
+		t.Errorf("report_timeout = %q", outputs["report_timeout"])
 	}
 	var matrix struct{ Include []matrixEntry }
 	if err := json.Unmarshal([]byte(outputs["matrix"]), &matrix); err != nil {

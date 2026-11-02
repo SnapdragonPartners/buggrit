@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -122,9 +124,10 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 		}
 	}
 	err = writeOutputs(f.output, stdout, map[string]any{
-		"matrix":   map[string]any{"include": include},
-		"parallel": l.exp.Parallel,
-		"replay":   replay,
+		"matrix":         map[string]any{"include": include},
+		"parallel":       l.exp.Parallel,
+		"report_timeout": l.reportTimeout(),
+		"replay":         replay,
 	})
 	if err != nil {
 		// Nothing downstream knows about the replay, so clean it up here.
@@ -178,12 +181,8 @@ func checkRefs(ctx context.Context, gh *github.Client, repoName string, arms []b
 // prints them when there's none.
 func writeOutputs(path string, stdout io.Writer, outputs map[string]any) error {
 	var sb strings.Builder
-	for _, k := range []string{"matrix", "parallel", "replay"} {
-		v, ok := outputs[k]
-		if !ok {
-			continue
-		}
-		data, err := json.Marshal(v)
+	for _, k := range slices.Sorted(maps.Keys(outputs)) {
+		data, err := json.Marshal(outputs[k])
 		if err != nil {
 			return fmt.Errorf("encode %s: %w", k, err)
 		}

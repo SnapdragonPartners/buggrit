@@ -99,6 +99,25 @@ func (l *loaded) target() *bench.Target {
 // the build and publishing.
 const jobOverhead = 15 * time.Minute
 
+// The report job judges one run at a time, so its timeout grows with the
+// runs: reportBase for setup and the report, plus reportPerRun for each
+// judgment (up to three model calls), capped at maxJobMinutes, a hosted
+// runner's limit. Every score is saved as it's made, so a report cut off
+// at the cap keeps what it judged; `report` run again judges the rest.
+const (
+	reportBase    = 10
+	reportPerRun  = 3
+	maxJobMinutes = 360
+)
+
+// reportTimeout is the report job's timeout-minutes.
+func (l *loaded) reportTimeout() int {
+	if l.bm == nil {
+		return reportBase
+	}
+	return min(reportBase+reportPerRun*len(l.exp.Arms)*l.exp.Runs, maxJobMinutes)
+}
+
 // load reads an experiment file and, from root (buggrit's checkout), its
 // benchmark and base config, and merges each arm's overlay.
 func load(root, path string) (*loaded, error) {
@@ -185,6 +204,7 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 	if l.bm != nil {
 		say(stdout, "benchmark %s: %d known defects (%s); judge %s %s\n", l.bm.Name, len(l.bm.Defects), l.hash, l.exp.Judge.Provider, l.exp.Judge.Model)
 	}
+	say(stdout, "report timeout %dm\n", l.reportTimeout())
 	for i := range l.exp.Arms {
 		a := &l.exp.Arms[i]
 		say(stdout, "arm %s: ref %s, label %s, job timeout %dm\n", a.Name, a.Ref, l.exp.Label(a.Name), l.timeouts[a.Name])

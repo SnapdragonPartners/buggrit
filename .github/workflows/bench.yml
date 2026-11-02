@@ -41,6 +41,7 @@ jobs:
     outputs:
       matrix: ${{ steps.prepare.outputs.matrix }}
       parallel: ${{ steps.prepare.outputs.parallel }}
+      report_timeout: ${{ steps.prepare.outputs.report_timeout }}
       replay: ${{ steps.prepare.outputs.replay }}
     steps:
       - name: Check out the harness
@@ -190,7 +191,8 @@ jobs:
     needs: [prepare, review]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Grows with the runs to judge (cmd/buggrit-bench's reportTimeout).
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.report_timeout) }}
     steps:
       - name: Check out the harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

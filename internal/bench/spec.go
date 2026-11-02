@@ -212,7 +212,7 @@ func ParseExperiment(data []byte) (*Experiment, error) {
 		errs = append(errs, errors.New("parallel must be at least 1"))
 	}
 	if e.Issue < 0 {
-		errs = append(errs, errors.New("issue must be a positive number"))
+		errs = append(errs, errors.New("issue must not be negative; 0 or unset means no comment"))
 	}
 	errs = append(errs, e.validateArms()...)
 	if n := len(e.Arms) * e.Runs; n > MaxJobs {
