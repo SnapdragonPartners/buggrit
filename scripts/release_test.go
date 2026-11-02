@@ -105,14 +105,7 @@ func newRepo(t *testing.T) *repo {
 // it would aim the fixture's git init and the scripts at the real repo.
 func isolatedEnv(t *testing.T) []string {
 	t.Helper()
-	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output() //nolint:noctx // a test of local scripts
-	if err != nil {
-		t.Fatalf("git rev-parse --local-env-vars: %v", err)
-	}
-	local := map[string]bool{}
-	for _, name := range strings.Fields(string(out)) {
-		local[name] = true
-	}
+	local := localGitVars(t)
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
@@ -121,6 +114,20 @@ func isolatedEnv(t *testing.T) []string {
 		}
 	}
 	return env
+}
+
+// localGitVars is the set of names git rev-parse --local-env-vars prints.
+func localGitVars(t *testing.T) map[string]bool {
+	t.Helper()
+	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output() //nolint:noctx // a test of local scripts
+	if err != nil {
+		t.Fatalf("git rev-parse --local-env-vars: %v", err)
+	}
+	local := map[string]bool{}
+	for _, name := range strings.Fields(string(out)) {
+		local[name] = true
+	}
+	return local
 }
 
 func (r *repo) git(dir string, args ...string) string {
@@ -539,7 +546,8 @@ func TestMoveMajors(t *testing.T) {
 }
 
 // A pre-push hook in a linked worktree runs the tests with an absolute GIT_DIR
-// naming the real repo. The fixture must not touch it.
+// naming the real repo. Neither the fixture's git nor the scripts it runs
+// (both use r.env) may touch it.
 func TestRepoIgnoresInheritedGitDir(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found")
@@ -563,6 +571,12 @@ func TestRepoIgnoresInheritedGitDir(t *testing.T) {
 	t.Setenv("GIT_DIR", filepath.Join(outer, ".git"))
 
 	r := newRepo(t)
+	local := localGitVars(t)
+	for _, kv := range r.env {
+		if name, _, _ := strings.Cut(kv, "="); local[name] {
+			t.Errorf("r.env keeps %s, which r.git and r.run would inherit", kv)
+		}
+	}
 	r.write("x.txt", "x\n")
 	r.commit("x")
 
