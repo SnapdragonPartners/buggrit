@@ -158,7 +158,7 @@ func TestAttemptsNameTheirCall(t *testing.T) {
 	}}
 	chain := middleware.RecommendedChat(fake, middleware.RecommendedConfig{
 		Observer: attemptObserver{rec},
-		Retry:    middleware.RetryConfig{MaxAttempts: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond},
+		Retry:    &middleware.RetryConfig{MaxAttempts: 3, InitialDelay: time.Millisecond, MaxDelay: time.Millisecond},
 	})
 	client := rec.Session("verify").Chat(chain)
 	if _, err := client.Complete(context.Background(), llms.ChatRequest{Messages: []llms.Message{llms.UserText("hi")}}); err != nil {
