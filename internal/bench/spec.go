@@ -81,6 +81,14 @@ type Location struct {
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
+// The rules, as errors say them: nameRule for names (experiments, arms,
+// benchmarks), which can be in branch names; idRule for defect IDs, which
+// are plain slugs.
+const (
+	idRule   = "must be lowercase letters, digits, '.', '_' or '-', starting with a letter or digit"
+	nameRule = idRule + ", without '..' or a trailing '.' or '.lock'"
+)
+
 // validName checks a name against nameRE and git's rules for a ref
 // component, since an experiment's name is in its replay's branches: no
 // "..", and no trailing "." or ".lock".
@@ -98,7 +106,7 @@ func ParseBenchmark(data []byte) (*Benchmark, string, error) {
 	}
 	var errs []error
 	if !validName(b.Name) {
-		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'"))
+		errs = append(errs, errors.New("name "+nameRule))
 	}
 	errs = append(errs, b.validate("target")...)
 	if len(b.Defects) == 0 {
@@ -119,8 +127,8 @@ func validateDefects(defects []Defect) []error {
 		d := &defects[i]
 		f := fmt.Sprintf("defects[%d]", i)
 		switch {
-		case !validName(d.ID):
-			errs = append(errs, fmt.Errorf("%s.id must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'", f))
+		case !nameRE.MatchString(d.ID):
+			errs = append(errs, fmt.Errorf("%s.id %s", f, idRule))
 		case seen[d.ID]:
 			errs = append(errs, fmt.Errorf("%s.id %q is repeated", f, d.ID))
 		}
@@ -209,7 +217,7 @@ func ParseExperiment(data []byte) (*Experiment, error) {
 	}
 	var errs []error
 	if !validName(e.Name) {
-		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'"))
+		errs = append(errs, errors.New("name "+nameRule))
 	}
 	errs = append(errs, e.validateSubject()...)
 	if e.Runs < 1 || e.Runs > maxRuns {
@@ -270,7 +278,7 @@ func (e *Experiment) validateArms() []error {
 		}
 		switch {
 		case !validName(a.Name):
-			errs = append(errs, fmt.Errorf("arms[%d].name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'", i))
+			errs = append(errs, fmt.Errorf("arms[%d].name %s", i, nameRule))
 		case seen[a.Name]:
 			errs = append(errs, fmt.Errorf("arms[%d].name %q is repeated", i, a.Name))
 		}

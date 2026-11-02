@@ -109,6 +109,21 @@ func TestParseBenchmark(t *testing.T) {
 
 const judgeModel = `{"provider": "openai-compatible", "base_url": "https://gw.example/v1", "model": "judge-1", "api_key_env": "K"}`
 
+// Names follow git's rules for a ref component, since an experiment's is
+// in its replay's branches.
+func TestValidName(t *testing.T) {
+	for _, s := range []string{"a", "a-1", "v1.0", "deepseek_4.1"} {
+		if !validName(s) {
+			t.Errorf("validName(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"", "a..b", "a.", "a.lock", ".a", "_a", "-a", "A", "a b", "a/b"} {
+		if validName(s) {
+			t.Errorf("validName(%q) = true", s)
+		}
+	}
+}
+
 func TestParseExperimentDefaults(t *testing.T) {
 	e, err := ParseExperiment([]byte(`{"name": "x", "benchmark": "bench/b.json", "judge": ` + judgeModel + `, "arms": [{"name": "a"}, {"name": "b", "ref": "exp/tight-prompt"}]}`))
 	if err != nil {
@@ -132,6 +147,8 @@ func TestParseExperimentErrors(t *testing.T) {
 		{"bad judge", `{"name": "x", "benchmark": "b.json", "judge": {"provider": "nope", "model": "m"}, "arms": [{"name": "a"}]}`, "judge:"},
 		{"no arms", `{"name": "x", ` + target + `, "arms": []}`, "arms: at least one"},
 		{"repeated arm", `{"name": "x", ` + target + `, "arms": [{"name": "a"}, {"name": "a"}]}`, `"a" is repeated`},
+		{"name not a ref", `{"name": "x.lock", ` + target + `, "arms": [{"name": "a"}]}`, "name must be"},
+		{"arm not a ref", `{"name": "x", ` + target + `, "arms": [{"name": "a..b"}]}`, "arms[0].name must be"},
 		{"bad ref", `{"name": "x", ` + target + `, "arms": [{"name": "a", "ref": "--upload-pack=x"}]}`, "is not a ref"},
 		{"too many runs", `{"name": "x", ` + target + `, "runs": 99, "arms": [{"name": "a"}]}`, "runs must be"},
 		{"unknown key", `{"name": "x", ` + target + `, "arms": [{"name": "a"}], "model": "m"}`, "unknown field"},
