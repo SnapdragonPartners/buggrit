@@ -159,8 +159,10 @@ jobs:
 2. **review**, one job per arm × run, at most `parallel` at once: build the
    arm's ref, write its merged config, and run `buggrit review --dry-run`
    on the replay with the arm's label. The database is required; a run
-   that couldn't record would be wasted, so each job checks its own login
-   (`buggrit db status`) before the review. An incomplete pass is a result,
+   that couldn't record would be wasted, so each job checks, with the
+   arm's own `buggrit db status`, that its login works and the schemas
+   are what the arm's binary needs (an arm's branch may add a
+   migration). An incomplete pass is a result,
    not a failure. Each job's timeout is the arm's pass deadline plus 15
    minutes.
 3. **report** reads the runs back by workflow run and attempt, has the

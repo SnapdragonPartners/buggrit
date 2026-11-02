@@ -416,6 +416,24 @@ func TestReportWithoutJudgeKey(t *testing.T) {
 	}
 }
 
+// A run whose label names no arm is still judged, with a warning, so it
+// can't be dropped silently.
+func TestReportJudgesAnUnattributedRun(t *testing.T) {
+	fake := githubtest.New(t, "o/r")
+	db := newMemDB()
+	db.runs = append(db.runs, bench.RunResult{ID: "r4", Label: "renamed/deepseek", HasResult: true, Done: true})
+	judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
+	replay := `{"repo": "o/r", "pr": 11, "base": "bench/t/base", "head": "bench/t/head"}`
+	var stdout, stderr bytes.Buffer
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay}
+	if code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if db.scores["r4"] == nil || !strings.Contains(stderr.String(), `run r4's label "renamed/deepseek" names none of the experiment's arms`) {
+		t.Fatalf("stderr %s\nscores %+v", stderr.String(), db.scores)
+	}
+}
+
 func TestReportUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cases := [][]string{

@@ -160,12 +160,22 @@ jobs:
           echo "::error::the database isn't available, so this run would record nothing: $DB_ERROR"
           exit 1
 
-      # The Auth Proxy started; check this job's login works too (prepare
-      # checked the schema and the grants).
-      - name: Check the database login
+      # The Auth Proxy started; check this job's login works, and that the
+      # schemas are what the arm's own binary needs (an arm can be a branch
+      # that adds a migration). A review that can't use the database
+      # carries on without it, recording nothing. `db status` exits 0 for a
+      # schema that's behind, so its wording is checked; every ref an arm
+      # may use (at or after #49) says "this binary needs" and "dirty".
+      - name: Check the database for this arm
         env:
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
-        run: '"$RUNNER_TEMP/buggrit" db status'
+        run: |
+          status=$("$RUNNER_TEMP/buggrit" db status)
+          printf '%s\n' "$status"
+          if grep -qE 'this binary needs|dirty' <<<"$status"; then
+            echo "::error::the database isn't migrated for this arm's buggrit, so this run would record nothing"
+            exit 1
+          fi
 
       # An incomplete pass exits 1; that's a result to report, not a failed
       # run, so the step's exit code is ignored and the telemetry says how

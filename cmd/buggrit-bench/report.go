@@ -147,11 +147,18 @@ func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowR
 // the judge fails on is reported and left unscored, so a later report can
 // try again; the others are still scored.
 func judgeRuns(ctx context.Context, d deps, db benchDB, rec *bench.ExperimentRecord, runs []bench.RunResult, scores map[string]*bench.RunScore, getenv func(string) string, stderr io.Writer) error {
-	var todo []*bench.RunResult
+	todo := make([]*bench.RunResult, 0, len(runs))
 	for i := range runs {
-		if runs[i].HasResult && runs[i].Arm != "" && scores[runs[i].ID] == nil {
-			todo = append(todo, &runs[i])
+		if !runs[i].HasResult || scores[runs[i].ID] != nil {
+			continue
 		}
+		// Runs are this workflow run's, so one whose label names no arm is
+		// still this experiment's (a hand-set label, say): judge it, and
+		// say it's reported apart from the arms.
+		if runs[i].Arm == "" {
+			say(stderr, "buggrit-bench: run %s's label %q names none of the experiment's arms; it's judged and reported after them\n", runs[i].ID, runs[i].Label)
+		}
+		todo = append(todo, &runs[i])
 	}
 	// The judge's client is made only when a run has findings: a run
 	// without any is scored without a call, so it doesn't need the judge
