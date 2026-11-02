@@ -157,8 +157,8 @@ type Experiment struct {
 	// (default 2).
 	Runs     int `json:"runs,omitempty"`
 	Parallel int `json:"parallel,omitempty"`
-	// Issue, if set, gets the report as a comment, in the target's
-	// repository.
+	// Issue, if set, gets the report as a comment, in the repository the
+	// harness runs in (--issue-repo, default $GITHUB_REPOSITORY).
 	Issue int `json:"issue,omitempty"`
 }
 

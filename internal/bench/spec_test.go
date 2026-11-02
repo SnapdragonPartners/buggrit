@@ -193,6 +193,7 @@ func TestMerge(t *testing.T) {
 		{"not a stage", baseConfig, `{"models": {"judge": {"model": "x"}}}`, "models.judge is not a stage"},
 		{"unknown model field", baseConfig, `{"models": {"find": {"temperature": 1}}}`, "models.find.temperature can't be overlaid"},
 		{"invalid result", baseConfig, `{"models": {"find": {"reasoning_effort": "extreme"}}}`, "merged config"},
+		{"null base", "null", `{"models": {"find": {"model": "x"}}}`, "must be a JSON object"},
 		{"trailing data in base", baseConfig + ` {"version": 2}`, `{}`, "trailing data"},
 		{"trailing data in overlay", baseConfig, `{} x`, "trailing data"},
 		{"telemetry off in base", strings.Replace(baseConfig, `"version": 1,`, `"version": 1, "telemetry": {"enabled": false},`, 1), `{}`, "telemetry is off"},

@@ -32,6 +32,9 @@ func Merge(base, overlay []byte) ([]byte, error) {
 	if err := decodeNumbers(base, &b); err != nil {
 		return nil, fmt.Errorf("base config: %w", err)
 	}
+	if b == nil {
+		return nil, errors.New("base config: must be a JSON object")
+	}
 	if len(bytes.TrimSpace(overlay)) > 0 && !bytes.Equal(bytes.TrimSpace(overlay), []byte("null")) {
 		var o map[string]any
 		if err := decodeNumbers(overlay, &o); err != nil {
