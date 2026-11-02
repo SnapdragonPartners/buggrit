@@ -74,6 +74,10 @@ func TestParseBenchmark(t *testing.T) {
 	if err != nil || len(b.Defects) != 2 || b.Repo != "o/r" || hash == "" {
 		t.Fatalf("ParseBenchmark = %+v, %q, %v", b, hash, err)
 	}
+	// A defect ID is a plain slug, never a ref: ".." is fine in one.
+	if _, _, err := ParseBenchmark(benchmarkJSON(func(m map[string]any) { defect(m, 0)["id"] = "a..b" })); err != nil {
+		t.Errorf("an id with '..': %v", err)
+	}
 	// The hash is of the bytes: any edit makes a new benchmark.
 	_, hash2, _ := ParseBenchmark(append(benchmarkJSON(nil), '\n'))
 	if hash2 == hash {
@@ -95,6 +99,8 @@ func TestParseBenchmark(t *testing.T) {
 		{"trailing dot", func(m map[string]any) { m["name"] = "a." }, "name must be"},
 		{"lock suffix", func(m map[string]any) { m["name"] = "a.lock" }, "name must be"},
 		{"repeated defect", func(m map[string]any) { defect(m, 1)["id"] = "d1" }, `"d1" is repeated`},
+		{"id with a space", func(m map[string]any) { defect(m, 0)["id"] = "Has Space" }, "id must be lowercase letters, digits, '.', '_' or '-', starting with a letter or digit"},
+		{"id with a leading underscore", func(m map[string]any) { defect(m, 0)["id"] = "_lead" }, "id must be"},
 		{"half range", func(m map[string]any) {
 			defect(m, 0)["locations"] = []any{map[string]any{"path": "a.go", "start": 3}}
 		}, "both set or both 0"},

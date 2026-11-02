@@ -78,8 +78,10 @@ A benchmark is a checked-in file, `bench/<name>.json`:
   with the title and body, so the model sees what the original PR's
   reviewers saw. The target can be in another repository the App is
   installed in.
-- Each defect has a stable `id` (scores refer to it; lowercase letters,
-  digits, `.`, `_` and `-`, starting with a letter or digit), who raised it, a
+- Each defect has a stable `id`, unique within the benchmark (scores are
+  keyed by run and defect ID, and overrides select by it; lowercase
+  letters, digits, `.`, `_` and `-`, starting with a letter or digit), who
+  raised it, a
   one-line description, and where it is **at `head`**: a line range, or a
   path alone for the whole file. A defect that spans files (a class, or a
   doc that drifted from code) lists every place.
