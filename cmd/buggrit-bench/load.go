@@ -95,6 +95,20 @@ func (l *loaded) target() *bench.Target {
 	return l.exp.Target
 }
 
+// databaseURL is the database's URL from the environment. The workflow's
+// database action sets BUGGRIT_DATABASE_ERROR when it couldn't connect;
+// that reason is the error to show.
+func databaseURL(getenv func(string) string) (string, error) {
+	if e := getenv("BUGGRIT_DATABASE_ERROR"); e != "" {
+		return "", fmt.Errorf("the database couldn't be set up: %s", e)
+	}
+	url := getenv("BUGGRIT_DATABASE_URL")
+	if url == "" {
+		return "", usagef("BUGGRIT_DATABASE_URL is not set; the results are recorded in the database")
+	}
+	return url, nil
+}
+
 // jobOverhead is what a review job needs beyond its pass deadline: setup,
 // the build and publishing.
 const jobOverhead = 15 * time.Minute

@@ -46,14 +46,16 @@ func (r *report) w(format string, args ...any) { fmt.Fprintf(&r.sb, format, args
 // defect fared, the extra findings and each run's findings. Averages are
 // taken only within an identity group (docs/telemetry.md, "Identity").
 func Report(in *ReportInput) string {
-	r := &report{e: in.Experiment, runs: numberRuns(in), scored: in.Scores != nil}
+	// Scores mean something only against their benchmark, so every scored
+	// section can rely on it.
+	r := &report{e: in.Experiment, runs: numberRuns(in), scored: in.Scores != nil && in.Experiment.Benchmark != nil}
 	r.groups = groupRuns(r.runs)
 	r.keys = sortedGroups(r.e.Experiment, r.groups)
 	r.header(in.RunURL)
 	r.arms()
 	r.eachRun()
 	r.byArm()
-	if r.e.Benchmark != nil && r.scored {
+	if r.scored {
 		writeDefects(&r.sb, r.e.Benchmark, r.runs)
 		writeExtras(&r.sb, r.runs)
 	}

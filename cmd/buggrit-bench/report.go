@@ -37,12 +37,9 @@ func runReport(ctx context.Context, d deps, args []string, getenv func(string) s
 	case (*path == "") != (*replayJSON == ""):
 		return usagef("--experiment and --replay go together; give neither to regenerate a report")
 	}
-	if e := getenv("BUGGRIT_DATABASE_ERROR"); e != "" {
-		return fmt.Errorf("the database couldn't be set up: %s", e)
-	}
-	url := getenv("BUGGRIT_DATABASE_URL")
-	if url == "" {
-		return usagef("BUGGRIT_DATABASE_URL is not set; the results are in the database")
+	url, err := databaseURL(getenv)
+	if err != nil {
+		return err
 	}
 	db, err := d.openStore(ctx, url)
 	if err != nil {

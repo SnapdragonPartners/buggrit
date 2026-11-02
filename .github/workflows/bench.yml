@@ -83,6 +83,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
           EXPERIMENT: ${{ inputs.experiment }}
         run: |
           printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"

@@ -92,9 +92,9 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 	if err != nil {
 		return err
 	}
-	dbURL := getenv("BUGGRIT_DATABASE_URL")
-	if dbURL == "" {
-		return usagef("BUGGRIT_DATABASE_URL is not set; the runs record their results there")
+	dbURL, err := databaseURL(getenv)
+	if err != nil {
+		return err
 	}
 	gh := d.github(token, f.apiURL)
 	if rerr := checkRefs(ctx, gh, f.buggritRepo, l.exp.Arms); rerr != nil {
@@ -111,7 +111,7 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 	if err != nil {
 		return fmt.Errorf("open the replay: %w", err)
 	}
-	say(stderr, "buggrit-bench: replay %s#%d (%s → %s)\n", replay.Repo, replay.PR, replay.Head, replay.Base)
+	say(stderr, "buggrit-bench: replay %s#%d (%s...%s)\n", replay.Repo, replay.PR, replay.Base, replay.Head)
 
 	include := make([]matrixEntry, 0, len(l.exp.Arms)*l.exp.Runs)
 	for i := range l.exp.Arms {

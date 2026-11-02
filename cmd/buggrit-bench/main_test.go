@@ -171,8 +171,21 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 		}
 		return prepareEnv("")(k)
 	}
-	if code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), args, noDB, &out, &errb); code != 2 || len(fake.Branches()) != 0 {
+	if code = run(context.Background(), fakeDeps(fake, newMemDB(), nil), args, noDB, &out, &errb); code != 2 || len(fake.Branches()) != 0 {
 		t.Fatalf("without a database: exit %d", code)
+	}
+	// The database action's reason is reported as it is, not as a usage
+	// error.
+	failed := func(k string) string {
+		if k == "BUGGRIT_DATABASE_ERROR" {
+			return "the identity provider refused the token"
+		}
+		return noDB(k)
+	}
+	errb.Reset()
+	code = run(context.Background(), fakeDeps(fake, newMemDB(), nil), args, failed, &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "the database couldn't be set up: the identity provider refused the token") || len(fake.Branches()) != 0 {
+		t.Fatalf("a failed database action: exit %d: %s", code, errb.String())
 	}
 }
 

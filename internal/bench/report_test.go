@@ -162,7 +162,9 @@ func TestReportGolden(t *testing.T) {
 // Without a benchmark the report has no score columns or sections.
 func TestReportWithoutBenchmark(t *testing.T) {
 	in := reportInput(t)
-	in.Experiment.Benchmark, in.Experiment.Experiment.Judge, in.Scores = nil, nil, nil
+	// Scores without their benchmark (a row whose benchmark is gone) are
+	// left out rather than read against nothing.
+	in.Experiment.Benchmark, in.Experiment.Experiment.Judge = nil, nil
 	in.Experiment.Experiment.Target = &Target{Repo: "o/r", Base: shaA, Head: shaB, Title: "T"}
 	got := Report(in)
 	for _, absent := range []string{"Recall", "Known defects", "Extra findings", "Judge:"} {
