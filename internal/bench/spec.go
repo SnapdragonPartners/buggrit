@@ -178,6 +178,9 @@ const (
 	DefaultRef        = "main"
 	DefaultBaseConfig = config.Path
 	maxRuns           = 20
+	// MaxJobs is GitHub Actions' limit on a matrix's jobs: an experiment
+	// runs arms × runs review jobs in one matrix.
+	MaxJobs = 256
 )
 
 // ParseExperiment decodes and validates an experiment strictly and fills
@@ -212,6 +215,9 @@ func ParseExperiment(data []byte) (*Experiment, error) {
 		errs = append(errs, errors.New("issue must be a positive number"))
 	}
 	errs = append(errs, e.validateArms()...)
+	if n := len(e.Arms) * e.Runs; n > MaxJobs {
+		errs = append(errs, fmt.Errorf("%d arms × %d runs is %d review jobs; a workflow's matrix allows %d", len(e.Arms), e.Runs, n, MaxJobs))
+	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("experiment: %w", err)
 	}

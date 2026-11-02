@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
 )
 
@@ -58,5 +59,24 @@ func TestGitHubReplayerOpenFailureCleansUp(t *testing.T) {
 	}
 	if b := fake.Branches(); len(b) != 0 {
 		t.Fatalf("branches left behind: %v", b)
+	}
+}
+
+// Only "Reference does not exist" means a branch is already gone; another
+// 422, such as a protected branch's refusal, is a failure.
+func TestGone(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{&github.APIError{Status: http.StatusNotFound, Message: "Not Found"}, true},
+		{&github.APIError{Status: http.StatusUnprocessableEntity, Message: "Reference does not exist"}, true},
+		{&github.APIError{Status: http.StatusUnprocessableEntity, Message: "Cannot delete this protected branch"}, false},
+		{&github.APIError{Status: http.StatusForbidden, Message: "Resource not accessible by integration"}, false},
+	}
+	for _, c := range cases {
+		if got := gone(c.err); got != c.want {
+			t.Errorf("gone(%v) = %v, want %v", c.err, got, c.want)
+		}
 	}
 }

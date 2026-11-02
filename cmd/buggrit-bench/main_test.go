@@ -75,7 +75,7 @@ func fakeDeps(fake *githubtest.Server, db *memDB, judge llms.ChatClient) deps {
 }
 
 func prepareEnv(output string) func(string) string {
-	return env(map[string]string{"GITHUB_TOKEN": githubtest.DefaultToken, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "SnapdragonPartners/buggrit", "GITHUB_OUTPUT": output})
+	return env(map[string]string{"GITHUB_TOKEN": githubtest.DefaultToken, "GITHUB_RUN_ID": "42", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_REPOSITORY": "SnapdragonPartners/buggrit", "GITHUB_OUTPUT": output, "BUGGRIT_DATABASE_URL": "postgres://db"})
 }
 
 func TestPrepare(t *testing.T) {
@@ -84,7 +84,7 @@ func TestPrepare(t *testing.T) {
 	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareIdentical})
 	output := filepath.Join(t.TempDir(), "output")
 	var out, errb bytes.Buffer
-	code := run(context.Background(), fakeDeps(fake, nil, nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(output), &out, &errb)
+	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(output), &out, &errb)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
@@ -141,9 +141,34 @@ func TestPrepareRefusesAnOldRef(t *testing.T) {
 	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
 	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareDiverged})
 	var out, errb bytes.Buffer
-	code := run(context.Background(), fakeDeps(fake, nil, nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(""), &out, &errb)
+	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(""), &out, &errb)
 	if code != 1 || !strings.Contains(errb.String(), "doesn't contain 216d2fa") || len(fake.Branches()) != 0 {
 		t.Fatalf("exit %d, branches %v: %s", code, fake.Branches(), errb.String())
+	}
+}
+
+// A database the runs couldn't record to stops the experiment before the
+// replay is opened, so no model time is spent.
+func TestPrepareChecksTheDatabase(t *testing.T) {
+	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
+	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
+	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareAhead})
+	db := newMemDB()
+	db.writeErr = errors.New("this login can't write telemetry")
+	var out, errb bytes.Buffer
+	args := []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}
+	code := run(context.Background(), fakeDeps(fake, db, nil), args, prepareEnv(t.TempDir()+"/out"), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "the database: this login can't write telemetry") || len(fake.Branches()) != 0 {
+		t.Fatalf("exit %d, branches %v: %s", code, fake.Branches(), errb.String())
+	}
+	noDB := func(k string) string {
+		if k == "BUGGRIT_DATABASE_URL" {
+			return ""
+		}
+		return prepareEnv("")(k)
+	}
+	if code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), args, noDB, &out, &errb); code != 2 || len(fake.Branches()) != 0 {
+		t.Fatalf("without a database: exit %d", code)
 	}
 }
 
@@ -154,7 +179,7 @@ func TestPrepareClosesTheReplayOnFailure(t *testing.T) {
 	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
 	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareAhead})
 	var out, errb bytes.Buffer
-	code := run(context.Background(), fakeDeps(fake, nil, nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(t.TempDir()), &out, &errb)
+	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(t.TempDir()), &out, &errb)
 	if code != 1 || len(fake.Branches()) != 0 || !fake.PR(1).Closed {
 		t.Fatalf("exit %d, branches %v: %s", code, fake.Branches(), errb.String())
 	}
@@ -187,10 +212,13 @@ type memDB struct {
 	experiment *bench.ExperimentRecord
 	benchmarks map[string]*bench.Benchmark
 	runs       []bench.RunResult
+	writeErr   error
 	mu         sync.Mutex
 }
 
 func (m *memDB) Close() error { return nil }
+
+func (m *memDB) CheckWrites(context.Context) error { return m.writeErr }
 
 func (m *memDB) SaveBenchmark(_ context.Context, hash string, b *bench.Benchmark) error {
 	m.mu.Lock()
@@ -346,6 +374,28 @@ func TestReportJudgeFailure(t *testing.T) {
 	// r2 has no findings, so it needs no judge and is scored.
 	if !strings.Contains(stderr.String(), "judge down") || db.scores["r1"] != nil || db.scores["r2"] == nil || !strings.Contains(stdout.String(), "not scored") {
 		t.Fatalf("stderr %s\nscores %+v\n%s", stderr.String(), db.scores, stdout.String())
+	}
+}
+
+// Without the judge's key, a run with no findings is still scored: it
+// needs no call.
+func TestReportWithoutJudgeKey(t *testing.T) {
+	fake := githubtest.New(t, "o/r")
+	db := newMemDB()
+	replay := `{"repo": "o/r", "pr": 11, "base": "bench/t/base", "head": "bench/t/head"}`
+	noKey := func(k string) string {
+		if k == "JUDGE_KEY" {
+			return ""
+		}
+		return reportEnv("")(k)
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay}
+	if code := run(context.Background(), fakeDeps(fake, db, nil), args, noKey, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wrong judge or key") || !strings.Contains(stderr.String(), "1 run(s) left unscored") || db.scores["r1"] != nil || db.scores["r2"] == nil {
+		t.Fatalf("stderr %s\nscores %+v", stderr.String(), db.scores)
 	}
 }
 

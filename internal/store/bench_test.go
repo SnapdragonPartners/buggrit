@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,8 +167,11 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	exec(t, dsn,
 		"UPDATE buggrit.score SET override_verdict = 'found', override_note = 'it is the same bug' WHERE run_id = '"+run1+"' AND defect = 'd1'",
 		"UPDATE buggrit.extra_finding SET override_verdict = 'false' WHERE run_id = '"+run1+"' AND finding = 2")
-	// Scoring again changes nothing, so the override stays.
-	again := &bench.RunScore{RunID: run1, Defects: []bench.DefectScore{{Defect: "d1", Verdict: bench.Missed}}}
+	// Scoring again changes nothing, so the override stays, and none of
+	// the second judgment is saved: its extra would count finding 1 as
+	// both a match and an extra.
+	again := &bench.RunScore{RunID: run1, Defects: []bench.DefectScore{{Defect: "d1", Verdict: bench.Missed}},
+		Extras: []bench.ExtraScore{{Finding: 1, Verdict: bench.False}}}
 	if err = b.SaveScore(ctx, rec.ID, again, r.Findings); err != nil {
 		t.Fatal(err)
 	}
@@ -196,4 +202,35 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	checkDocQueries(t, db, run1, true)
+}
+
+// CheckWrites passes for the runtime role's grants (docs/database.md) and
+// names what a login can't write.
+func TestBenchCheckWrites(t *testing.T) {
+	dsn := newDatabase(t)
+	migrateAll(t, dsn)
+	ctx := context.Background()
+	role := fmt.Sprintf("buggrit_bench_%d", time.Now().UnixNano())
+	exec(t, dsn,
+		"CREATE ROLE "+role+" LOGIN",
+		"GRANT USAGE ON SCHEMA buggrit, bucket TO "+role,
+		"GRANT SELECT ON ALL TABLES IN SCHEMA buggrit, bucket TO "+role)
+	t.Cleanup(func() {
+		exec(t, dsn, "DROP OWNED BY "+role, "DROP ROLE "+role)
+	})
+	u, _ := url.Parse(dsn)
+	u.User = url.User(role)
+	s, err := OpenBench(ctx, u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	err = s.Bench().CheckWrites(ctx)
+	if err == nil || !strings.Contains(err.Error(), "can't write telemetry") || !strings.Contains(err.Error(), "or scores") {
+		t.Fatalf("CheckWrites as a read-only login = %v", err)
+	}
+	exec(t, dsn, "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA buggrit, bucket TO "+role)
+	if err := s.Bench().CheckWrites(ctx); err != nil {
+		t.Fatalf("CheckWrites with the runtime grants = %v", err)
+	}
 }

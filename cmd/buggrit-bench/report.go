@@ -156,16 +156,28 @@ func judgeRuns(ctx context.Context, d deps, db benchDB, rec *bench.ExperimentRec
 			todo = append(todo, &runs[i])
 		}
 	}
-	if len(todo) == 0 {
-		return nil
-	}
-	chat, err := d.judge(rec.Experiment.Judge, getenv)
-	if err != nil {
-		return err
-	}
-	j := &bench.Judge{Chat: chat}
-	var errs []error
+	// The judge's client is made only when a run has findings: a run
+	// without any is scored without a call, so it doesn't need the judge
+	// or its key.
+	var (
+		j        bench.Judge
+		judgeErr error
+		errs     []error
+		unscored int
+	)
 	for _, r := range todo {
+		if len(r.Findings) > 0 && j.Chat == nil {
+			if judgeErr == nil {
+				if j.Chat, judgeErr = d.judge(rec.Experiment.Judge, getenv); judgeErr != nil {
+					say(stderr, "buggrit-bench: %v\n", judgeErr)
+					errs = append(errs, judgeErr)
+				}
+			}
+			if judgeErr != nil {
+				unscored++
+				continue
+			}
+		}
 		s, err := j.Score(ctx, rec.Benchmark, r)
 		if err == nil {
 			err = db.SaveScore(ctx, rec.ID, s, r.Findings)
@@ -173,12 +185,13 @@ func judgeRuns(ctx context.Context, d deps, db benchDB, rec *bench.ExperimentRec
 		if err != nil {
 			say(stderr, "buggrit-bench: %v\n", err)
 			errs = append(errs, err)
+			unscored++
 			continue
 		}
 		say(stderr, "buggrit-bench: scored run %s (%s): recall %.2f\n", r.ID, r.Label, s.Recall())
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("%d run(s) left unscored: %w", len(errs), errors.Join(errs...))
+	if unscored > 0 {
+		return fmt.Errorf("%d run(s) left unscored: %w", unscored, errors.Join(errs...))
 	}
 	return nil
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 )
@@ -97,10 +99,11 @@ func (g *GitHubReplayer) Close(ctx context.Context, r *Replay) error {
 }
 
 // gone reports a branch that's already deleted: GitHub answers 422
-// "Reference does not exist" (or 404).
+// "Reference does not exist" (or 404). Any other 422, such as a refusal
+// to delete a protected branch, is a failure.
 func gone(err error) bool {
 	var e *github.APIError
-	return github.IsNotFound(err) || (errors.As(err, &e) && e.Status == 422)
+	return github.IsNotFound(err) || (errors.As(err, &e) && e.Status == http.StatusUnprocessableEntity && strings.Contains(e.Message, "Reference does not exist"))
 }
 
 func short(sha string) string {

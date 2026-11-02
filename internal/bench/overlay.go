@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 
@@ -58,7 +59,13 @@ func Merge(base, overlay []byte) ([]byte, error) {
 func decodeNumbers(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	return dec.Decode(v) //nolint:wrapcheck // the caller names what it was decoding
+	if err := dec.Decode(v); err != nil {
+		return err //nolint:wrapcheck // the caller names what it was decoding
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("trailing data after the JSON object")
+	}
+	return nil
 }
 
 func checkOverlay(o map[string]any) error {

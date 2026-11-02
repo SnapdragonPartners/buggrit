@@ -2,6 +2,7 @@ package bench
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -131,6 +132,7 @@ func TestParseExperimentErrors(t *testing.T) {
 		{"bad ref", `{"name": "x", ` + target + `, "arms": [{"name": "a", "ref": "--upload-pack=x"}]}`, "is not a ref"},
 		{"too many runs", `{"name": "x", ` + target + `, "runs": 99, "arms": [{"name": "a"}]}`, "runs must be"},
 		{"unknown key", `{"name": "x", ` + target + `, "arms": [{"name": "a"}], "model": "m"}`, "unknown field"},
+		{"too many jobs", `{"name": "x", ` + target + `, "runs": 20, "arms": [` + manyArms(13) + `]}`, "260 review jobs; a workflow's matrix allows 256"},
 		{"trailing", `{"name": "x", ` + target + `, "arms": [{"name": "a"}]} {}`, "trailing data"},
 	}
 	for _, c := range cases {
@@ -141,6 +143,15 @@ func TestParseExperimentErrors(t *testing.T) {
 	if _, err := ParseExperiment([]byte(`{"name": "x", ` + target + `, "arms": [{"name": "a"}]}`)); err != nil {
 		t.Errorf("a target without a judge: %v", err)
 	}
+}
+
+// manyArms is n arms, a0 to a(n-1), as JSON array elements.
+func manyArms(n int) string {
+	arms := make([]string, n)
+	for i := range arms {
+		arms[i] = fmt.Sprintf(`{"name": "a%d"}`, i)
+	}
+	return strings.Join(arms, ", ")
 }
 
 const baseConfig = `{
@@ -182,6 +193,8 @@ func TestMerge(t *testing.T) {
 		{"not a stage", baseConfig, `{"models": {"judge": {"model": "x"}}}`, "models.judge is not a stage"},
 		{"unknown model field", baseConfig, `{"models": {"find": {"temperature": 1}}}`, "models.find.temperature can't be overlaid"},
 		{"invalid result", baseConfig, `{"models": {"find": {"reasoning_effort": "extreme"}}}`, "merged config"},
+		{"trailing data in base", baseConfig + ` {"version": 2}`, `{}`, "trailing data"},
+		{"trailing data in overlay", baseConfig, `{} x`, "trailing data"},
 		{"telemetry off in base", strings.Replace(baseConfig, `"version": 1,`, `"version": 1, "telemetry": {"enabled": false},`, 1), `{}`, "telemetry is off"},
 	}
 	for _, c := range bad {

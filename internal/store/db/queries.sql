@@ -89,6 +89,13 @@ WHERE r.repo = @repo AND r.pr = @pr AND r.dry_run
   AND r.meta->'workflow_run'->>'attempt' = @attempt::text
 ORDER BY r.label, r.started_at;
 
+-- name: LockRun :exec
+-- Serializes judgments of one run: two reports can't both save one.
+SELECT id FROM buggrit.run WHERE id = @run_id FOR NO KEY UPDATE;
+
+-- name: RunScored :one
+SELECT EXISTS (SELECT 1 FROM buggrit.score WHERE run_id = @run_id) AS scored;
+
 -- name: InsertScore :exec
 INSERT INTO buggrit.score (run_id, experiment_id, defect, verdict, finding, reasoning)
 VALUES (@run_id, @experiment_id, @defect, @verdict, sqlc.narg('finding'), @reasoning)
@@ -112,3 +119,11 @@ SELECT run_id, finding, verdict, reasoning,
 FROM buggrit.extra_finding
 WHERE experiment_id = @experiment_id
 ORDER BY run_id, finding;
+
+-- name: BenchPrivileges :one
+-- What a benchmark needs to write: the review runs' telemetry, and the
+-- harness's experiment and scores.
+SELECT has_table_privilege('buggrit.run', 'INSERT') AND has_table_privilege('buggrit.run', 'UPDATE')
+         AND has_table_privilege('buggrit.event', 'INSERT') AS telemetry,
+       has_table_privilege('buggrit.benchmark', 'INSERT') AND has_table_privilege('buggrit.experiment', 'INSERT')
+         AND has_table_privilege('buggrit.score', 'INSERT') AND has_table_privilege('buggrit.extra_finding', 'INSERT') AS scores;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -140,6 +141,26 @@ func (b benchStore) Runs(ctx context.Context, w bench.WorkflowRun, r *bench.Repl
 	return out, nil
 }
 
+// CheckWrites checks this login may write what a benchmark records: the
+// review runs' telemetry and the harness's scores.
+func (b benchStore) CheckWrites(ctx context.Context) error {
+	p, err := b.q.BenchPrivileges(ctx)
+	if err != nil {
+		return fmt.Errorf("read this login's privileges: %w", err)
+	}
+	var missing []string
+	if !p.Telemetry.Bool {
+		missing = append(missing, "telemetry (buggrit.run, buggrit.event)")
+	}
+	if !p.Scores.Bool {
+		missing = append(missing, "scores (buggrit.benchmark, experiment, score, extra_finding)")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("this login can't write %s; grant buggrit_runtime as docs/database.md says", strings.Join(missing, " or "))
+	}
+	return nil
+}
+
 // SaveScore writes a run's judgment in one transaction.
 func (b benchStore) SaveScore(ctx context.Context, experimentID string, s *bench.RunScore, findings []bench.Finding) error {
 	exp, err := uuid(experimentID)
@@ -152,6 +173,19 @@ func (b benchStore) SaveScore(ctx context.Context, experimentID string, s *bench
 	}
 	return pgx.BeginFunc(ctx, b.s.pool, func(tx pgx.Tx) error { //nolint:wrapcheck // fn's errors name the run; Begin and Commit's are pgx's, as is
 		q := b.q.WithTx(tx)
+		// A run is judged once: with the run locked, a judgment already
+		// saved (by another report) stands, and this one's rows, defects
+		// and extras alike, are dropped together.
+		if err := q.LockRun(ctx, run); err != nil {
+			return fmt.Errorf("lock run %s: %w", s.RunID, err)
+		}
+		scored, err := q.RunScored(ctx, run)
+		if err != nil {
+			return fmt.Errorf("read the score of run %s: %w", s.RunID, err)
+		}
+		if scored {
+			return nil
+		}
 		for i := range s.Defects {
 			d := &s.Defects[i]
 			if err := q.InsertScore(ctx, storedb.InsertScoreParams{

@@ -90,9 +90,16 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 	if err != nil {
 		return err
 	}
+	dbURL := getenv("BUGGRIT_DATABASE_URL")
+	if dbURL == "" {
+		return usagef("BUGGRIT_DATABASE_URL is not set; the runs record their results there")
+	}
 	gh := d.github(token, f.apiURL)
 	if rerr := checkRefs(ctx, gh, f.buggritRepo, l.exp.Arms); rerr != nil {
 		return rerr
+	}
+	if derr := checkDatabase(ctx, d, dbURL); derr != nil {
+		return derr
 	}
 
 	t := l.target()
@@ -122,6 +129,23 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 	if err != nil {
 		// Nothing downstream knows about the replay, so clean it up here.
 		return errors.Join(err, replayer.Close(context.WithoutCancel(ctx), replay)) //nolint:wrapcheck // each says what failed
+	}
+	return nil
+}
+
+// checkDatabase checks, before any model time is spent, that the database
+// takes this login, is migrated for the harness, and lets it write the
+// runs' telemetry and the scores. A review that can't use the database
+// carries on without it (design §6), so a run would otherwise record
+// nothing. Each review job also checks its own login.
+func checkDatabase(ctx context.Context, d deps, url string) error {
+	db, err := d.openStore(ctx, url)
+	if err != nil {
+		return fmt.Errorf("the database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.CheckWrites(ctx); err != nil {
+		return fmt.Errorf("the database: %w", err)
 	}
 	return nil
 }

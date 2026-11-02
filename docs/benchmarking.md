@@ -118,7 +118,8 @@ A benchmark is a checked-in file, `bench/<name>.json`:
   for model diversity here rather than in the arms: a judge from another
   family (GLM, or Claude) doesn't grade its own kind.
 - `runs` per arm, default 3: questions like "without losing recall" need
-  enough runs to see past the noise, and two is thin. `parallel` is how
+  enough runs to see past the noise, and two is thin. Arms × runs can be
+  at most 256, the jobs a workflow's matrix allows. `parallel` is how
   many reviews run at once, default 2, since the LunaRoute key allows 2
   requests in flight. With `BUGGRIT_RATE_LIMITS` set, the shared rate
   limit holds across runs anyway (design §9).
@@ -148,14 +149,18 @@ there ([database.md](database.md)). One experiment runs at a time. The
 jobs:
 
 1. **prepare** validates the experiment, checks every arm's ref contains
-   #49, and opens the replay: branches `bench/<experiment>/<run>-<attempt>/base`
+   #49, checks the database (it takes the workflow's login, is at v3, and
+   lets it write the runs' telemetry and the scores: a review that can't
+   use the database carries on without it, so a run would record nothing),
+   and opens the replay: branches `bench/<experiment>/<run>-<attempt>/base`
    and `.../head` at the target's commits, and a **draft** PR between them.
    `buggrit.yml` skips drafts, and CI runs only on PRs to `main`, so
    nothing else reviews it.
 2. **review**, one job per arm × run, at most `parallel` at once: build the
    arm's ref, write its merged config, and run `buggrit review --dry-run`
    on the replay with the arm's label. The database is required; a run
-   that couldn't record would be wasted. An incomplete pass is a result,
+   that couldn't record would be wasted, so each job checks its own login
+   (`buggrit db status`) before the review. An incomplete pass is a result,
    not a failure. Each job's timeout is the arm's pass deadline plus 15
    minutes.
 3. **report** reads the runs back by workflow run and attempt, has the
@@ -164,6 +169,8 @@ jobs:
    judge fails on is left unscored and fails the step; rerun the report
    locally (below) to score it.
 4. **cleanup** closes the PR and deletes both branches, whatever happened.
+   A branch GitHub refuses to delete (a protected one, say) fails the job
+   rather than being left behind quietly.
    If the workflow was canceled before cleanup, delete them by hand:
    `git push origin --delete bench/<experiment>/<run>-<attempt>/head
    bench/<experiment>/<run>-<attempt>/base`, and close the PR.

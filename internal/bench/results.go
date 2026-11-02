@@ -198,6 +198,9 @@ func (r *RunResult) Wall() time.Duration {
 // Store is the database the harness reads runs from and keeps scores in;
 // internal/store implements it.
 type Store interface {
+	// CheckWrites checks the login may write the runs' telemetry and the
+	// scores, so an experiment fails before it spends model time.
+	CheckWrites(ctx context.Context) error
 	// SaveBenchmark records a benchmark by its content hash, once.
 	SaveBenchmark(ctx context.Context, hash string, b *Benchmark) error
 	// SaveExperiment records an experiment run and returns its ID. Saving

@@ -11,6 +11,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const benchPrivileges = `-- name: BenchPrivileges :one
+SELECT has_table_privilege('buggrit.run', 'INSERT') AND has_table_privilege('buggrit.run', 'UPDATE')
+         AND has_table_privilege('buggrit.event', 'INSERT') AS telemetry,
+       has_table_privilege('buggrit.benchmark', 'INSERT') AND has_table_privilege('buggrit.experiment', 'INSERT')
+         AND has_table_privilege('buggrit.score', 'INSERT') AND has_table_privilege('buggrit.extra_finding', 'INSERT') AS scores
+`
+
+type BenchPrivilegesRow struct {
+	Telemetry pgtype.Bool
+	Scores    pgtype.Bool
+}
+
+// What a benchmark needs to write: the review runs' telemetry, and the
+// harness's experiment and scores.
+func (q *Queries) BenchPrivileges(ctx context.Context) (BenchPrivilegesRow, error) {
+	row := q.db.QueryRow(ctx, benchPrivileges)
+	var i BenchPrivilegesRow
+	err := row.Scan(&i.Telemetry, &i.Scores)
+	return i, err
+}
+
 const benchRuns = `-- name: BenchRuns :many
 SELECT r.id, r.label, r.started_at, r.ended_at, r.complete, r.outcome,
        jsonb_build_object('models', r.meta->'models', 'mph', r.meta->'mph',
@@ -318,6 +339,27 @@ func (q *Queries) LoadExperiment(ctx context.Context, arg LoadExperimentParams) 
 		&i.BenchmarkContent,
 	)
 	return i, err
+}
+
+const lockRun = `-- name: LockRun :exec
+SELECT id FROM buggrit.run WHERE id = $1 FOR NO KEY UPDATE
+`
+
+// Serializes judgments of one run: two reports can't both save one.
+func (q *Queries) LockRun(ctx context.Context, runID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockRun, runID)
+	return err
+}
+
+const runScored = `-- name: RunScored :one
+SELECT EXISTS (SELECT 1 FROM buggrit.score WHERE run_id = $1) AS scored
+`
+
+func (q *Queries) RunScored(ctx context.Context, runID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, runScored, runID)
+	var scored bool
+	err := row.Scan(&scored)
+	return scored, err
 }
 
 const saveBenchmark = `-- name: SaveBenchmark :exec
