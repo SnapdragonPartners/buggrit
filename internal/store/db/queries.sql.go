@@ -11,6 +11,157 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const benchRuns = `-- name: BenchRuns :many
+SELECT r.id, r.label, r.started_at, r.ended_at, r.complete, r.outcome,
+       jsonb_build_object('models', r.meta->'models', 'mph', r.meta->'mph',
+                          'limits', r.meta->'limits', 'review', r.meta->'review') AS identity,
+       left(md5(jsonb_build_object('models', r.meta->'models', 'mph', r.meta->'mph',
+                                   'limits', r.meta->'limits', 'review', r.meta->'review')::text), 8)::text AS identity_group,
+       res.payload AS result,
+       st.payload AS stage,
+       c.calls::integer AS calls,
+       c.input_tokens::bigint AS input_tokens,
+       c.output_tokens::bigint AS output_tokens,
+       c.reasoning_tokens::bigint AS reasoning_tokens,
+       c.cached_tokens::bigint AS cached_tokens,
+       t.tools::integer AS tools
+FROM buggrit.run r
+LEFT JOIN buggrit.event res ON res.run_id = r.id AND res.kind = 'result'
+LEFT JOIN buggrit.event st ON st.run_id = r.id AND st.kind = 'stage' AND st.session = 'find'
+LEFT JOIN LATERAL (
+    SELECT count(*) AS calls,
+           coalesce(sum((payload->'response'->'usage'->>'InputTokens')::bigint), 0) AS input_tokens,
+           coalesce(sum((payload->'response'->'usage'->>'OutputTokens')::bigint), 0) AS output_tokens,
+           coalesce(sum((payload->'response'->'usage'->>'ReasoningTokens')::bigint), 0) AS reasoning_tokens,
+           coalesce(sum((payload->'response'->'usage'->>'CacheReadTokens')::bigint), 0) AS cached_tokens
+    FROM buggrit.event
+    WHERE run_id = r.id AND kind = 'call' AND session = 'find'
+) c ON true
+LEFT JOIN LATERAL (
+    SELECT count(*) AS tools FROM buggrit.event
+    WHERE run_id = r.id AND kind = 'tool' AND session = 'find'
+) t ON true
+WHERE r.repo = $1 AND r.pr = $2 AND r.dry_run
+  AND r.meta->'workflow_run'->>'id' = $3::text
+  AND r.meta->'workflow_run'->>'attempt' = $4::text
+ORDER BY r.label, r.started_at
+`
+
+type BenchRunsParams struct {
+	Repo        string
+	Pr          int32
+	WorkflowRun string
+	Attempt     string
+}
+
+type BenchRunsRow struct {
+	ID              pgtype.UUID
+	Label           string
+	StartedAt       pgtype.Timestamptz
+	EndedAt         pgtype.Timestamptz
+	Complete        bool
+	Outcome         []byte
+	Identity        []byte
+	IdentityGroup   string
+	Result          []byte
+	Stage           []byte
+	Calls           int32
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	CachedTokens    int64
+	Tools           int32
+}
+
+// The dry runs of a replay PR recorded by one workflow run and attempt,
+// with their finder's totals. group is the identity group's short hash,
+// computed as docs/telemetry.md's comparison query does.
+func (q *Queries) BenchRuns(ctx context.Context, arg BenchRunsParams) ([]BenchRunsRow, error) {
+	rows, err := q.db.Query(ctx, benchRuns,
+		arg.Repo,
+		arg.Pr,
+		arg.WorkflowRun,
+		arg.Attempt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BenchRunsRow{}
+	for rows.Next() {
+		var i BenchRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Label,
+			&i.StartedAt,
+			&i.EndedAt,
+			&i.Complete,
+			&i.Outcome,
+			&i.Identity,
+			&i.IdentityGroup,
+			&i.Result,
+			&i.Stage,
+			&i.Calls,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.ReasoningTokens,
+			&i.CachedTokens,
+			&i.Tools,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const extraFindings = `-- name: ExtraFindings :many
+SELECT run_id, finding, verdict, reasoning,
+       coalesce(override_verdict, '')::text AS override_verdict, override_note
+FROM buggrit.extra_finding
+WHERE experiment_id = $1
+ORDER BY run_id, finding
+`
+
+type ExtraFindingsRow struct {
+	RunID           pgtype.UUID
+	Finding         int32
+	Verdict         string
+	Reasoning       string
+	OverrideVerdict string
+	OverrideNote    string
+}
+
+func (q *Queries) ExtraFindings(ctx context.Context, experimentID pgtype.UUID) ([]ExtraFindingsRow, error) {
+	rows, err := q.db.Query(ctx, extraFindings, experimentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExtraFindingsRow{}
+	for rows.Next() {
+		var i ExtraFindingsRow
+		if err := rows.Scan(
+			&i.RunID,
+			&i.Finding,
+			&i.Verdict,
+			&i.Reasoning,
+			&i.OverrideVerdict,
+			&i.OverrideNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const finishRun = `-- name: FinishRun :exec
 UPDATE buggrit.run
 SET ended_at = $1, outcome = $2, events_emitted = $3,
@@ -78,6 +229,163 @@ func (q *Queries) InsertEvents(ctx context.Context, arg InsertEventsParams) erro
 	return err
 }
 
+const insertExtraFinding = `-- name: InsertExtraFinding :exec
+INSERT INTO buggrit.extra_finding (run_id, experiment_id, finding, path, line, title, verdict, reasoning)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (run_id, finding) DO NOTHING
+`
+
+type InsertExtraFindingParams struct {
+	RunID        pgtype.UUID
+	ExperimentID pgtype.UUID
+	Finding      int32
+	Path         string
+	Line         int32
+	Title        string
+	Verdict      string
+	Reasoning    string
+}
+
+func (q *Queries) InsertExtraFinding(ctx context.Context, arg InsertExtraFindingParams) error {
+	_, err := q.db.Exec(ctx, insertExtraFinding,
+		arg.RunID,
+		arg.ExperimentID,
+		arg.Finding,
+		arg.Path,
+		arg.Line,
+		arg.Title,
+		arg.Verdict,
+		arg.Reasoning,
+	)
+	return err
+}
+
+const insertScore = `-- name: InsertScore :exec
+INSERT INTO buggrit.score (run_id, experiment_id, defect, verdict, finding, reasoning)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (run_id, defect) DO NOTHING
+`
+
+type InsertScoreParams struct {
+	RunID        pgtype.UUID
+	ExperimentID pgtype.UUID
+	Defect       string
+	Verdict      string
+	Finding      pgtype.Int4
+	Reasoning    string
+}
+
+func (q *Queries) InsertScore(ctx context.Context, arg InsertScoreParams) error {
+	_, err := q.db.Exec(ctx, insertScore,
+		arg.RunID,
+		arg.ExperimentID,
+		arg.Defect,
+		arg.Verdict,
+		arg.Finding,
+		arg.Reasoning,
+	)
+	return err
+}
+
+const loadExperiment = `-- name: LoadExperiment :one
+SELECT e.id, e.spec, e.replay, e.benchmark, b.content AS benchmark_content
+FROM buggrit.experiment e
+LEFT JOIN buggrit.benchmark b ON b.hash = e.benchmark
+WHERE e.workflow_run = $1 AND e.attempt = $2
+`
+
+type LoadExperimentParams struct {
+	WorkflowRun int64
+	Attempt     int32
+}
+
+type LoadExperimentRow struct {
+	ID               pgtype.UUID
+	Spec             []byte
+	Replay           []byte
+	Benchmark        pgtype.Text
+	BenchmarkContent []byte
+}
+
+func (q *Queries) LoadExperiment(ctx context.Context, arg LoadExperimentParams) (LoadExperimentRow, error) {
+	row := q.db.QueryRow(ctx, loadExperiment, arg.WorkflowRun, arg.Attempt)
+	var i LoadExperimentRow
+	err := row.Scan(
+		&i.ID,
+		&i.Spec,
+		&i.Replay,
+		&i.Benchmark,
+		&i.BenchmarkContent,
+	)
+	return i, err
+}
+
+const saveBenchmark = `-- name: SaveBenchmark :exec
+INSERT INTO buggrit.benchmark (hash, name, repo, base_sha, head_sha, content)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (hash) DO NOTHING
+`
+
+type SaveBenchmarkParams struct {
+	Hash    string
+	Name    string
+	Repo    string
+	BaseSha string
+	HeadSha string
+	Content []byte
+}
+
+func (q *Queries) SaveBenchmark(ctx context.Context, arg SaveBenchmarkParams) error {
+	_, err := q.db.Exec(ctx, saveBenchmark,
+		arg.Hash,
+		arg.Name,
+		arg.Repo,
+		arg.BaseSha,
+		arg.HeadSha,
+		arg.Content,
+	)
+	return err
+}
+
+const saveExperiment = `-- name: SaveExperiment :one
+WITH ins AS (
+    INSERT INTO buggrit.experiment (id, name, workflow_run, attempt, spec, benchmark, replay)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (workflow_run, attempt) DO NOTHING
+    RETURNING id
+)
+SELECT id FROM ins
+UNION ALL
+SELECT id FROM buggrit.experiment WHERE workflow_run = $3 AND attempt = $4
+LIMIT 1
+`
+
+type SaveExperimentParams struct {
+	ID          pgtype.UUID
+	Name        string
+	WorkflowRun int64
+	Attempt     int32
+	Spec        []byte
+	Benchmark   pgtype.Text
+	Replay      []byte
+}
+
+// Saving a workflow run again keeps the first row and returns its ID.
+func (q *Queries) SaveExperiment(ctx context.Context, arg SaveExperimentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, saveExperiment,
+		arg.ID,
+		arg.Name,
+		arg.WorkflowRun,
+		arg.Attempt,
+		arg.Spec,
+		arg.Benchmark,
+		arg.Replay,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const schemaVersion = `-- name: SchemaVersion :one
 SELECT coalesce(max(version), 0)::integer AS version FROM buggrit.schema_version
 `
@@ -87,6 +395,52 @@ func (q *Queries) SchemaVersion(ctx context.Context) (int32, error) {
 	var version int32
 	err := row.Scan(&version)
 	return version, err
+}
+
+const scores = `-- name: Scores :many
+SELECT run_id, defect, verdict, coalesce(finding, 0)::integer AS finding, reasoning,
+       coalesce(override_verdict, '')::text AS override_verdict, override_note
+FROM buggrit.score
+WHERE experiment_id = $1
+ORDER BY run_id, defect
+`
+
+type ScoresRow struct {
+	RunID           pgtype.UUID
+	Defect          string
+	Verdict         string
+	Finding         int32
+	Reasoning       string
+	OverrideVerdict string
+	OverrideNote    string
+}
+
+func (q *Queries) Scores(ctx context.Context, experimentID pgtype.UUID) ([]ScoresRow, error) {
+	rows, err := q.db.Query(ctx, scores, experimentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ScoresRow{}
+	for rows.Next() {
+		var i ScoresRow
+		if err := rows.Scan(
+			&i.RunID,
+			&i.Defect,
+			&i.Verdict,
+			&i.Finding,
+			&i.Reasoning,
+			&i.OverrideVerdict,
+			&i.OverrideNote,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const startRun = `-- name: StartRun :exec

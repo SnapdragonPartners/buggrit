@@ -30,7 +30,10 @@ moved, isn't recorded.
 
 ## Schema
 
-Both tables are in the `buggrit` schema (migration 2).
+Both tables are in the `buggrit` schema (migration 2). Migration 3 adds
+the benchmark harness's score tables, `benchmark`, `experiment`, `score`
+and `extra_finding`, which [benchmarking.md](benchmarking.md#the-score-tables)
+describes. A review run doesn't use them, and works with a v2 schema.
 
 `run` has one row per run:
 - `id`: a random UUID, which the job log prints ("recording telemetry as
@@ -145,7 +148,8 @@ moves only `commit`.
 
 **Average within an identity group, and compare groups side by side.**
 A group is runs that share the model settings, `mph`, `limits` and
-`review` thresholds, in one repository and under one label: a label
+`review` settings (thresholds, include and exclude), in one repository
+and under one label: a label
 names an experiment's variant, and repositories differ in their code
 and instructions. Averaging runs across groups mixes different things
 into one number, while placing two groups' averages next to each other
@@ -255,6 +259,47 @@ LEFT JOIN LATERAL (
 ) tools ON true
 GROUP BY r.repo, r.identity, r.label
 ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
+```
+
+```sql
+-- Recall by identity group over benchmark runs (benchmarking.md): each
+-- run's credit for the known defects (found 1, partial ½; a person's
+-- override replaces the judge's draft) over the benchmark's defects, and
+-- its extra findings judged real or false, averaged within a group and a
+-- benchmark.
+WITH r AS (
+    SELECT id, repo, label,
+           jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
+                              'limits', meta->'limits', 'review', meta->'review') AS identity
+    FROM buggrit.run
+    WHERE dry_run
+), s AS (
+    SELECT run_id, experiment_id, count(*) AS defects,
+           sum(CASE coalesce(override_verdict, verdict) WHEN 'found' THEN 1.0 WHEN 'partial' THEN 0.5 ELSE 0 END) AS credit
+    FROM buggrit.score
+    GROUP BY run_id, experiment_id
+), x AS (
+    SELECT run_id,
+           count(*) FILTER (WHERE coalesce(override_verdict, verdict) = 'real') AS real_extras,
+           count(*) FILTER (WHERE coalesce(override_verdict, verdict) = 'false') AS false_extras
+    FROM buggrit.extra_finding
+    GROUP BY run_id
+)
+SELECT b.name AS benchmark, r.repo, left(md5(r.identity::text), 8) AS "group",
+       r.identity->'models'->'find'->>'model' AS find_model,
+       r.identity->'models'->'find'->>'reasoning_effort' AS effort,
+       left(r.identity->'mph'->>'commit', 7) AS commit, r.label,
+       count(*) AS runs, max(s.defects) AS defects,
+       round(avg(s.credit / s.defects), 2) AS avg_recall,
+       round(avg(coalesce(x.real_extras, 0)), 1) AS avg_real_extras,
+       round(avg(coalesce(x.false_extras, 0)), 1) AS avg_false_extras
+FROM r
+JOIN s ON s.run_id = r.id
+JOIN buggrit.experiment e ON e.id = s.experiment_id
+JOIN buggrit.benchmark b ON b.hash = e.benchmark
+LEFT JOIN x ON x.run_id = r.id
+GROUP BY b.hash, b.name, r.repo, r.identity, r.label
+ORDER BY benchmark, find_model, effort, commit, r.label, "group";
 ```
 
 ```sql

@@ -37,27 +37,31 @@ internal/state/    # Comment markers, the own-comment check, thread replay and t
 internal/glob/     # include/exclude path globs with ** (design §4)
 internal/review/   # Engine: Review(), workspace, read-only tools, prompts, the shared stage loop, agentic verifier and finder, reconcile (design §2, §5, §6, §7)
 internal/publish/  # Render and post findings, transitions, resolve/unresolve and repairs, behind the head fence (design §6, §8)
-internal/store/    # The optional database: open and check, migrations, the telemetry sink; sqlc code in db/ (design §6, "The optional database")
+internal/store/    # The optional database: open and check, migrations, the telemetry sink, the benchmark scores; sqlc code in db/ (design §6, "The optional database")
 internal/telemetry/  # Run telemetry: recorder, per-stage sessions, the batching writer (design §6, "Telemetry")
 internal/telemetry/telemetrytest/  # Checks payload records against docs/telemetry.md's table
+cmd/buggrit-bench/ # Benchmark harness front end: check, prepare, report, cleanup; not released (design §12, "Benchmarks")
+internal/bench/    # Benchmarks, experiments, config overlays, replay PRs, the judge, the report (design §12)
+bench/             # Benchmark files: a replayed target and its known defects
 docs/design.md     # The binding design
 docs/database.md   # Setting up the optional database (GCP, roles, migrations, reading it)
 docs/telemetry.md  # Run telemetry: what's recorded, the schema, analysis queries
 docs/releasing.md  # Cutting a release: the release commit, repo protections, recovery
+docs/benchmarking.md  # Running experiments: arms, benchmarks, the report, overriding the judge
 docs/adr/          # Architecture decision records (index in its README)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 .github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)
 scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh, move-majors.sh; their tests
 .goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
-.github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck
+.github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck, bench (dispatched experiments)
 ```
 
 `internal/github` uses only the standard library (no go-github). Tests drive the real client against `githubtest`; `TestLive` is skipped unless `BUGGRIT_LIVE_*` is set (see `internal/github/live_test.go`).
 
 ## Makefile Targets
 
-- `make build`: build `bin/buggrit`
+- `make build`: build `bin/buggrit` and `bin/buggrit-bench`
 - `make test`: unit tests with the race detector
 - `make lint`: `go vet` + `golangci-lint run` (v1.64.8, pinned in CI)
 - `make vuln`: `govulncheck ./...`

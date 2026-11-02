@@ -7,8 +7,8 @@
 //
 // The database holds two schemas, each with its own golang-migrate table:
 // buggrit's own, from this package's migrations, with the run telemetry
-// tables (run, event), and maestro-llms' bucket schema for the shared rate
-// limit. `buggrit db migrate` applies both;
+// tables (run, event) and the benchmark harness's score tables (Bench), and
+// maestro-llms' bucket schema for the shared rate limit. `buggrit db migrate` applies both;
 // review runs never run DDL, and their role has DML only.
 package store
 
@@ -28,10 +28,18 @@ import (
 	storedb "github.com/SnapdragonPartners/buggrit/internal/store/db"
 )
 
-// SchemaVersion is the buggrit schema version this binary requires. A test
-// keeps it equal to the highest migration. A newer schema is fine, so an
-// older pinned binary keeps working after a migration.
-const SchemaVersion = 2
+// SchemaVersion is the buggrit schema's latest version, which `buggrit db
+// migrate` brings it to. A test keeps it equal to the highest migration.
+const SchemaVersion = 3
+
+// ReviewSchemaVersion is the oldest buggrit schema a review run works with:
+// v2 has the telemetry tables. A review doesn't need the benchmark tables
+// (v3), so adding them didn't make every run wait for a migration.
+const ReviewSchemaVersion = 2
+
+// BenchSchemaVersion is the oldest buggrit schema the benchmark harness
+// works with: v3 has its score tables.
+const BenchSchemaVersion = 3
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
@@ -52,9 +60,20 @@ type Store struct {
 }
 
 // Open connects to url and checks that both schemas are at least the
-// versions this binary requires. A schema that is missing or older is a
-// *SchemaError; any other error is the connection's or the query's, as is.
+// versions a review run requires (ReviewSchemaVersion for buggrit's). A
+// schema that is missing or older is a *SchemaError; any other error is the
+// connection's or the query's, as is.
 func Open(ctx context.Context, url string) (*Store, error) {
+	return open(ctx, url, ReviewSchemaVersion)
+}
+
+// OpenBench is Open for the benchmark harness, which needs
+// BenchSchemaVersion.
+func OpenBench(ctx context.Context, url string) (*Store, error) {
+	return open(ctx, url, BenchSchemaVersion)
+}
+
+func open(ctx context.Context, url string, required int) (*Store, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // pgx's message is the one to show
@@ -63,7 +82,7 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, err //nolint:wrapcheck // pgx's message is the one to show
 	}
-	if err := checkSchemas(ctx, pool); err != nil {
+	if err := checkSchemas(ctx, pool, required); err != nil {
 		pool.Close()
 		return nil, err
 	}
@@ -84,15 +103,15 @@ func (s *Store) Close() error {
 	return nil
 }
 
-func checkSchemas(ctx context.Context, pool *pgxpool.Pool) error {
+func checkSchemas(ctx context.Context, pool *pgxpool.Pool, required int) error {
 	found, err := storedb.New(pool).SchemaVersion(ctx)
 	switch {
 	case isSchemaMissing(err):
-		return &SchemaError{Schema: "buggrit", Required: SchemaVersion, Cause: err}
+		return &SchemaError{Schema: "buggrit", Required: required, Cause: err}
 	case err != nil:
 		return fmt.Errorf("check the buggrit schema: %w", err)
-	case found < SchemaVersion:
-		return &SchemaError{Schema: "buggrit", Required: SchemaVersion, Found: int(found)}
+	case int(found) < required:
+		return &SchemaError{Schema: "buggrit", Required: required, Found: int(found)}
 	}
 	db := stdlib.OpenDBFromPool(pool)
 	defer func() { _ = db.Close() }()
