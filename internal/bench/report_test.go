@@ -38,18 +38,28 @@ func TestApplyResult(t *testing.T) {
 		t.Fatalf("findings = %+v", r.Findings)
 	}
 
-	// A run recorded before kept findings named their submission: the
-	// next submission in order with the same path, title and severity.
+	// A run recorded before kept findings named their submission. A
+	// submission dropped for low confidence shares path, title and
+	// severity with the kept one; the line tells them apart.
 	var old RunResult
 	legacy := `{"submitted": [
-	    {"path": "a.go", "line": 3, "severity": "P3", "title": "dup", "problem": "the dropped one"},
-	    {"path": "a.go", "line": 9, "severity": "P1", "title": "dup", "problem": "the kept one"}],
-	  "kept": [{"path": "a.go", "line": 9, "severity": "P1", "title": "dup"}, {"path": "c.go", "line": 2, "severity": "P2", "title": "unmatched"}]}`
+	    {"path": "a.go", "line": 3, "severity": "P1", "confidence": "low", "title": "dup", "problem": "the dropped one"},
+	    {"path": "a.go", "line": 9, "severity": "P1", "confidence": "high", "title": "dup", "problem": "the kept one"},
+	    {"path": "d.go", "line": 0, "severity": "P2", "confidence": "low", "title": "file", "problem": "dropped file-level"},
+	    {"path": "d.go", "line": 0, "severity": "P2", "confidence": "high", "title": "file", "problem": "kept file-level"}],
+	  "kept": [
+	    {"path": "a.go", "line": 9, "severity": "P1", "title": "dup"},
+	    {"path": "c.go", "line": 2, "severity": "P2", "title": "unmatched"},
+	    {"path": "d.go", "line": 0, "severity": "P2", "title": "file"}]}`
 	if err := old.ApplyResult([]byte(legacy)); err != nil {
 		t.Fatal(err)
 	}
-	if len(old.Findings) != 2 || old.Findings[0].Problem != "the kept one" || old.Findings[1].Problem != "" || old.Findings[1].Title != "unmatched" {
+	if len(old.Findings) != 3 || old.Findings[0].Problem != "the kept one" || old.Findings[1].Problem != "" || old.Findings[1].Title != "unmatched" {
 		t.Fatalf("legacy findings = %+v", old.Findings)
+	}
+	// Two file-level submissions match equally: no text rather than a guess.
+	if f := old.Findings[2]; f.Problem != "" || f.Title != "file" {
+		t.Fatalf("an ambiguous match took a submission's text: %+v", f)
 	}
 }
 

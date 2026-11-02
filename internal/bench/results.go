@@ -126,9 +126,8 @@ type resultPayload struct {
 // ApplyResult fills r from a result event's payload: the kept findings,
 // each with the text the finder submitted for it, and how the pass ended.
 // A kept finding names its submission by position. One recorded before
-// that, which doesn't, takes the next submission after the previous kept
-// one's with the same path, title and severity, since reconcile keeps
-// findings in submission order; failing that it has only its own fields.
+// that, which doesn't, is matched by legacyMatch; unmatched, it has only
+// its own fields.
 func (r *RunResult) ApplyResult(payload []byte) error {
 	var p resultPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
@@ -150,13 +149,7 @@ func (r *RunResult) ApplyResult(payload []byte) error {
 				at = k.Submitted - 1
 			}
 		default:
-			for j := next; j < len(p.Submitted); j++ {
-				s := &p.Submitted[j]
-				if s.Path == k.Path && s.Title == k.Title && s.Severity == k.Severity {
-					at = j
-					break
-				}
-			}
+			at = legacyMatch(p.Submitted, next, k.Path, k.Title, k.Severity, k.Line)
 		}
 		if at >= 0 {
 			f = p.Submitted[at]
@@ -167,6 +160,28 @@ func (r *RunResult) ApplyResult(payload []byte) error {
 		r.Findings = append(r.Findings, f)
 	}
 	return nil
+}
+
+// legacyMatch finds a kept finding's submission in a run recorded before
+// kept findings named it: the one submission after from (reconcile keeps
+// submission order) with the same path, title and severity, and the same
+// line when the kept finding has one. A finding dropped for its confidence
+// can match all of those but the line; if more than one still matches, it
+// returns -1 rather than guess, so the judge never reads a dropped
+// finding's text.
+func legacyMatch(submitted []Finding, from int, path, title, severity string, line int) int {
+	at := -1
+	for j := from; j < len(submitted); j++ {
+		s := &submitted[j]
+		if s.Path != path || s.Title != title || s.Severity != severity || (line > 0 && s.Line != line) {
+			continue
+		}
+		if at >= 0 {
+			return -1
+		}
+		at = j
+	}
+	return at
 }
 
 // Wall is the pass's wall time, or the run's when the pass recorded none.
