@@ -73,6 +73,14 @@ type PR struct {
 	Diffs   map[string]string
 	Reviews []*Review
 	Number  int
+	// Title, Body, HeadRef, BaseRef and Draft are set on a PR opened
+	// through the API; Closed once it's closed.
+	Title   string
+	Body    string
+	HeadRef string
+	BaseRef string
+	Draft   bool
+	Closed  bool
 }
 
 // Review is a stored review.
@@ -102,10 +110,12 @@ type Server struct {
 	// SetPermission.
 	associations map[string]string
 	permissions  map[string]string
-	owner        string
-	repo         string
-	mu           sync.Mutex
-	nextID       int64
+	// branches maps a branch name to its commit.
+	branches map[string]string
+	owner    string
+	repo     string
+	mu       sync.Mutex
+	nextID   int64
 	// ThreadsPageSize and CommentsPageSize force GraphQL pagination.
 	ThreadsPageSize  int
 	CommentsPageSize int
@@ -133,6 +143,7 @@ func New(t testing.TB, repo string) *Server {
 		compares:         map[string]Comparison{},
 		associations:     map[string]string{},
 		permissions:      map[string]string{},
+		branches:         map[string]string{},
 		tokens:           map[string]string{DefaultToken: DefaultLogin},
 		nextID:           1000,
 		ThreadsPageSize:  50,
@@ -341,6 +352,10 @@ func (s *Server) routes() http.Handler {
 	handle("PATCH /issues/comments/{id}", "PATCH issue comment", s.patchIssueComment)
 	handle("DELETE /issues/comments/{id}", "DELETE issue comment", s.deleteIssueComment)
 	handle("GET /collaborators/{login}/permission", "GET permission", s.getPermission)
+	handle("POST /git/refs", "POST ref", s.postRef)
+	handle("DELETE /git/refs/heads/{name...}", "DELETE ref", s.deleteRef)
+	handle("POST /pulls", "POST pull", s.postPull)
+	handle("PATCH /pulls/{number}", "PATCH pull", s.patchPull)
 	mux.HandleFunc("POST /graphql", s.wrap("graphql", s.graphql))
 	return mux
 }
@@ -412,11 +427,22 @@ func (s *Server) getPull(r *http.Request, _ string) (int, any) {
 	if r.Header.Get("Accept") == "application/vnd.github.diff" {
 		return http.StatusOK, rawBody(pr.Diff)
 	}
+	state, title, headRef, baseRef := "open", "fake PR", "feature", "main"
+	if pr.Closed {
+		state = "closed"
+	}
+	if pr.Title != "" {
+		title = pr.Title
+	}
+	if pr.HeadRef != "" {
+		headRef, baseRef = pr.HeadRef, pr.BaseRef
+	}
 	return http.StatusOK, map[string]any{
-		"number": pr.Number, "state": "open", "title": "fake PR", "node_id": fmt.Sprintf("PR_%d", pr.Number),
-		"user": map[string]string{"login": "dratner"},
-		"head": map[string]string{"sha": pr.HeadSHA, "ref": "feature"},
-		"base": map[string]any{"sha": pr.BaseSHA, "ref": "main", "repo": map[string]any{"private": s.Private}},
+		"number": pr.Number, "state": state, "title": title, "body": pr.Body, "draft": pr.Draft,
+		"node_id": fmt.Sprintf("PR_%d", pr.Number),
+		"user":    map[string]string{"login": "dratner"},
+		"head":    map[string]string{"sha": pr.HeadSHA, "ref": headRef},
+		"base":    map[string]any{"sha": pr.BaseSHA, "ref": baseRef, "repo": map[string]any{"private": s.Private}},
 	}
 }
 
@@ -750,3 +776,86 @@ func (s *Server) patchIssueComment(r *http.Request, login string) (int, any) {
 // noSleep skips a client's retry waits, so a test that fails a call doesn't
 // wait out its backoff.
 func noSleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+// Branches returns a copy of the branches made through the API, by name.
+func (s *Server) Branches() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.branches))
+	for k, v := range s.branches {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *Server) postRef(r *http.Request, _ string) (int, any) {
+	var in struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	}
+	if !decode(r, &in) {
+		return http.StatusBadRequest, msg("Problems parsing JSON")
+	}
+	name, ok := strings.CutPrefix(in.Ref, "refs/heads/")
+	switch {
+	case !ok || name == "" || in.SHA == "":
+		return http.StatusUnprocessableEntity, msg("fake only creates branches")
+	case s.branches[name] != "":
+		return http.StatusUnprocessableEntity, msg("Reference already exists")
+	}
+	s.branches[name] = in.SHA
+	return http.StatusCreated, map[string]any{"ref": in.Ref, "object": map[string]string{"sha": in.SHA}}
+}
+
+func (s *Server) deleteRef(r *http.Request, _ string) (int, any) {
+	name := r.PathValue("name")
+	if s.branches[name] == "" {
+		return http.StatusUnprocessableEntity, msg("Reference does not exist")
+	}
+	delete(s.branches, name)
+	return http.StatusNoContent, nil
+}
+
+// postPull opens a PR between two branches. Its diff is whatever SetCompare
+// stored for their commits, as base...head.
+func (s *Server) postPull(r *http.Request, _ string) (int, any) {
+	var in struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		Head  string `json:"head"`
+		Base  string `json:"base"`
+		Draft bool   `json:"draft"`
+	}
+	if !decode(r, &in) {
+		return http.StatusBadRequest, msg("Problems parsing JSON")
+	}
+	head, base := s.branches[in.Head], s.branches[in.Base]
+	if head == "" || base == "" || in.Title == "" {
+		return http.StatusUnprocessableEntity, msg("Validation Failed")
+	}
+	n := 1
+	for s.prs[n] != nil {
+		n++
+	}
+	diff := s.compares[base+"..."+head].Diff
+	s.prs[n] = &PR{
+		Number: n, HeadSHA: head, BaseSHA: base, Diff: diff, Diffs: map[string]string{head: diff},
+		Title: in.Title, Body: in.Body, HeadRef: in.Head, BaseRef: in.Base, Draft: in.Draft,
+	}
+	return http.StatusCreated, map[string]any{"number": n}
+}
+
+func (s *Server) patchPull(r *http.Request, _ string) (int, any) {
+	pr, ok := s.pr(r)
+	if !ok {
+		return http.StatusNotFound, msg("Not Found")
+	}
+	var in struct {
+		State string `json:"state"`
+	}
+	if !decode(r, &in) || in.State != "closed" {
+		return http.StatusUnprocessableEntity, msg("fake only closes pull requests")
+	}
+	pr.Closed = true
+	return http.StatusOK, map[string]any{"number": pr.Number, "state": "closed"}
+}

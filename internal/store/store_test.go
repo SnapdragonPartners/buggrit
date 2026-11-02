@@ -133,8 +133,8 @@ func TestOpenNeedsMigrations(t *testing.T) {
 
 	got := migrateAll(t, dsn)
 	want := []SchemaStatus{
-		{Name: "bucket", Version: bucketpg.SchemaVersion, Required: bucketpg.SchemaVersion},
-		{Name: "buggrit", Version: SchemaVersion, Required: SchemaVersion},
+		{Name: "bucket", Version: bucketpg.SchemaVersion, Required: bucketpg.SchemaVersion, Latest: bucketpg.SchemaVersion},
+		{Name: "buggrit", Version: SchemaVersion, Required: ReviewSchemaVersion, Latest: SchemaVersion},
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("Migrate = %+v, want %+v", got, want)

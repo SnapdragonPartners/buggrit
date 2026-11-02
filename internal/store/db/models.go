@@ -8,6 +8,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type BuggritBenchmark struct {
+	Hash      string
+	Name      string
+	Repo      string
+	BaseSha   string
+	HeadSha   string
+	Content   []byte
+	CreatedAt pgtype.Timestamptz
+}
+
 type BuggritEvent struct {
 	RunID   pgtype.UUID
 	Seq     int32
@@ -16,6 +26,30 @@ type BuggritEvent struct {
 	Session pgtype.Text
 	Call    pgtype.Int4
 	Payload []byte
+}
+
+type BuggritExperiment struct {
+	ID          pgtype.UUID
+	Name        string
+	WorkflowRun int64
+	Attempt     int32
+	Spec        []byte
+	Benchmark   pgtype.Text
+	Replay      []byte
+	CreatedAt   pgtype.Timestamptz
+}
+
+type BuggritExtraFinding struct {
+	RunID           pgtype.UUID
+	ExperimentID    pgtype.UUID
+	Finding         int32
+	Path            string
+	Line            int32
+	Title           string
+	Verdict         string
+	Reasoning       string
+	OverrideVerdict pgtype.Text
+	OverrideNote    string
 }
 
 type BuggritRun struct {
@@ -37,4 +71,15 @@ type BuggritRun struct {
 type BuggritSchemaVersion struct {
 	Version   int32
 	AppliedAt pgtype.Timestamptz
+}
+
+type BuggritScore struct {
+	RunID           pgtype.UUID
+	ExperimentID    pgtype.UUID
+	Defect          string
+	Verdict         string
+	Finding         pgtype.Int4
+	Reasoning       string
+	OverrideVerdict pgtype.Text
+	OverrideNote    string
 }

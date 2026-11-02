@@ -156,15 +156,28 @@ func TestTelemetryRoundTrip(t *testing.T) {
 			t.Errorf("call %d rebuilt as %v, want %v", n+1, got, want)
 		}
 	}
-	checkDocQueries(t, db, run.ID)
+	checkDocQueries(t, db, run.ID, false)
 }
 
 // Every documented query runs against the schema, and each of its columns
 // has a value in some row: a JSON key the payloads don't have would be
 // null throughout.
-func checkDocQueries(t *testing.T, db *sql.DB, runID string) {
+//
+// The queries over benchmark scores need scores, so they're checked by the
+// benchmark store's test (scores true) instead of the telemetry test's.
+func checkDocQueries(t *testing.T, db *sql.DB, runID string, scores bool) {
 	t.Helper()
+	checked := 0
+	defer func() {
+		if checked == 0 {
+			t.Errorf("no docs/telemetry.md queries checked (scores %v)", scores)
+		}
+	}()
 	for i, q := range docQueries(t, strings.NewReplacer(":'run'", "'"+runID+"'", ":'session'", "'find'", ":'call'", "'2'")) {
+		if strings.Contains(q, "buggrit.score") != scores {
+			continue
+		}
+		checked++
 		rows, err := db.Query(q)
 		if err != nil {
 			t.Errorf("docs/telemetry.md query %d: %v\n%s", i+1, err, q)

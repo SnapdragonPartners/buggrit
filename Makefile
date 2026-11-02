@@ -6,8 +6,11 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 REQUIRED_BINS := go golangci-lint govulncheck sqlc
 
+# buggrit-bench is the benchmark harness (docs/benchmarking.md); it isn't
+# released.
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/buggrit
+	go build -o bin/buggrit-bench ./cmd/buggrit-bench
 
 # The Postgres tests skip unless BUGGRIT_POSTGRES_DSN is set (see
 # internal/store/store_test.go); CI runs them against a service container.

@@ -222,7 +222,7 @@ func TestTelemetryRecordsAPass(t *testing.T) {
 		t.Fatalf("%d result events", len(results))
 	}
 	rr := decode[resultRecord](t, results[0])
-	if !rr.Done || len(rr.Submitted) != 1 || len(rr.Kept) != 1 || rr.Kept[0].ID != res.Findings[0].ID || rr.Summary != "One bug." {
+	if !rr.Done || len(rr.Submitted) != 1 || len(rr.Kept) != 1 || rr.Kept[0].ID != res.Findings[0].ID || rr.Kept[0].Submitted != 1 || rr.Summary != "One bug." {
 		t.Errorf("result record = %+v", rr)
 	}
 	if n := len(rec.of(telemetry.KindCall, "find")); n != 1 {

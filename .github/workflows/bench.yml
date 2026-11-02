@@ -1,0 +1,281 @@
+name: bench
+
+# The benchmark harness (docs/design.md §12, "Benchmarks";
+# docs/benchmarking.md). One dispatch runs one experiment: arms × runs of
+# `buggrit review --dry-run` against a draft replay PR of the target, each
+# arm built from its own ref and run with its own config. The results come
+# from telemetry, so it needs the database. Then report scores the runs
+# against the benchmark's known defects and writes the report, and cleanup
+# closes the replay.
+#
+#   gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
+#
+# Model keys: an arm's or the judge's api_key_env must be one the steps
+# pass, LUNAROUTE_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY.
+#
+# The database's identity provider admits this workflow only as it is on
+# main (docs/database.md), so dispatch it from main.
+#
+# Only this workflow has to be on main: an arm's ref is any pushed branch,
+# tag or SHA at or after #49 (prepare checks).
+on:
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: The experiment, as JSON (docs/benchmarking.md)
+        required: true
+
+# One experiment at a time: they share the model endpoints' limits.
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # the database (design §3, "Database")
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.prepare.outputs.matrix }}
+      parallel: ${{ steps.prepare.outputs.parallel }}
+      report_timeout: ${{ steps.prepare.outputs.report_timeout }}
+      replay: ${{ steps.prepare.outputs.replay }}
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build buggrit-bench
+        run: go build -o "$RUNNER_TEMP/buggrit-bench" ./cmd/buggrit-bench
+
+      # Scoped to the owner's installation, so a target can be in another of
+      # its repositories.
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      # prepare checks the database takes this workflow's login, is
+      # migrated for the harness and lets it write the runs' telemetry and
+      # the scores, before any model time is spent. A review that can't
+      # use the database carries on without it, recording nothing.
+      - name: Connect to the database
+        id: db
+        uses: ./.github/actions/database
+        with:
+          instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
+      - name: Validate the experiment and open the replay
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
+          EXPERIMENT: ${{ inputs.experiment }}
+        run: |
+          printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"
+          "$RUNNER_TEMP/buggrit-bench" prepare --experiment "$RUNNER_TEMP/experiment.json"
+
+  review:
+    needs: prepare
+    name: review ${{ matrix.arm }} ${{ matrix.run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.prepare.outputs.parallel) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Check out the arm's buggrit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          path: arm
+          persist-credentials: false
+
+      # The database action comes from the harness, not the arm.
+      - name: Check out the harness's actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: harness
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check out the target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.head }}
+          path: target
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: arm/go.mod
+          cache-dependency-path: arm/go.sum
+
+      # From a git checkout, so the build info carries the arm's commit
+      # (telemetry's meta.mph.commit).
+      - name: Build the arm's buggrit
+        run: go build -C arm -o "$RUNNER_TEMP/buggrit" ./cmd/buggrit
+
+      - name: Connect to the database
+        id: db
+        uses: ./harness/.github/actions/database
+        with:
+          instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
+      # Without the database there would be no results, so don't spend the
+      # model time.
+      - name: Require the database
+        if: steps.db.outputs.url == ''
+        env:
+          DB_ERROR: ${{ steps.db.outputs.error }}
+        run: |
+          echo "::error::the database isn't available, so this run would record nothing: $DB_ERROR"
+          exit 1
+
+      # The Auth Proxy started; check this job's login works, and that the
+      # schemas are what the arm's own binary needs (an arm can be a branch
+      # that adds a migration). A review that can't use the database
+      # carries on without it, recording nothing. `db status` exits 0 for a
+      # schema that's behind, so its wording is checked: every ref an arm
+      # may use (at or after #49) says "this binary needs" for a schema too
+      # old for its review runs, and "dirty" for a failed migration.
+      - name: Check the database for this arm
+        env:
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+        run: |
+          status=$("$RUNNER_TEMP/buggrit" db status)
+          printf '%s\n' "$status"
+          if grep -qE 'this binary needs|dirty' <<<"$status"; then
+            echo "::error::the database isn't migrated for this arm's buggrit, so this run would record nothing"
+            exit 1
+          fi
+
+      # An incomplete pass exits 1; that's a result to report, not a failed
+      # run, so the step's exit code is ignored and the telemetry says how
+      # it ended.
+      - name: Review
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          CONFIG: ${{ matrix.config }}
+          REPO: ${{ matrix.repo }}
+          PR: ${{ matrix.pr }}
+          LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_RATE_LIMITS: ${{ vars.BUGGRIT_RATE_LIMITS }}
+          BUGGRIT_TELEMETRY_LABEL: ${{ matrix.label }}
+        run: |
+          printf '%s' "$CONFIG" > "$RUNNER_TEMP/buggrit.json"
+          "$RUNNER_TEMP/buggrit" review --dry-run --repo "$REPO" --pr "$PR" \
+            --config "$RUNNER_TEMP/buggrit.json" --workspace "$GITHUB_WORKSPACE/target" || \
+            echo "::notice::the review exited $?; the report says how the pass ended"
+
+  report:
+    needs: [prepare, review]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    # Grows with the runs to judge (cmd/buggrit-bench's reportTimeout).
+    timeout-minutes: ${{ fromJSON(needs.prepare.outputs.report_timeout) }}
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build buggrit-bench
+        run: go build -o "$RUNNER_TEMP/buggrit-bench" ./cmd/buggrit-bench
+
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+
+      - name: Connect to the database
+        id: db
+        uses: ./.github/actions/database
+        with:
+          instance: ${{ vars.BUGGRIT_CLOUDSQL_INSTANCE }}
+          wif-provider: ${{ vars.BUGGRIT_GCP_WIF_PROVIDER }}
+          service-account: ${{ vars.BUGGRIT_GCP_SERVICE_ACCOUNT }}
+
+      - name: Score and report
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          EXPERIMENT: ${{ inputs.experiment }}
+          REPLAY: ${{ needs.prepare.outputs.replay }}
+          LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
+          BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
+        run: |
+          printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"
+          "$RUNNER_TEMP/buggrit-bench" report --experiment "$RUNNER_TEMP/experiment.json" \
+            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md" --comment
+
+  cleanup:
+    needs: [prepare, review, report]
+    if: always() && needs.prepare.outputs.replay != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build buggrit-bench
+        run: go build -o "$RUNNER_TEMP/buggrit-bench" ./cmd/buggrit-bench
+
+      - name: Mint App token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BUGGRIT_APP_ID }}
+          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Close the replay
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          REPLAY: ${{ needs.prepare.outputs.replay }}
+        run: '"$RUNNER_TEMP/buggrit-bench" cleanup --replay "$REPLAY"'

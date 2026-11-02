@@ -145,6 +145,8 @@ internal/review/      engine: verify / find / reconcile, prompts, tools, output 
 internal/publish/     render comments, post review, replies, resolve/unresolve, summary
 internal/store/       the optional database: open and check, migrations (§6)
 internal/telemetry/   run telemetry: recorder, sessions, the batching writer (§6)
+cmd/buggrit-bench/    the benchmark harness's front end: check, prepare, report, cleanup (§12)
+internal/bench/       benchmarks, experiments, overlays, replays, the judge, the report (§12)
 ```
 
 The engine entry point is
@@ -628,7 +630,8 @@ author, and a rate limit buggrit can't wait out is temporary.
 
 The threads are the only review state. buggrit also has an optional
 Postgres database, for what a PR can't hold: a rate limit shared across
-repositories, and run telemetry for comparing models. A review never
+repositories, run telemetry for comparing models, and the benchmark
+harness's scores (§12, "Benchmarks"). A review never
 depends on it.
 
 - **Optional, inferred:** a run uses the database when
@@ -1314,6 +1317,10 @@ for those.
    Run in morris **alongside Copilot**, compare, then switch Copilot off.
 8. **Eval harness:** PRs with planted bugs plus scripted agents that fix
    findings or settle them. Measures precision, recall and passes to convergence per model.
+   Its first slice is in ([#19](https://github.com/SnapdragonPartners/buggrit/issues/19),
+   "Benchmarks", below): one fresh pass per run against a real replayed
+   PR, finder only. Its benchmark format, score tables and report are
+   meant to be extended with passes to convergence.
 
 **Status (October 2026):** steps 1–4 are done (PRs #2–#5, #9 and #16), and
 buggrit reviews its own PRs. Step 7's packaging (#12) was pulled ahead of
@@ -1353,6 +1360,48 @@ the context-overflow outcome and the `openaicompat` rename (v0.13.0), and
 toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit
 still drops a canceled run's dangling tool-call turn before the wrap-up
 (§9); that isn't toolloop's to fix.
+
+### Benchmarks
+
+The benchmark harness A/B tests models, prompts and the harness on a
+replayed pull request ([docs/benchmarking.md](benchmarking.md) is the
+runbook). It's the first slice of step 8. It measures one fresh pass per
+run, finder only, and judges each arm by §13's rule: wall clock to
+convergence matters more than speed per pass, so recall and whether the
+pass finished sit next to latency.
+
+- **An arm is a ref, an overlay and a name.** The ref is a buggrit
+  branch, tag or SHA, built per arm. A prompt or harness variant is a
+  pushed branch, never merged; there's no runtime system for choosing
+  prompts. The overlay changes only the models and the pass's deadline and
+  concurrency, on a base config. The name is the runs' telemetry label,
+  `<experiment>/<arm>`.
+- **A run is `buggrit review --dry-run` on GitHub Actions**
+  (`.github/workflows/bench.yml`), against a draft replay PR of the
+  target opened for the experiment and closed after it. Results come from
+  telemetry, read back by the workflow run that recorded them, so the
+  database is required. The front end writes the arm's config and passes
+  `--config`. The one engine change this slice needed is in telemetry:
+  each kept finding records its 1-based position among the finder's
+  submissions, so the harness can attach the submitted text (§6,
+  "Telemetry").
+- **Nothing is tied to one repository.** A benchmark names its target's
+  repository, and replays go through an interface (`bench.Replayer`), so
+  another host can plug in. Today it's a draft PR in the target's own
+  repository.
+- **A benchmark is a checked-in file of known defects**, identified in the
+  database by the hash of its bytes. **The judge** is a model the
+  experiment must name; there's no default. It gets one call per run,
+  with every finding against every defect, and with overlapping locations
+  as hints, not a filter: a defect is often reported where it shows rather
+  than where it is. It also drafts a real or false verdict on each extra
+  finding. **Its verdicts are drafts:** a person's override sits beside
+  each in the database, and reports use the override.
+- **Scores live in the database** (migration 3: `benchmark`,
+  `experiment`, `score`, `extra_finding`), so results build up over time.
+  Review runs don't use these tables and still need only v2; the harness
+  needs v3. The report averages only within an identity group (§6,
+  "Telemetry") and places the groups side by side.
 
 ## 13. Decisions
 
@@ -1398,6 +1447,13 @@ still drops a canceled run's dangling tool-call turn before the wrap-up
   the next pass picks up; compaction would hide what the model saw, and
   telemetry's deltas rely on transcripts that only grow, or drop a
   dangling tool-call turn.
+- **Benchmarks** (November 2026,
+  [#19](https://github.com/SnapdragonPartners/buggrit/issues/19)): a
+  separate `buggrit-bench` command, kept out of the released binary, runs
+  experiments through a dispatched workflow. Arms are refs plus config
+  overlays, replays are draft PRs behind an interface, the judge has no
+  default, and its verdicts are drafts a person overrides in the database
+  (§12, "Benchmarks").
 - **LunaRoute** is OpenAI-compatible and is reached through
   `openai-compatible` (§4). Small fixes to routes or validation, if needed,
   are made in `maestro-llms`.

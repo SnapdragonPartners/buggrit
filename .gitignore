@@ -1,6 +1,7 @@
-# Build artifacts (`go build ./cmd/...` writes /buggrit)
+# Build artifacts (`go build ./cmd/...` writes /buggrit and /buggrit-bench)
 bin/
 /buggrit
+/buggrit-bench
 dist/
 
 # Test artifacts

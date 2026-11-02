@@ -1,0 +1,151 @@
+{
+  "name": "pr9-e619281",
+  "description": "PR #9 (the verifier and thread lifecycle) at its first pushed commit, as replayed in the buggrit#8 model trial: the 7 defects reviewers raised on e619281 and fixed later in #9, plus the 3 real extra findings from that trial, filed as #13-#15.",
+  "repo": "SnapdragonPartners/buggrit",
+  "base": "6d36cd0bc99ee5b1db0239fec3ad6649767010f9",
+  "head": "e61928194c1995a6743b2eedde530c0480206313",
+  "title": "Verify earlier findings and drive each thread through its lifecycle",
+  "body": "## Summary\n\nBuild step 4, first of two PRs: the **verifier and the thread lifecycle** (design §6, §7 rules 4 and 6). buggrit now checks its earlier findings on every run, judges replies, and moves each thread through `open → fixed / dismissed / needs_human`. It resolves, unresolves and repairs threads behind the head fence.\n\n- **`internal/state`**\n  - Transition markers gain `kind`, `seen` (the newest human comment handled) and `left_resolved`.\n  - `Replay` reads a finding's state, rebuttal count and unhandled replies from its thread. Only buggrit's own markers count; every other comment is a human's.\n  - `Next` is the §6 state machine. It's a pure function, table-tested.\n- **`internal/review`**\n  - The tool loop (nudge, wrap-up, transcript repair) moves to `stage.go`, shared by the finder and the new **verifier** stage. The verifier has `get_thread` and the `submit_verdicts` terminal tool.\n  - `selectChecks` implements §6's selection rules. Fixed findings are re-verified when an evidence file changed, or when the fix commit left the branch history.\n  - In a full pass, verify and find **run at once and share the pass deadline**. The limiter decides how many calls actually overlap.\n- **`internal/publish`**\n  - Each transition is posted as a reply with its marker, followed by resolve or unresolve, with the fence checked before each mutation.\n  - A refused resolution is listed in the review body for a human to do by hand.\n  - The finding footer is now the §8 target text, with an advisory variant that offers dismissal.\n- **`cmd/buggrit`**: wires up both stage clients, prints transitions in `--dry-run`, adds a verify row to the job summary, and exits 1 when earlier findings were left unverified.\n\n## Design references\n\n- [§6 Finding state machine](docs/design.md#finding-state-machine): \"every `open` and `needs_human` finding, including resolved threads, because resolving isn't proof.\" Every run, reconcile-only included, verifies all of them.\n- §6: \"The one thing that never settles a finding is **a bare resolution with no reply while the issue is still present**.\" That case gets a `reopened` transition. buggrit never repeats a transition when no human has commented since; it only repairs.\n- §6, new: \"**A needs_human thread is unresolved before its marker lands.**\" Replay reads a resolution under that marker as a human settling the finding, so the unresolve is always sent first.\n- [§6 Review baseline](docs/design.md#review-baseline): the pass marker's status \"follows the finder\". Re-running the finder over a scope it already searched is the drip-feed that incremental scope exists to stop. Unverified findings make the run `incomplete` (exit 1), and the next run picks them up.\n- §7 rule 4: \"For **advisory** findings (P2/P3), any reasoned reply … is accepted as a dismissal without a rebuttal.\"\n- §9: \"Running them together is an optimization, not a requirement.\"\n\n## What this PR does NOT do\n\n- **Reply-triggered runs.** The `pull_request_review_comment` and `pull_request_review` triggers, and the bot-event concurrency group (§3), arrive in the next PR. The dogfood workflow builds from `main`, so they only become useful once this PR has merged.\n- **Reopening a fixed finding when the finder re-raises its fingerprint** (§7 rule 3) waits for step 5's dedupe. For now that finding is dropped as already raised. The verifier still reopens a regression when its evidence files change.\n- **Summary comment, JSON ledger, non-convergence warning and gate check:** step 5.\n- **Skipping untouched findings on a reconcile-only rerun.** Every run re-verifies every open finding. A correct skip needs a per-finding record of the last head each was verified at, which goes in step 5's ledger (§2).\n\n## Test plan\n\n- `make check` passes: golangci-lint, govulncheck, build, and `go test -cover -race ./...`. Coverage: review 93%, state 95%, publish 91%.\n- Multi-pass scenarios from §11 run against `githubtest`, in `internal/publish/lifecycle_test.go`:\n  - fix, then regression through a changed evidence file;\n  - false resolve, then a repeat resolve that unresolves without a new reply;\n  - an invalid rebuttal, then `needs_human`, then settling by a reply or by a resolution;\n  - a valid rebuttal; an advisory reply;\n  - a publish killed between the reply and the resolve, repaired on the next run;\n  - the head moving mid-publish;\n  - resolve refused by GitHub;\n  - verification cut short, then checked on the next run;\n  - a force-push back to a reviewed head;\n  - a killed or refused `needs_human` unresolve; the thread resolved while the verifier runs.\n- Mutation checks by hand: reverting each `needs_human` fix makes its test fail.\n- Codex reviewed three rounds through Counterpoint and approved `e619281`.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+  "defects": [
+    {
+      "id": "pending-vs-marker",
+      "source": "copilot",
+      "description": "Pending means newer than Seen, not newer than the needs_human marker: a reply that arrives during verification can precede the marker yet stay pending, so NeedsSettling settles the finding on a reply the verifier already handled.",
+      "locations": [
+        {
+          "path": "internal/state/machine.go",
+          "start": 40,
+          "end": 46
+        }
+      ]
+    },
+    {
+      "id": "advisory-dismissed-on-any-reply",
+      "source": "copilot",
+      "description": "An advisory finding is dismissed on any new reply, even when the verifier returns open after disproving the reply (for example a false \"fixed in abc123\").",
+      "locations": [
+        {
+          "path": "internal/state/machine.go",
+          "start": 106,
+          "end": 108
+        }
+      ]
+    },
+    {
+      "id": "left-resolved-footer",
+      "source": "copilot",
+      "description": "With leftResolved set, NeedsSettling ignores resolutions and requires a reply, but the needs_human footer still promises that a resolution settles the finding.",
+      "locations": [
+        {
+          "path": "internal/publish/render.go",
+          "start": 94,
+          "end": 96
+        }
+      ]
+    },
+    {
+      "id": "refused-unresolve-never-retried",
+      "source": "copilot",
+      "description": "If GitHub refuses the initial needs_human unresolve, the marker records LeftResolved=true, so NeedsSettling stays false without a new reply and the unresolve is never retried.",
+      "locations": [
+        {
+          "path": "internal/state/machine.go",
+          "start": 63,
+          "end": 69
+        }
+      ]
+    },
+    {
+      "id": "stale-layout-docs",
+      "source": "buggrit",
+      "description": "CLAUDE.md's directory layout and the dogfood workflow's comment still describe the pre-verifier build (internal/state as markers only, the verifier as future work).",
+      "locations": [
+        {
+          "path": "CLAUDE.md",
+          "start": 35,
+          "end": 37
+        },
+        {
+          "path": ".github/workflows/buggrit.yml",
+          "start": 1,
+          "end": 15
+        },
+        {
+          "path": "internal/review/workspace.go",
+          "start": 1,
+          "end": 2
+        }
+      ]
+    },
+    {
+      "id": "reconcile-refusals-unreported",
+      "source": "buggrit",
+      "description": "A resolve or unresolve GitHub refuses in a reconcile-only run is never reported on the PR: Publish returns before posting the review body, the only place the manual list appears.",
+      "locations": [
+        {
+          "path": "internal/publish/publish.go",
+          "start": 75,
+          "end": 77
+        }
+      ]
+    },
+    {
+      "id": "dry-run-order",
+      "source": "buggrit",
+      "description": "--dry-run prints a needs_human transition's reply and unresolve in the opposite order to publishing, and always says left_resolved.",
+      "locations": [
+        {
+          "path": "cmd/buggrit/review.go",
+          "start": 276,
+          "end": 294
+        }
+      ]
+    },
+    {
+      "id": "status-double-count",
+      "source": "buggrit-trial (#13)",
+      "description": "earlier() counts a repair-only transition as both \"repaired\" and \"unchanged\": changed[id] is set only for a transition with a Kind.",
+      "locations": [
+        {
+          "path": "internal/publish/render.go",
+          "start": 184,
+          "end": 203
+        }
+      ]
+    },
+    {
+      "id": "diagram-missing-edge",
+      "source": "buggrit-trial (#14)",
+      "description": "Design §6's state machine diagram has no needs_human → fixed edge, though state.Next emits KindFixed for a needs_human finding verified fixed.",
+      "locations": [
+        {
+          "path": "docs/design.md",
+          "start": 490,
+          "end": 500
+        },
+        {
+          "path": "internal/state/machine.go",
+          "start": 66,
+          "end": 67
+        }
+      ]
+    },
+    {
+      "id": "verifier-budget",
+      "source": "buggrit-trial (#15)",
+      "description": "The verifier's opening message isn't held strictly to the 300 KiB budget: the findings section is capped from its own start, pending replies per finding are uncapped, and get_thread checks its limit only after appending a comment.",
+      "locations": [
+        {
+          "path": "internal/review/verifier.go",
+          "start": 143,
+          "end": 200
+        },
+        {
+          "path": "internal/review/verifier.go",
+          "start": 290,
+          "end": 300
+        }
+      ]
+    }
+  ]
+}

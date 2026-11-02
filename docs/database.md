@@ -36,9 +36,10 @@ for role in roles/cloudsql.client roles/cloudsql.instanceUser; do
 done
 
 # Only buggrit's reusable workflow, called from a SnapdragonPartners
-# repository, and buggrit's own dogfood workflow get credentials. A job in a
-# reusable workflow is named by job_workflow_ref; a plain workflow's token
-# names it by workflow_ref and may lack job_workflow_ref, hence has().
+# repository, buggrit's own dogfood workflow, and its benchmark workflow as
+# it is on main (docs/benchmarking.md) get credentials. A job in a reusable
+# workflow is named by job_workflow_ref; a plain workflow's token names it
+# by workflow_ref and may lack job_workflow_ref, hence has().
 gcloud iam workload-identity-pools create github --project $PROJECT \
   --location global --display-name "GitHub Actions"
 gcloud iam workload-identity-pools providers create-oidc buggrit-review --project $PROJECT \
@@ -46,7 +47,7 @@ gcloud iam workload-identity-pools providers create-oidc buggrit-review --projec
   --display-name "buggrit review workflow" \
   --issuer-uri https://token.actions.githubusercontent.com \
   --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository" \
-  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && ((has(assertion.job_workflow_ref) && assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@')) || (assertion.repository == 'SnapdragonPartners/buggrit' && assertion.workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/buggrit.yml@')))"
+  --attribute-condition "assertion.repository_owner == 'SnapdragonPartners' && ((has(assertion.job_workflow_ref) && assertion.job_workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/review.yml@')) || (assertion.repository == 'SnapdragonPartners/buggrit' && (assertion.workflow_ref.startsWith('SnapdragonPartners/buggrit/.github/workflows/buggrit.yml@') || assertion.workflow_ref == 'SnapdragonPartners/buggrit/.github/workflows/bench.yml@refs/heads/main')))"
 gcloud iam service-accounts add-iam-policy-binding $SA --project $PROJECT \
   --role roles/iam.workloadIdentityUser \
   --member "principalSet://iam.googleapis.com/projects/$NUMBER/locations/global/workloadIdentityPools/github/*"
@@ -58,6 +59,14 @@ gcloud sql users create buggrit-runner@buggrit.iam --instance buggrit-db --proje
 gcloud sql users create dan@snapdragonpartners.com --instance buggrit-db --project $PROJECT \
   --type cloud_iam_user
 ```
+
+To change the condition on an existing provider, as when the benchmark
+workflow was added, run `gcloud iam workload-identity-pools providers
+update-oidc buggrit-review --project $PROJECT --location global
+--workload-identity-pool github --attribute-condition "<the condition
+above>"`. The benchmark workflow gets credentials only when it runs from
+`main`, so a branch can't change what it does with them; it runs other
+refs' code only as the arms it builds.
 
 Org variables (Settings → Secrets and variables → Actions → Variables),
 none of them secret:
@@ -138,7 +147,12 @@ buggrit db status
 ```
 
 A binary needs each schema at its version or newer, so migrating ahead of
-older pinned callers is safe. `db migrate` leaves a newer schema alone, and
+older pinned callers is safe. A review run needs buggrit's schema at v2
+(telemetry); v3 adds the benchmark harness's score tables, which only
+`buggrit-bench` needs ([benchmarking.md](benchmarking.md#the-score-tables)). `db status` says
+"this binary needs" only for a schema too old for review runs; a v2
+buggrit schema is "enough for review runs", with the version `db migrate`
+would bring it to. `db migrate` leaves a newer schema alone, and
 refuses a dirty one (a migration that failed partway), which needs fixing
 by hand.
 
