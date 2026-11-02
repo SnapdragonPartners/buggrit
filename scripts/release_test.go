@@ -116,7 +116,9 @@ func isolatedEnv(t *testing.T) []string {
 	return env
 }
 
-// localGitVars is the set of names git rev-parse --local-env-vars prints.
+// localGitVars is the set of names git rev-parse --local-env-vars prints. It
+// fails unless the set names the variables that point git at a repository, so
+// an empty or changed list can't turn isolatedEnv and its test into no-ops.
 func localGitVars(t *testing.T) map[string]bool {
 	t.Helper()
 	out, err := exec.Command("git", "rev-parse", "--local-env-vars").Output() //nolint:noctx // a test of local scripts
@@ -126,6 +128,11 @@ func localGitVars(t *testing.T) map[string]bool {
 	local := map[string]bool{}
 	for _, name := range strings.Fields(string(out)) {
 		local[name] = true
+	}
+	for _, name := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
+		if !local[name] {
+			t.Fatalf("git rev-parse --local-env-vars didn't list %s:\n%s", name, out)
+		}
 	}
 	return local
 }
