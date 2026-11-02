@@ -78,8 +78,10 @@ func describe(s *store.SchemaStatus) string {
 		return v + ", dirty: a migration failed partway"
 	case s.Version < s.Required:
 		return fmt.Sprintf("%s, this binary needs v%d: run `buggrit db migrate`", v, s.Required)
-	case s.Version > s.Required:
-		return fmt.Sprintf("%s, newer than this binary's v%d (fine)", v, s.Required)
+	case s.Version < s.Latest:
+		return fmt.Sprintf("%s, enough for review runs; `buggrit db migrate` brings it to v%d", v, s.Latest)
+	case s.Version > s.Latest:
+		return fmt.Sprintf("%s, newer than this binary's v%d (fine)", v, s.Latest)
 	}
 	return v + ", up to date"
 }

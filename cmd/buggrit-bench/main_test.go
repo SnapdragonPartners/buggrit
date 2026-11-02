@@ -362,7 +362,8 @@ func TestReport(t *testing.T) {
 	if s, _ := os.ReadFile(summary); string(s) != string(report) {
 		t.Error("the job summary isn't the report")
 	}
-	if c := fake.PR(19).IssueComments; len(c) != 1 || c[0].Body != string(report) {
+	marker := "<!-- buggrit-bench:report 42-1 -->\n"
+	if c := fake.PR(19).IssueComments; len(c) != 1 || c[0].Body != marker+string(report) {
 		t.Fatalf("issue comments = %+v", c)
 	}
 
@@ -373,6 +374,17 @@ func TestReport(t *testing.T) {
 	}
 	if len(judge.Calls()) != 1 || !strings.Contains(stdout.String(), "| 1 of 10 |") {
 		t.Fatalf("regenerated report:\n%s", stdout.String())
+	}
+
+	// Regenerating with --comment after an override updates the report's
+	// comment instead of adding one.
+	db.scores["r1"].Defects[0].Override = bench.Found
+	stdout.Reset()
+	if code := run(context.Background(), fakeDeps(fake, db, judge), []string{"report", "--no-judge", "--comment"}, reportEnv(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("regenerate with --comment: exit %d: %s", code, stderr.String())
+	}
+	if c := fake.PR(19).IssueComments; len(c) != 1 || c[0].Body != marker+stdout.String() || c[0].Body == marker+string(report) {
+		t.Fatalf("after regenerating, issue comments = %+v", c)
 	}
 }
 

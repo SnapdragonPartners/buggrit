@@ -164,8 +164,9 @@ jobs:
       # schemas are what the arm's own binary needs (an arm can be a branch
       # that adds a migration). A review that can't use the database
       # carries on without it, recording nothing. `db status` exits 0 for a
-      # schema that's behind, so its wording is checked; every ref an arm
-      # may use (at or after #49) says "this binary needs" and "dirty".
+      # schema that's behind, so its wording is checked: every ref an arm
+      # may use (at or after #49) says "this binary needs" for a schema too
+      # old for its review runs, and "dirty" for a failed migration.
       - name: Check the database for this arm
         env:
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}

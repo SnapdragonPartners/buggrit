@@ -232,7 +232,8 @@ BUGGRIT_DATABASE_URL=... go run ./cmd/buggrit-bench report --workflow-run <id> -
 
 Without `--no-judge` it also scores any run the judge missed, which needs
 the judge's key in the environment. `--out report.md` writes a file;
-`--comment` posts it on the experiment's issue (with `GITHUB_TOKEN` set).
+`--comment` posts it on the experiment's issue (with `GITHUB_TOKEN` set),
+updating the comment already there for that workflow run and attempt.
 
 A real extra finding that's still in the code is worth an issue, as
 #13–#15 were; if it was in the target, add it to the benchmark as a known

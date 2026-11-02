@@ -61,7 +61,7 @@ func runReport(ctx context.Context, d deps, args []string, getenv func(string) s
 		return err
 	}
 	if *comment && rec.Experiment.Issue > 0 {
-		if err := postComment(ctx, d, getenv, f.apiURL, *issueRepo, rec.Experiment.Issue, report); err != nil {
+		if err := postComment(ctx, d, getenv, f.apiURL, *issueRepo, rec.Experiment.Issue, w, report); err != nil {
 			return errors.Join(judgeErr, err) //nolint:wrapcheck // each says what failed
 		}
 	}
@@ -211,7 +211,17 @@ func runURL(getenv func(string) string, w bench.WorkflowRun) string {
 // maxComment is under GitHub's 65,536-character limit on a comment.
 const maxComment = 65000
 
-func postComment(ctx context.Context, d deps, getenv func(string) string, apiURL, repoName string, issue int, report string) error {
+// reportMarker starts the report's comment, so a report regenerated for the
+// same workflow run and attempt (after overrides, say) updates its comment
+// rather than adding another.
+func reportMarker(w bench.WorkflowRun) string {
+	return fmt.Sprintf("<!-- buggrit-bench:report %d-%d -->\n", w.ID, w.Attempt)
+}
+
+// postComment puts the report on the experiment's issue: it updates the
+// comment for this workflow run and attempt if there is one, and
+// otherwise adds one.
+func postComment(ctx context.Context, d deps, getenv func(string) string, apiURL, repoName string, issue int, w bench.WorkflowRun, report string) error {
 	token := getenv("GITHUB_TOKEN")
 	if token == "" {
 		return usagef("GITHUB_TOKEN is not set, so the report can't be posted")
@@ -227,7 +237,26 @@ func postComment(ctx context.Context, d deps, getenv func(string) string, apiURL
 		}
 		report = report[:cut] + "\n\n_The report was cut to fit a comment; the job summary has all of it._\n"
 	}
-	if _, err := d.github(token, apiURL).CreateIssueComment(ctx, repo, issue, report); err != nil {
+	body := reportMarker(w) + report
+	gh := d.github(token, apiURL)
+	comments, err := gh.IssueComments(ctx, repo, issue)
+	if err != nil {
+		return fmt.Errorf("read the issue's comments: %w", err)
+	}
+	for i := len(comments) - 1; i >= 0; i-- {
+		c := &comments[i]
+		if !strings.HasPrefix(c.Body, reportMarker(w)) {
+			continue
+		}
+		if c.Body == body {
+			return nil
+		}
+		if _, err := gh.UpdateIssueComment(ctx, repo, c.DatabaseID, body); err != nil {
+			return fmt.Errorf("update the report's comment: %w", err)
+		}
+		return nil
+	}
+	if _, err := gh.CreateIssueComment(ctx, repo, issue, body); err != nil {
 		return fmt.Errorf("post the report: %w", err)
 	}
 	return nil

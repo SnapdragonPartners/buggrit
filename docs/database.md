@@ -149,7 +149,10 @@ buggrit db status
 A binary needs each schema at its version or newer, so migrating ahead of
 older pinned callers is safe. A review run needs buggrit's schema at v2
 (telemetry); v3 adds the benchmark harness's score tables, which only
-`buggrit-bench` needs ([benchmarking.md](benchmarking.md#the-score-tables)). `db migrate` leaves a newer schema alone, and
+`buggrit-bench` needs ([benchmarking.md](benchmarking.md#the-score-tables)). `db status` says
+"this binary needs" only for a schema too old for review runs; a v2
+buggrit schema is "enough for review runs", with the version `db migrate`
+would bring it to. `db migrate` leaves a newer schema alone, and
 refuses a dirty one (a migration that failed partway), which needs fixing
 by hand.
 

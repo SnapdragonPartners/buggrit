@@ -20,8 +20,8 @@ func TestDBMigrate(t *testing.T) {
 	var gotURL string
 	ops := dbOps{migrate: func(_ context.Context, url string, report func(before, after store.SchemaStatus)) error {
 		gotURL = url
-		report(store.SchemaStatus{Name: "bucket", Version: 1, Required: 1}, store.SchemaStatus{Name: "bucket", Version: 1, Required: 1})
-		report(store.SchemaStatus{Name: "buggrit", Required: 1}, store.SchemaStatus{Name: "buggrit", Version: 1, Required: 1})
+		report(store.SchemaStatus{Name: "bucket", Version: 1, Required: 1, Latest: 1}, store.SchemaStatus{Name: "bucket", Version: 1, Required: 1, Latest: 1})
+		report(store.SchemaStatus{Name: "buggrit", Required: 1, Latest: 1}, store.SchemaStatus{Name: "buggrit", Version: 1, Required: 1, Latest: 1})
 		return nil
 	}}
 	code, out, errOut := runDBWith(ops, map[string]string{"BUGGRIT_DATABASE_URL": "postgres://env"}, "db", "migrate")
@@ -43,14 +43,20 @@ func TestDBMigrate(t *testing.T) {
 func TestDBStatus(t *testing.T) {
 	ops := dbOps{status: func(context.Context, string) ([]store.SchemaStatus, error) {
 		return []store.SchemaStatus{
-			{Name: "bucket", Version: 2, Required: 1},
-			{Name: "buggrit", Version: 1, Required: 2},
-			{Name: "dirty", Version: 3, Dirty: true, Required: 3},
+			{Name: "bucket", Version: 2, Required: 1, Latest: 1},
+			{Name: "buggrit", Version: 1, Required: 2, Latest: 3},
+			{Name: "behind", Version: 2, Required: 2, Latest: 3},
+			{Name: "current", Version: 3, Required: 2, Latest: 3},
+			{Name: "dirty", Version: 3, Dirty: true, Required: 3, Latest: 3},
 		}, nil
 	}}
 	code, out, _ := runDBWith(ops, nil, "db", "status", "--database-url", "postgres://x")
+	// Only a schema older than review runs need says "this binary needs"
+	// (bench.yml's review jobs check for it).
 	want := "bucket: v2, newer than this binary's v1 (fine)\n" +
 		"buggrit: v1, this binary needs v2: run `buggrit db migrate`\n" +
+		"behind: v2, enough for review runs; `buggrit db migrate` brings it to v3\n" +
+		"current: v3, up to date\n" +
 		"dirty: v3, dirty: a migration failed partway\n"
 	if code != 0 || out != want {
 		t.Errorf("exit %d, stdout = %q", code, out)

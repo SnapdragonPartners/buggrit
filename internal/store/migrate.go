@@ -18,17 +18,19 @@ import (
 // schema is one set of migrations, applied to its own Postgres schema with
 // its own golang-migrate table.
 type schema struct {
-	files    func() fs.FS
-	name     string
-	required int
+	files func() fs.FS
+	name  string
+	// latest is the newest migration, which Migrate brings it to;
+	// required is the oldest version a review run works with.
+	latest, required int
 }
 
 // schemas returns the schemas in the order they're applied: the bucket
 // schema first, since it doesn't depend on buggrit's.
 func schemas() []schema {
 	return []schema{
-		{name: "bucket", files: bucketpg.Migrations, required: bucketpg.SchemaVersion},
-		{name: "buggrit", files: Migrations, required: SchemaVersion},
+		{name: "bucket", files: bucketpg.Migrations, latest: bucketpg.SchemaVersion, required: bucketpg.SchemaVersion},
+		{name: "buggrit", files: Migrations, latest: SchemaVersion, required: ReviewSchemaVersion},
 	}
 }
 
@@ -40,8 +42,10 @@ type SchemaStatus struct {
 	// Dirty means that migration failed partway.
 	Version int
 	Dirty   bool
-	// Required is the version this binary needs.
-	Required int
+	// Required is the oldest version this binary's review runs work
+	// with; Latest is its newest migration, which `buggrit db migrate`
+	// brings the schema to (the benchmark harness needs buggrit's).
+	Required, Latest int
 }
 
 // Migrate brings each schema up to this binary's latest migration. A
@@ -100,7 +104,7 @@ func migrateOne(ctx context.Context, url string, s *schema) (before, after Schem
 		return before, after, err
 	case before.Dirty:
 		return before, after, fmt.Errorf("v%d failed partway; fix the schema by hand, then set dirty to false in %s.schema_migrations", before.Version, s.name)
-	case before.Version >= s.required:
+	case before.Version >= s.latest:
 		// Up to date, or newer than this binary knows.
 		return before, before, nil
 	}
@@ -112,7 +116,7 @@ func migrateOne(ctx context.Context, url string, s *schema) (before, after Schem
 }
 
 func version(m *migrate.Migrate, s *schema) (SchemaStatus, error) {
-	st := SchemaStatus{Name: s.name, Required: s.required}
+	st := SchemaStatus{Name: s.name, Required: s.required, Latest: s.latest}
 	v, dirty, err := m.Version()
 	switch {
 	case errors.Is(err, migrate.ErrNilVersion):
@@ -135,7 +139,7 @@ func Status(ctx context.Context, url string) ([]SchemaStatus, error) {
 	out := make([]SchemaStatus, 0, len(all))
 	for i := range all {
 		s := &all[i]
-		st := SchemaStatus{Name: s.name, Required: s.required}
+		st := SchemaStatus{Name: s.name, Required: s.required, Latest: s.latest}
 		table := pgx.Identifier{s.name, "schema_migrations"}.Sanitize()
 		err := db.QueryRowContext(ctx, "SELECT version, dirty FROM "+table+" LIMIT 1").Scan(&st.Version, &st.Dirty)
 		switch {
