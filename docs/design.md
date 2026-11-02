@@ -1380,8 +1380,11 @@ pass finished sit next to latency.
   (`.github/workflows/bench.yml`), against a draft replay PR of the
   target opened for the experiment and closed after it. Results come from
   telemetry, read back by the workflow run that recorded them, so the
-  database is required. The review engine needs no change: the front end
-  writes the arm's config and passes `--config`.
+  database is required. The front end writes the arm's config and passes
+  `--config`. The one engine change this slice needed is in telemetry:
+  each kept finding records its 1-based position among the finder's
+  submissions, so the harness can attach the submitted text (§6,
+  "Telemetry").
 - **Nothing is tied to one repository.** A benchmark names its target's
   repository, and replays go through an interface (`bench.Replayer`), so
   another host can plug in. Today it's a draft PR in the target's own

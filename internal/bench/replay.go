@@ -45,25 +45,29 @@ type GitHubReplayer struct {
 const BranchPrefix = "bench/"
 
 // Open creates the branches and the draft PR. If a step fails it closes
-// what it made.
+// what it made, and only that: a branch that already existed (a rerun
+// prepare's, say) is someone else's to clean up.
 func (g *GitHubReplayer) Open(ctx context.Context, t *Target, tag string) (r *Replay, err error) {
 	repo, err := github.ParseRepo(t.Repo)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // names the repo
 	}
 	r = &Replay{Repo: t.Repo, Base: BranchPrefix + tag + "/base", Head: BranchPrefix + tag + "/head"}
+	made := &Replay{Repo: t.Repo}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, g.Close(context.WithoutCancel(ctx), r))
+			err = errors.Join(err, g.Close(context.WithoutCancel(ctx), made))
 			r = nil
 		}
 	}()
 	if berr := g.GH.CreateBranch(ctx, repo, r.Base, t.Base); berr != nil {
 		return r, berr //nolint:wrapcheck // names the branch
 	}
+	made.Base = r.Base
 	if berr := g.GH.CreateBranch(ctx, repo, r.Head, t.Head); berr != nil {
 		return r, berr //nolint:wrapcheck // names the branch
 	}
+	made.Head = r.Head
 	body := t.Body
 	if body != "" {
 		body += "\n\n"
@@ -73,12 +77,12 @@ func (g *GitHubReplayer) Open(ctx context.Context, t *Target, tag string) (r *Re
 	if err != nil {
 		return r, err //nolint:wrapcheck // names the repo
 	}
-	r.PR = n
+	r.PR, made.PR = n, n
 	return r, nil
 }
 
-// Close closes the PR, if there is one, and deletes both branches, going on
-// past a failure so as much as possible is cleaned up.
+// Close closes the PR, if there is one, and deletes the branches it names,
+// going on past a failure so as much as possible is cleaned up.
 func (g *GitHubReplayer) Close(ctx context.Context, r *Replay) error {
 	repo, err := github.ParseRepo(r.Repo)
 	if err != nil {
@@ -91,6 +95,9 @@ func (g *GitHubReplayer) Close(ctx context.Context, r *Replay) error {
 		}
 	}
 	for _, b := range []string{r.Head, r.Base} {
+		if b == "" {
+			continue
+		}
 		if err := g.GH.DeleteBranch(ctx, repo, b); err != nil && !gone(err) {
 			errs = append(errs, err)
 		}

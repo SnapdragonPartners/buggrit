@@ -81,6 +81,13 @@ type Location struct {
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
+// validName checks a name against nameRE and git's rules for a ref
+// component, since an experiment's name is in its replay's branches: no
+// "..", and no trailing "." or ".lock".
+func validName(s string) bool {
+	return nameRE.MatchString(s) && !strings.Contains(s, "..") && !strings.HasSuffix(s, ".") && !strings.HasSuffix(s, ".lock")
+}
+
 // ParseBenchmark decodes and validates a benchmark file strictly, and
 // returns it with the sha256 of its bytes, which identifies it in the
 // database.
@@ -90,8 +97,8 @@ func ParseBenchmark(data []byte) (*Benchmark, string, error) {
 		return nil, "", fmt.Errorf("benchmark: %w", err)
 	}
 	var errs []error
-	if !nameRE.MatchString(b.Name) {
-		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-'"))
+	if !validName(b.Name) {
+		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'"))
 	}
 	errs = append(errs, b.validate("target")...)
 	if len(b.Defects) == 0 {
@@ -112,8 +119,8 @@ func validateDefects(defects []Defect) []error {
 		d := &defects[i]
 		f := fmt.Sprintf("defects[%d]", i)
 		switch {
-		case !nameRE.MatchString(d.ID):
-			errs = append(errs, fmt.Errorf("%s.id must be lowercase letters, digits, '.', '_' or '-'", f))
+		case !validName(d.ID):
+			errs = append(errs, fmt.Errorf("%s.id must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'", f))
 		case seen[d.ID]:
 			errs = append(errs, fmt.Errorf("%s.id %q is repeated", f, d.ID))
 		}
@@ -201,8 +208,8 @@ func ParseExperiment(data []byte) (*Experiment, error) {
 		e.BaseConfig = DefaultBaseConfig
 	}
 	var errs []error
-	if !nameRE.MatchString(e.Name) {
-		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-'"))
+	if !validName(e.Name) {
+		errs = append(errs, errors.New("name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'"))
 	}
 	errs = append(errs, e.validateSubject()...)
 	if e.Runs < 1 || e.Runs > maxRuns {
@@ -262,8 +269,8 @@ func (e *Experiment) validateArms() []error {
 			a.Ref = DefaultRef
 		}
 		switch {
-		case !nameRE.MatchString(a.Name):
-			errs = append(errs, fmt.Errorf("arms[%d].name must be lowercase letters, digits, '.', '_' or '-'", i))
+		case !validName(a.Name):
+			errs = append(errs, fmt.Errorf("arms[%d].name must be lowercase letters, digits, '.', '_' or '-', without '..' or a trailing '.' or '.lock'", i))
 		case seen[a.Name]:
 			errs = append(errs, fmt.Errorf("arms[%d].name %q is repeated", i, a.Name))
 		}

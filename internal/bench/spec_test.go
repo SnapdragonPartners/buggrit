@@ -91,6 +91,9 @@ func TestParseBenchmark(t *testing.T) {
 		{"no defects", func(m map[string]any) { m["defects"] = []any{} }, "at least one"},
 		{"unknown key", func(m map[string]any) { m["extra"] = 1 }, "unknown field"},
 		{"bad name", func(m map[string]any) { m["name"] = "Has Space" }, "name must be"},
+		{"double dot", func(m map[string]any) { m["name"] = "a..b" }, "name must be"},
+		{"trailing dot", func(m map[string]any) { m["name"] = "a." }, "name must be"},
+		{"lock suffix", func(m map[string]any) { m["name"] = "a.lock" }, "name must be"},
 		{"repeated defect", func(m map[string]any) { defect(m, 1)["id"] = "d1" }, `"d1" is repeated`},
 		{"half range", func(m map[string]any) {
 			defect(m, 0)["locations"] = []any{map[string]any{"path": "a.go", "start": 3}}

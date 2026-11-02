@@ -109,7 +109,8 @@ A benchmark is a checked-in file, `bench/<name>.json`:
 ```
 
 - `name` and the arm names are lowercase letters, digits, `.`, `_` and
-  `-`.
+  `-`, without `..` or a trailing `.` or `.lock` (the experiment's name is
+  in its replay's branch names).
 - `benchmark` is a path in this repository; without one, give a `target`
   instead (`repo`, `base`, `head`, `title`, `body`), and the report covers
   latency and lists the findings side by side, unscored.

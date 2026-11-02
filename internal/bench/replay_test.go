@@ -62,6 +62,24 @@ func TestGitHubReplayerOpenFailureCleansUp(t *testing.T) {
 	}
 }
 
+// Opening a replay whose branches exist already (a rerun prepare) fails
+// and leaves them alone: they're the earlier replay's, and its cleanup's.
+func TestGitHubReplayerOpenKeepsExistingBranches(t *testing.T) {
+	fake := githubtest.New(t, "o/r")
+	r := &GitHubReplayer{GH: fake.Client(githubtest.DefaultToken)}
+	target := &Target{Repo: "o/r", Base: shaA, Head: shaB, Title: "T"}
+	first, err := r.Open(context.Background(), target, "exp/1-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Open(context.Background(), target, "exp/1-1"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("second Open = %v", err)
+	}
+	if b := fake.Branches(); b[first.Base] != shaA || b[first.Head] != shaB || fake.PR(first.PR).Closed {
+		t.Fatalf("the first replay was touched: branches %v", b)
+	}
+}
+
 // Only "Reference does not exist" means a branch is already gone; another
 // 422, such as a protected branch's refusal, is a failure.
 func TestGone(t *testing.T) {
