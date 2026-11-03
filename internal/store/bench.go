@@ -69,7 +69,7 @@ func (b benchStore) LoadExperiment(ctx context.Context, w bench.WorkflowRun) (*b
 	case err != nil:
 		return nil, fmt.Errorf("load the experiment of workflow run %d: %w", w.ID, err)
 	}
-	ex, err := bench.ParseExperiment(row.Spec)
+	ex, err := bench.ParseRecordedExperiment(row.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("the stored experiment: %w", err)
 	}

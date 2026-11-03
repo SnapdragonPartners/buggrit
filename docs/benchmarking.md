@@ -50,7 +50,8 @@ An arm is a buggrit ref, a config overlay and a name:
 - **`name`** becomes the runs' telemetry label, `<experiment>/<arm>`, so
   rerunning an experiment adds to the same groups.
 - **Model keys.** The workflow gives each run `LUNAROUTE_API_KEY`,
-  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (organization secrets). An
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GOOGLE_GENAI_API_KEY`
+  (organization secrets; the last is for `"provider": "google"`). An
   `api_key_env` naming anything else is empty in Actions.
 
 Compare against the production arm (the dogfood config, `deepseek-4.1-flash`
@@ -103,7 +104,6 @@ A benchmark is a checked-in file, `bench/<name>.json`:
             "max_output_tokens": 16000},
   "runs": 3,
   "parallel": 2,
-  "issue": 19,
   "arms": [
     {"name": "deepseek-medium"},
     {"name": "glm-medium", "overlay": {"models": {"find": {"model": "glm-5.3"}}}}
@@ -130,7 +130,10 @@ A benchmark is a checked-in file, `bench/<name>.json`:
   limit holds across runs anyway (design §9).
 - `base_config` replaces `.github/buggrit.json` as the base, a path in
   this repository.
-- `issue`, if set, gets the report as a comment (in this repository).
+- There's no `issue`: the report goes to the run's job summary, and
+  everything it's built from is in the database, so it can be regenerated
+  at any time (below). An experiment recorded while `issue` existed still
+  regenerates; a new file naming it is rejected.
 
 Check a file before spending model time on it:
 
@@ -172,7 +175,7 @@ jobs:
    minutes.
 3. **report** reads the runs back by workflow run and attempt, has the
    judge score each run not yet scored, records the scores, and writes the
-   report to the job summary and, with `issue`, as a comment. Its
+   report to the job summary. Its
    timeout grows with the runs (3 minutes each, plus 10, at most 6
    hours; `check` prints it). Each score is saved as it's made, so a
    report cut off keeps what it judged. A run the
@@ -236,9 +239,7 @@ BUGGRIT_DATABASE_URL=... go run ./cmd/buggrit-bench report --workflow-run <id> -
 ```
 
 Without `--no-judge` it also scores any run the judge missed, which needs
-the judge's key in the environment. `--out report.md` writes a file;
-`--comment` posts it on the experiment's issue (with `GITHUB_TOKEN` set),
-updating the comment already there for that workflow run and attempt.
+the judge's key in the environment. `--out report.md` writes a file.
 
 A real extra finding that's still in the code is worth an issue, as
 #13–#15 were; if it was in the target, add it to the benchmark as a known

@@ -11,7 +11,8 @@ name: bench
 #   gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
 #
 # Model keys: an arm's or the judge's api_key_env must be one the steps
-# pass, LUNAROUTE_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY.
+# pass: LUNAROUTE_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY or
+# GOOGLE_GENAI_API_KEY.
 #
 # The database's identity provider admits this workflow only as it is on
 # main (docs/database.md), so dispatch it from main.
@@ -190,6 +191,7 @@ jobs:
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
           BUGGRIT_RATE_LIMITS: ${{ vars.BUGGRIT_RATE_LIMITS }}
           BUGGRIT_TELEMETRY_LABEL: ${{ matrix.label }}
@@ -218,13 +220,6 @@ jobs:
       - name: Build buggrit-bench
         run: go build -o "$RUNNER_TEMP/buggrit-bench" ./cmd/buggrit-bench
 
-      - name: Mint App token
-        id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ vars.BUGGRIT_APP_ID }}
-          private-key: ${{ secrets.BUGGRIT_APP_PRIVATE_KEY }}
-
       - name: Connect to the database
         id: db
         uses: ./.github/actions/database
@@ -235,18 +230,18 @@ jobs:
 
       - name: Score and report
         env:
-          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
           EXPERIMENT: ${{ inputs.experiment }}
           REPLAY: ${{ needs.prepare.outputs.replay }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
           BUGGRIT_DATABASE_URL: ${{ steps.db.outputs.url }}
           BUGGRIT_DATABASE_ERROR: ${{ steps.db.outputs.error }}
         run: |
           printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"
           "$RUNNER_TEMP/buggrit-bench" report --experiment "$RUNNER_TEMP/experiment.json" \
-            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md" --comment
+            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md"
 
   cleanup:
     needs: [prepare, review, report]

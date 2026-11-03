@@ -29,7 +29,7 @@ const (
 // writeExperiment writes an experiment on the checked-in benchmark.
 func writeExperiment(t *testing.T, extra string) string {
 	t.Helper()
-	spec := `{"name": "trial", "benchmark": "` + fixture + `", "judge": ` + judgeJSON + `, "runs": 2, "parallel": 1, "issue": 19` + extra + `,
+	spec := `{"name": "trial", "benchmark": "` + fixture + `", "judge": ` + judgeJSON + `, "runs": 2, "parallel": 1` + extra + `,
 	  "arms": [{"name": "deepseek"}, {"name": "glm", "ref": "exp/glm", "overlay": {"models": {"find": {"model": "glm-5.3"}}, "limits": {"pass_deadline": "30m"}}}]}`
 	path := filepath.Join(t.TempDir(), "experiment.json")
 	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
@@ -332,14 +332,13 @@ func reportEnv(summary string) func(string) string {
 
 func TestReport(t *testing.T) {
 	fake := githubtest.New(t, "o/r")
-	fake.AddPR(19, "x", "y", "") // the issue the report goes to
 	db := newMemDB()
 	judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
 	replay := `{"repo": "o/r", "pr": 11, "base": "bench/trial/42-1/base", "head": "bench/trial/42-1/head"}`
 	dir := t.TempDir()
 	summary, out := filepath.Join(dir, "summary.md"), filepath.Join(dir, "report.md")
 	var stdout, stderr bytes.Buffer
-	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--out", out, "--comment"}
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--out", out}
 	if code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(summary), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -362,10 +361,6 @@ func TestReport(t *testing.T) {
 	if s, _ := os.ReadFile(summary); string(s) != string(report) {
 		t.Error("the job summary isn't the report")
 	}
-	marker := "<!-- buggrit-bench:report 42-1 -->\n"
-	if c := fake.PR(19).IssueComments; len(c) != 1 || c[0].Body != marker+string(report) {
-		t.Fatalf("issue comments = %+v", c)
-	}
 
 	// Regenerating reads the experiment back and judges nothing again.
 	stdout.Reset()
@@ -374,17 +369,6 @@ func TestReport(t *testing.T) {
 	}
 	if len(judge.Calls()) != 1 || !strings.Contains(stdout.String(), "| 1 of 10 |") {
 		t.Fatalf("regenerated report:\n%s", stdout.String())
-	}
-
-	// Regenerating with --comment after an override updates the report's
-	// comment instead of adding one.
-	db.scores["r1"].Defects[0].Override = bench.Found
-	stdout.Reset()
-	if code := run(context.Background(), fakeDeps(fake, db, judge), []string{"report", "--no-judge", "--comment"}, reportEnv(""), &stdout, &stderr); code != 0 {
-		t.Fatalf("regenerate with --comment: exit %d: %s", code, stderr.String())
-	}
-	if c := fake.PR(19).IssueComments; len(c) != 1 || c[0].Body != marker+stdout.String() || c[0].Body == marker+string(report) {
-		t.Fatalf("after regenerating, issue comments = %+v", c)
 	}
 }
 
