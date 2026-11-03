@@ -103,7 +103,10 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		opt(&o)
 	}
 
-	lim := ratelimit.NewInMemoryLimiter(ratelimit.Config{MaxConcurrency: cfg.Limits.MaxConcurrency})
+	lim, err := ratelimit.NewInMemoryLimiter(ratelimit.Config{MaxConcurrency: cfg.Limits.MaxConcurrency})
+	if err != nil {
+		return nil, fmt.Errorf("limiter: %w", err)
+	}
 	out := &Clients{Limiter: lim}
 	if o.shared != nil && len(o.shared.Stages) > 0 {
 		out.Shared = &SharedState{now: time.Now}
@@ -128,7 +131,6 @@ func New(cfg *config.Config, opts ...Option) (*Clients, error) {
 		c := forStage(middleware.RecommendedChat(base, middleware.RecommendedConfig{
 			Limiter:  stageLim,
 			Observer: o.observer,
-			Retry:    middleware.DefaultRetryConfig(),
 			Timeout:  m.RequestTimeout.Std(),
 		}), s, &m, o.reasoning)
 		switch s {
@@ -223,7 +225,7 @@ func newProviderClient(m *config.Model, apiKey string) (llms.ChatClient, error) 
 		if m.BaseURL != "" {
 			opts = append(opts, openai.WithBaseURL(m.BaseURL))
 		}
-		c, err = openai.NewChat(opts...)
+		c, err = openai.New(opts...)
 	case config.ProviderGoogle:
 		opts := []google.Option{google.WithAPIKey(apiKey), google.WithModel(m.Model)}
 		if m.BaseURL != "" {
