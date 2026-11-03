@@ -132,6 +132,20 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	if err != nil || got.ID != rec.ID || got.Replay.PR != 11 || got.Benchmark == nil || got.Benchmark.Defects[0].ID != "d1" || got.Experiment.Arms[1].Name != "b" {
 		t.Fatalf("LoadExperiment = %+v, %v", got, err)
 	}
+	// An experiment recorded while "issue" was a field still loads, its
+	// spec as recorded.
+	old := json.RawMessage(`{"name": "old", "benchmark": "bench/b1.json", "judge": {"provider": "openai-compatible", "base_url": "https://x.example/v1", "model": "j"}, "Issue": 19, "arms": [{"name": "a"}]}`)
+	oldW := bench.WorkflowRun{ID: 41, Attempt: 1}
+	oldRec := &bench.ExperimentRecord{
+		ID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Experiment: &bench.Experiment{Name: "old"}, Spec: old, Workflow: oldW,
+		BenchmarkHash: "sha256:abc", Replay: &bench.Replay{Repo: "o/r", PR: 10},
+	}
+	if _, serr := b.SaveExperiment(ctx, oldRec); serr != nil {
+		t.Fatal(serr)
+	}
+	if got, lerr := b.LoadExperiment(ctx, oldW); lerr != nil || got.Experiment.Name != "old" || !strings.Contains(string(got.Spec), `"Issue": 19`) {
+		t.Fatalf("LoadExperiment of a recorded issue = %+v, %v", got, lerr)
+	}
 	if _, lerr := b.LoadExperiment(ctx, bench.WorkflowRun{ID: 7, Attempt: 1}); !errors.Is(lerr, ErrNoExperiment) {
 		t.Fatalf("LoadExperiment of an unknown run: %v", lerr)
 	}
