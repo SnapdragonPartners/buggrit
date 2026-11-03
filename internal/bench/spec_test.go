@@ -183,6 +183,13 @@ func TestParseRecordedExperiment(t *testing.T) {
 	if e.Name != "x" || e.Runs != 1 || len(e.Arms) != 1 {
 		t.Fatalf("experiment = %+v", e)
 	}
+	// encoding/json matched the old field case-insensitively, so any
+	// spelling of it may be recorded.
+	for _, key := range []string{"Issue", "ISSUE"} {
+		if _, err := ParseRecordedExperiment([]byte(`{"name": "x", ` + target + `, "` + key + `": 19, "arms": [{"name": "a"}]}`)); err != nil {
+			t.Errorf("%s: %v", key, err)
+		}
+	}
 	for _, spec := range []string{
 		`{"name": "x", ` + target + `, "issue": 19, "model": "m", "arms": [{"name": "a"}]}`,
 		`{"name": "x", ` + target + `, "arms": [{"name": "a"}]} {}`,

@@ -305,15 +305,16 @@ func JudgeConfig(m *config.Model) (*config.Config, error) {
 // retired fields are ones an earlier harness accepted and this one
 // doesn't: "issue" named an issue for the report's comment, which the
 // database and the job summary replaced. A new experiment naming one is
-// rejected.
+// rejected. Keys match case-insensitively, as encoding/json matched the
+// old field, so "Issue" was accepted then and is dropped now.
 func ParseRecordedExperiment(data []byte) (*Experiment, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return nil, fmt.Errorf("experiment: %w", err)
 	}
 	dropped := false
-	for _, k := range []string{"issue"} {
-		if _, ok := fields[k]; ok {
+	for k := range fields {
+		if strings.EqualFold(k, "issue") {
 			delete(fields, k)
 			dropped = true
 		}
