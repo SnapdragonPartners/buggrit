@@ -50,7 +50,8 @@ An arm is a buggrit ref, a config overlay and a name:
 - **`name`** becomes the runs' telemetry label, `<experiment>/<arm>`, so
   rerunning an experiment adds to the same groups.
 - **Model keys.** The workflow gives each run `LUNAROUTE_API_KEY`,
-  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` (organization secrets). An
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GOOGLE_GENAI_API_KEY`
+  (organization secrets; the last is for `"provider": "google"`). An
   `api_key_env` naming anything else is empty in Actions.
 
 Compare against the production arm (the dogfood config, `deepseek-4.1-flash`
