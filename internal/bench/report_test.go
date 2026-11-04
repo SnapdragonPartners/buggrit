@@ -126,8 +126,10 @@ func reportInput(t *testing.T) *ReportInput {
 		},
 	}
 	return &ReportInput{
-		// glm's ref has no recorded commit, as in an experiment recorded
-		// before schema v4, so it shows the ref alone.
+		// Defensively, a ref with no commit in the map shows alone. A
+		// recorded experiment can't have that mix: report refuses commits
+		// that miss an arm's ref, and one recorded before schema v4 has
+		// none (TestReportWithoutCommits).
 		Experiment: &ExperimentRecord{Experiment: e, Benchmark: b, BenchmarkHash: "sha256:0123456789abcdef", Replay: &Replay{Repo: "o/r", PR: 11},
 			Commits: map[string]string{"main": "1234567890" + strings.Repeat("0", 30)}},
 		Runs: runs, Scores: scores, RunURL: "https://github.com/o/r/actions/runs/42/attempts/1",
@@ -163,6 +165,22 @@ func TestReportGolden(t *testing.T) {
 }
 
 // Without a benchmark the report has no score columns or sections.
+// An experiment recorded before schema v4 loads with no commits, so every
+// arm shows its ref alone.
+func TestReportWithoutCommits(t *testing.T) {
+	in := reportInput(t)
+	in.Experiment.Commits = map[string]string{}
+	got := Report(in)
+	for _, want := range []string{"| deepseek | `main` |", "| glm | `exp/glm` |"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, " @ ") {
+		t.Errorf("report shows a commit it doesn't have:\n%s", got)
+	}
+}
+
 func TestReportWithoutBenchmark(t *testing.T) {
 	in := reportInput(t)
 	// Scores without their benchmark (a row whose benchmark is gone) are
