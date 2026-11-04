@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -146,14 +147,13 @@ func newBenchLocal(t *testing.T) *benchLocal {
 }
 
 // run runs the repository's copy of bench-local.sh and returns its exit
-// code and the fakes' log.
-func (b *benchLocal) run(env ...string) (int, []string) {
+// code, the fakes' log and the script's own output.
+func (b *benchLocal) run(env ...string) (code int, log []string, output string) {
 	b.t.Helper()
 	cmd := exec.Command("bash", filepath.Join(b.dir, "scripts", "bench-local.sh"), filepath.Join(b.root, "exp.json")) //nolint:noctx,gosec // a test of local scripts
 	cmd.Dir = b.dir
 	cmd.Env = append(append([]string{}, b.env...), env...)
 	out, err := cmd.CombinedOutput()
-	code := 0
 	if ee := (*exec.ExitError)(nil); errors.As(err, &ee) {
 		code = ee.ExitCode()
 	} else if err != nil {
@@ -164,7 +164,7 @@ func (b *benchLocal) run(env ...string) (int, []string) {
 	if err != nil && !os.IsNotExist(err) {
 		b.t.Fatal(err)
 	}
-	return code, strings.Split(strings.TrimSpace(string(data)), "\n")
+	return code, strings.Split(strings.TrimSpace(string(data)), "\n"), string(out)
 }
 
 // calls is each log line's first word and, for bench calls, its command.
@@ -221,12 +221,24 @@ func TestBenchLocal(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			code, log := b.run(tc.env...)
+			code, log, out := b.run(tc.env...)
 			if code != tc.code {
 				t.Errorf("exit code %d, want %d", code, tc.code)
 			}
 			if got := strings.Join(calls(log), ", "); got != strings.Join(tc.calls, ", ") {
 				t.Errorf("calls: %s\nwant:  %s", got, strings.Join(tc.calls, ", "))
+			}
+			// The closing message names a report only when one was written,
+			// and the regenerate command needs the database.
+			reported := slices.Contains(tc.calls, "bench report")
+			for msg, want := range map[string]bool{
+				"report in " + filepath.Join(b.root, "bench", "report.md"):                         reported,
+				"regenerate it: BUGGRIT_DATABASE_URL=... buggrit-bench report --workflow-run 4242": reported,
+				"no report written": !reported && slices.Contains(tc.calls, "bench prepare"),
+			} {
+				if strings.Contains(out, msg) != want {
+					t.Errorf("output contains %q: %v, want %v", msg, !want, want)
+				}
 			}
 			if wt := b.git(b.dir, "worktree", "list"); strings.Count(wt, "\n") != 0 {
 				t.Errorf("arm worktrees left behind:\n%s", wt)

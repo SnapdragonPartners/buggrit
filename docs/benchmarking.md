@@ -8,7 +8,8 @@ summary; this is the runbook.
 An **experiment** runs several **arms** (variants of buggrit) a few times
 each against one **target**, a pull request replayed from two commits.
 Each run is a fresh first pass, `buggrit review --dry-run`, on GitHub
-Actions. Everything except recall comes from the runs' telemetry
+Actions, or, for a model the runners can't reach, on your own machine
+([Running one locally](#running-one-locally)). Everything except recall comes from the runs' telemetry
 ([telemetry.md](telemetry.md)). With a **benchmark**, the target's list
 of known defects, a **judge** model scores each run's findings against
 those defects, and the scores go in the database.
@@ -148,6 +149,10 @@ It validates the experiment, reads the benchmark, merges every arm's
 overlay and prints what would run. It opens nothing.
 
 ## Running one
+
+Dispatch the bench workflow. For a model GitHub's runners can't reach,
+`scripts/bench-local.sh` takes the same steps from your machine
+([below](#running-one-locally)), with the same database and cleanup.
 
 ```sh
 gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"

@@ -110,8 +110,14 @@ finish() {
   for w in "${worktrees[@]+"${worktrees[@]}"}"; do
     git -C "$root" worktree remove --force "$w" || true
   done
-  say "workflow run $run_id attempt 1; report in $dir/report.md"
-  say "regenerate it: buggrit-bench report --workflow-run $run_id --attempt 1 --no-judge"
+  # BENCH_DIR started empty, so a report there is this experiment's: a
+  # report whose judge failed on a run is still written.
+  if [ -e "$dir/report.md" ]; then
+    say "workflow run $run_id attempt 1; report in $dir/report.md"
+    say "regenerate it: BUGGRIT_DATABASE_URL=... buggrit-bench report --workflow-run $run_id --attempt 1 --no-judge"
+  else
+    say "workflow run $run_id attempt 1: no report written"
+  fi
   exit "$code"
 }
 trap finish EXIT
