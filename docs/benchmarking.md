@@ -264,6 +264,40 @@ For a model in **Ollama**:
     "limits": {"pass_deadline": "6h"}}}
   ```
 
+What the first local model (Qwen3-Coder 30B at Q4, Ollama 0.33.2, a
+128 GB Mac, #67) taught, for the next one:
+
+- **Smoke-test it first** with one `buggrit review --dry-run --config`
+  on a small PR. Check that it calls tools sensibly and that its
+  request is accepted (a refused `think` fails on the first call). Pick a
+  PR whose head buggrit hasn't completed a pass on, or the review skips
+  it. Nothing needs the database for this.
+- **Check the opening prompt's size against the context.** Each turn's
+  log line gives its prompt tokens (`83453 in`). Keep the largest well
+  under `num_ctx`: Ollama cuts silently, and the judge sees only
+  findings, so a cut run just looks like a weak one. A file read adds
+  roughly 6k tokens. A 128k context left too little room on
+  `pr9-e619281`, so that run was stopped and rerun at 256k.
+- **Budget memory for the cache, not just the weights.** `ollama ps`
+  shows what a context costs: 32 GB at 128k and 45 GB at 256k for this
+  model. Unload other models first (`ollama stop <name>`).
+- **Expect a slow first turn.** Ollama processed the 84k-token opening
+  at 120–180 tokens a second, slower as the context grew: 21 minutes.
+  Later turns process only what's new: seconds for a short tool result,
+  3–4 minutes for a file read. The review log is silent until a turn
+  returns, so watch progress in Ollama's own log
+  (`~/.ollama/logs/server.log`, its `prompt processing ... progress`
+  lines).
+- **Compare turns, not wall time, across runs.** Ollama keeps the
+  processed prompt between runs, and every run's opening is identical,
+  so only the first run's first turn pays for it (later ones took about
+  20 seconds). The report's wall times aren't comparable across an
+  arm's runs.
+- **Read the turn counts before the recall.** A run that submits on its
+  first turn without calling a tool ("complete" or "partial") is the
+  model stopping early, not a harness failure. This model did that in 2
+  of 3 runs.
+
 ## Reading the report
 
 - **Arms**: each arm's identity groups, with its ref and the commit
