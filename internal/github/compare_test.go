@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/SnapdragonPartners/buggrit/internal/github"
@@ -51,5 +52,26 @@ func TestCompare(t *testing.T) {
 	}
 	if _, err := c.CompareDiff(ctx, repo, "old", "new"); !errors.Is(err, github.ErrDiffTooLarge) {
 		t.Errorf("too large: err = %v", err)
+	}
+}
+
+func TestCommitSHA(t *testing.T) {
+	fake, c := setup(t)
+	ctx := context.Background()
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	fake.SetCommit("main", sha)
+	fake.SetCommit("feat/x", sha)
+	fake.SetCommit("bad", "not a sha")
+
+	for _, ref := range []string{"main", "feat/x"} {
+		if got, err := c.CommitSHA(ctx, repo, ref); err != nil || got != sha {
+			t.Errorf("%s: %q, %v", ref, got, err)
+		}
+	}
+	if _, err := c.CommitSHA(ctx, repo, "unknown"); !github.IsNotFound(err) {
+		t.Errorf("unknown ref: err = %v, want not found", err)
+	}
+	if _, err := c.CommitSHA(ctx, repo, "bad"); err == nil || !strings.Contains(err.Error(), "not a commit SHA") {
+		t.Errorf("bad response: err = %v", err)
 	}
 }

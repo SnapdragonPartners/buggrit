@@ -16,11 +16,11 @@ import (
 )
 
 // A review works with schema v2, which has no score tables; the harness
-// needs v3.
-func TestOpenBenchNeedsV3(t *testing.T) {
+// needs v4, which records the commits an experiment's arms built.
+func TestOpenBenchNeedsV4(t *testing.T) {
 	dsn := newDatabase(t)
 	migrateAll(t, dsn)
-	exec(t, dsn, "DELETE FROM buggrit.schema_version WHERE version = 3")
+	exec(t, dsn, "DELETE FROM buggrit.schema_version WHERE version IN (3, 4)")
 	ctx := context.Background()
 	s, err := Open(ctx, dsn)
 	if err != nil {
@@ -116,7 +116,8 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	w := bench.WorkflowRun{ID: 42, Attempt: 1}
 	rec := &bench.ExperimentRecord{
 		ID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Experiment: ex, Spec: spec, Workflow: w, BenchmarkHash: "sha256:abc", Benchmark: bm,
-		Replay: &bench.Replay{Repo: "o/r", PR: 11, Base: "bench/exp/42-1/base", Head: "bench/exp/42-1/head"},
+		Replay:  &bench.Replay{Repo: "o/r", PR: 11, Base: "bench/exp/42-1/base", Head: "bench/exp/42-1/head"},
+		Commits: map[string]string{"main": strings.Repeat("1", 40)},
 	}
 	id, err := b.SaveExperiment(ctx, rec)
 	if err != nil || id != rec.ID {
@@ -129,7 +130,7 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 		t.Fatalf("SaveExperiment again = %q, %v", id, err)
 	}
 	got, err := b.LoadExperiment(ctx, w)
-	if err != nil || got.ID != rec.ID || got.Replay.PR != 11 || got.Benchmark == nil || got.Benchmark.Defects[0].ID != "d1" || got.Experiment.Arms[1].Name != "b" {
+	if err != nil || got.ID != rec.ID || got.Replay.PR != 11 || got.Benchmark == nil || got.Benchmark.Defects[0].ID != "d1" || got.Experiment.Arms[1].Name != "b" || got.Commits["main"] != strings.Repeat("1", 40) {
 		t.Fatalf("LoadExperiment = %+v, %v", got, err)
 	}
 	// An experiment recorded while "issue" was a field still loads, its
@@ -143,7 +144,8 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	if _, serr := b.SaveExperiment(ctx, oldRec); serr != nil {
 		t.Fatal(serr)
 	}
-	if got, lerr := b.LoadExperiment(ctx, oldW); lerr != nil || got.Experiment.Name != "old" || !strings.Contains(string(got.Spec), `"Issue": 19`) {
+	// An experiment recorded without commits (before v4) loads with none.
+	if got, lerr := b.LoadExperiment(ctx, oldW); lerr != nil || got.Experiment.Name != "old" || !strings.Contains(string(got.Spec), `"Issue": 19`) || len(got.Commits) != 0 {
 		t.Fatalf("LoadExperiment of a recorded issue = %+v, %v", got, lerr)
 	}
 	if _, lerr := b.LoadExperiment(ctx, bench.WorkflowRun{ID: 7, Attempt: 1}); !errors.Is(lerr, ErrNoExperiment) {

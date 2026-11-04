@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Comparison statuses, from GitHub's compare endpoint. base is an ancestor
@@ -58,4 +59,36 @@ func (c *Client) CompareDiff(ctx context.Context, repo Repo, base, head string) 
 		return nil, fmt.Errorf("parse compare diff %s...%s in %s: %w", short(base), short(head), repo, err)
 	}
 	return d, nil
+}
+
+// CommitSHA resolves ref (a branch, tag or SHA) to the full SHA of the
+// commit it names now. A ref GitHub doesn't know is an *APIError for which
+// IsNotFound is true.
+func (c *Client) CommitSHA(ctx context.Context, repo Repo, ref string) (string, error) {
+	_, body, err := c.do(ctx, &request{
+		method: http.MethodGet,
+		url:    c.rest(repo.segments("commits", ref)...),
+		accept: "application/vnd.github.sha",
+	})
+	if err != nil {
+		return "", fmt.Errorf("resolve %s in %s: %w", ref, repo, err)
+	}
+	sha := strings.TrimSpace(string(body))
+	if !IsFullSHA(sha) {
+		return "", fmt.Errorf("resolve %s in %s: response is not a commit SHA: %.80q", ref, repo, sha)
+	}
+	return sha, nil
+}
+
+// IsFullSHA says whether s is a full, lowercase hex commit SHA.
+func IsFullSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }

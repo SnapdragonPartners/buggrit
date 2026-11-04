@@ -24,9 +24,13 @@ const identityCommit = "216d2fa09917f959db557db8dd44f3b91dbbbb34"
 
 // matrixEntry is one review job: one run of one arm.
 type matrixEntry struct {
-	Arm   string `json:"arm"`
-	Ref   string `json:"ref"`
-	Label string `json:"label"`
+	Arm string `json:"arm"`
+	// Ref is the arm's ref as given, and Commit the SHA prepare resolved it
+	// to, which the job builds: every run of an arm builds the same commit,
+	// however late its job starts (#60).
+	Ref    string `json:"ref"`
+	Commit string `json:"commit"`
+	Label  string `json:"label"`
 	// Config is the arm's merged config, as JSON text.
 	Config string `json:"config"`
 	Repo   string `json:"repo"`
@@ -37,21 +41,40 @@ type matrixEntry struct {
 	Timeout int `json:"timeout"`
 }
 
+// benchFlags are the flags commands share. Each command registers only
+// the ones it uses.
 type benchFlags struct {
 	fs                                *flag.FlagSet
+	getenv                            func(string) string
 	apiURL, buggritRepo, output, root string
 	workflowRun                       int64
 	attempt                           int
 }
 
 func newFlags(name string, getenv func(string) string, stderr io.Writer) *benchFlags {
-	f := &benchFlags{fs: flag.NewFlagSet(name, flag.ContinueOnError)}
+	f := &benchFlags{fs: flag.NewFlagSet(name, flag.ContinueOnError), getenv: getenv}
 	f.fs.SetOutput(stderr)
-	runID, _ := strconv.ParseInt(getenv("GITHUB_RUN_ID"), 10, 64)
-	attempt, _ := strconv.Atoi(getenv("GITHUB_RUN_ATTEMPT"))
-	f.fs.StringVar(&f.apiURL, "api-url", orDefault(getenv("GITHUB_API_URL"), github.DefaultAPIURL), "GitHub API URL (default $GITHUB_API_URL)")
+	return f
+}
+
+// apiURLFlag registers --api-url, for the commands that call GitHub.
+func (f *benchFlags) apiURLFlag() *benchFlags {
+	f.fs.StringVar(&f.apiURL, "api-url", orDefault(f.getenv("GITHUB_API_URL"), github.DefaultAPIURL), "GitHub API URL (default $GITHUB_API_URL)")
+	return f
+}
+
+// workflowRunFlags registers --workflow-run and --attempt.
+func (f *benchFlags) workflowRunFlags() *benchFlags {
+	runID, _ := strconv.ParseInt(f.getenv("GITHUB_RUN_ID"), 10, 64)
+	attempt, _ := strconv.Atoi(f.getenv("GITHUB_RUN_ATTEMPT"))
 	f.fs.Int64Var(&f.workflowRun, "workflow-run", runID, "the workflow run that ran the experiment (default $GITHUB_RUN_ID)")
 	f.fs.IntVar(&f.attempt, "attempt", max(attempt, 1), "its attempt (default $GITHUB_RUN_ATTEMPT, else 1)")
+	return f
+}
+
+// rootFlag registers --root.
+func (f *benchFlags) rootFlag() *benchFlags {
+	f.fs.StringVar(&f.root, "root", ".", "buggrit's checkout, which the experiment's paths are relative to")
 	return f
 }
 
@@ -63,12 +86,11 @@ func orDefault(v, def string) string {
 }
 
 // runPrepare validates the experiment, checks every arm's ref records an
-// identity, opens the replay and writes the matrix and the replay as step
-// outputs (or to stdout).
+// identity, resolves each to a commit, opens the replay and writes the
+// matrix, the commits and the replay as step outputs (or to stdout).
 func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
-	f := newFlags("prepare", getenv, stderr)
+	f := newFlags("prepare", getenv, stderr).apiURLFlag().workflowRunFlags().rootFlag()
 	path := f.fs.String("experiment", "", "the experiment file, or - for stdin (required)")
-	f.fs.StringVar(&f.root, "root", ".", "buggrit's checkout, which the experiment's paths are relative to")
 	f.fs.StringVar(&f.buggritRepo, "buggrit-repo", getenv("GITHUB_REPOSITORY"), "the repository arms' refs are in (default $GITHUB_REPOSITORY)")
 	f.fs.StringVar(&f.output, "output", getenv("GITHUB_OUTPUT"), "append step outputs here (default $GITHUB_OUTPUT; else print them)")
 	if err := f.fs.Parse(args); err != nil {
@@ -97,8 +119,9 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 		return err
 	}
 	gh := d.github(token, f.apiURL)
-	if rerr := checkRefs(ctx, gh, f.buggritRepo, l.exp.Arms); rerr != nil {
-		return rerr
+	commits, err := resolveRefs(ctx, gh, f.buggritRepo, l.exp.Arms, stderr)
+	if err != nil {
+		return err
 	}
 	if derr := checkDatabase(ctx, d, dbURL); derr != nil {
 		return derr
@@ -118,12 +141,13 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 		a := &l.exp.Arms[i]
 		for n := 1; n <= l.exp.Runs; n++ {
 			include = append(include, matrixEntry{
-				Arm: a.Name, Ref: a.Ref, Run: n, Label: l.exp.Label(a.Name), Config: string(l.configs[a.Name]),
+				Arm: a.Name, Ref: a.Ref, Commit: commits[a.Ref], Run: n, Label: l.exp.Label(a.Name), Config: string(l.configs[a.Name]),
 				Repo: replay.Repo, PR: replay.PR, Head: t.Head, Timeout: l.timeouts[a.Name],
 			})
 		}
 	}
 	err = writeOutputs(f.output, stdout, map[string]any{
+		"commits":        commits,
 		"matrix":         map[string]any{"include": include},
 		"parallel":       l.exp.Parallel,
 		"report_timeout": l.reportTimeout(),
@@ -153,28 +177,35 @@ func checkDatabase(ctx context.Context, d deps, url string) error {
 	return nil
 }
 
-// checkRefs checks that every arm's ref contains identityCommit.
-func checkRefs(ctx context.Context, gh *github.Client, repoName string, arms []bench.Arm) error {
+// resolveRefs resolves each arm's ref to the commit it names now, once
+// per distinct ref, and checks that commit contains identityCommit. It
+// logs and returns the commits by ref.
+func resolveRefs(ctx context.Context, gh *github.Client, repoName string, arms []bench.Arm, stderr io.Writer) (map[string]string, error) {
 	repo, err := github.ParseRepo(repoName)
 	if err != nil {
-		return err //nolint:wrapcheck // names the repo
+		return nil, err //nolint:wrapcheck // names the repo
 	}
-	seen := map[string]bool{}
+	commits := map[string]string{}
 	for i := range arms {
 		a := &arms[i]
-		if seen[a.Ref] {
+		if commits[a.Ref] != "" {
 			continue
 		}
-		seen[a.Ref] = true
-		st, err := gh.CompareStatus(ctx, repo, identityCommit, a.Ref)
+		sha, err := gh.CommitSHA(ctx, repo, a.Ref)
 		if err != nil {
-			return fmt.Errorf("arm %s: ref %s: %w", a.Name, a.Ref, err)
+			return nil, fmt.Errorf("arm %s: ref %s: %w", a.Name, a.Ref, err)
+		}
+		st, err := gh.CompareStatus(ctx, repo, identityCommit, sha)
+		if err != nil {
+			return nil, fmt.Errorf("arm %s: ref %s (%s): %w", a.Name, a.Ref, short(sha), err)
 		}
 		if st != github.CompareAhead && st != github.CompareIdentical {
-			return fmt.Errorf("arm %s: ref %s doesn't contain %s, which records the run's identity (#49); rebase it on main", a.Name, a.Ref, short(identityCommit))
+			return nil, fmt.Errorf("arm %s: ref %s doesn't contain %s, which records the run's identity (#49); rebase it on main", a.Name, a.Ref, short(identityCommit))
 		}
+		commits[a.Ref] = sha
+		say(stderr, "buggrit-bench: ref %s @ %s\n", a.Ref, sha)
 	}
-	return nil
+	return commits, nil
 }
 
 // writeOutputs appends name=JSON lines to a GitHub step output file, or
@@ -208,7 +239,7 @@ func writeOutputs(path string, stdout io.Writer, outputs map[string]any) error {
 
 // runCleanup closes the replay prepare opened.
 func runCleanup(ctx context.Context, d deps, args []string, getenv func(string) string, stderr io.Writer) error {
-	f := newFlags("cleanup", getenv, stderr)
+	f := newFlags("cleanup", getenv, stderr).apiURLFlag()
 	replayJSON := f.fs.String("replay", "", "the replay, as prepare wrote it (required)")
 	if err := f.fs.Parse(args); err != nil {
 		return usageError{err}

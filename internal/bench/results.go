@@ -224,8 +224,12 @@ type Store interface {
 type ExperimentRecord struct {
 	Experiment *Experiment
 	// Benchmark and BenchmarkHash are nil and "" without a benchmark.
-	Benchmark     *Benchmark
-	Replay        *Replay
+	Benchmark *Benchmark
+	Replay    *Replay
+	// Commits maps each arm's ref to the commit prepare resolved it to,
+	// which every run of the arm built. It's empty for an experiment
+	// recorded before they were (schema v4).
+	Commits       map[string]string
 	ID            string
 	BenchmarkHash string
 	// Spec is the experiment file as given.

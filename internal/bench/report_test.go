@@ -126,8 +126,11 @@ func reportInput(t *testing.T) *ReportInput {
 		},
 	}
 	return &ReportInput{
-		Experiment: &ExperimentRecord{Experiment: e, Benchmark: b, BenchmarkHash: "sha256:0123456789abcdef", Replay: &Replay{Repo: "o/r", PR: 11}},
-		Runs:       runs, Scores: scores, RunURL: "https://github.com/o/r/actions/runs/42/attempts/1",
+		// glm's ref has no recorded commit, as in an experiment recorded
+		// before schema v4, so it shows the ref alone.
+		Experiment: &ExperimentRecord{Experiment: e, Benchmark: b, BenchmarkHash: "sha256:0123456789abcdef", Replay: &Replay{Repo: "o/r", PR: 11},
+			Commits: map[string]string{"main": "1234567890" + strings.Repeat("0", 30)}},
+		Runs: runs, Scores: scores, RunURL: "https://github.com/o/r/actions/runs/42/attempts/1",
 	}
 }
 

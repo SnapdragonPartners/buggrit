@@ -35,8 +35,8 @@ ON CONFLICT (hash) DO NOTHING;
 -- name: SaveExperiment :one
 -- Saving a workflow run again keeps the first row and returns its ID.
 WITH ins AS (
-    INSERT INTO buggrit.experiment (id, name, workflow_run, attempt, spec, benchmark, replay)
-    VALUES (@id, @name, @workflow_run, @attempt, @spec, sqlc.narg('benchmark'), @replay)
+    INSERT INTO buggrit.experiment (id, name, workflow_run, attempt, spec, benchmark, replay, commits)
+    VALUES (@id, @name, @workflow_run, @attempt, @spec, sqlc.narg('benchmark'), @replay, @commits)
     ON CONFLICT (workflow_run, attempt) DO NOTHING
     RETURNING id
 )
@@ -46,7 +46,7 @@ SELECT id FROM buggrit.experiment WHERE workflow_run = @workflow_run AND attempt
 LIMIT 1;
 
 -- name: LoadExperiment :one
-SELECT e.id, e.spec, e.replay, e.benchmark, b.content AS benchmark_content
+SELECT e.id, e.spec, e.replay, e.commits, e.benchmark, b.content AS benchmark_content
 FROM buggrit.experiment e
 LEFT JOIN buggrit.benchmark b ON b.hash = e.benchmark
 WHERE e.workflow_run = @workflow_run AND e.attempt = @attempt;

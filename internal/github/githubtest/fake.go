@@ -106,6 +106,8 @@ type Server struct {
 	files map[string]map[string]string
 	// compares maps "base...head" to a stored comparison.
 	compares map[string]Comparison
+	// commits maps a ref to the commit SHA it resolves to.
+	commits map[string]string
 	// associations and permissions are set by SetAssociation and
 	// SetPermission.
 	associations map[string]string
@@ -141,6 +143,7 @@ func New(t testing.TB, repo string) *Server {
 		prs:              map[int]*PR{},
 		files:            map[string]map[string]string{},
 		compares:         map[string]Comparison{},
+		commits:          map[string]string{},
 		associations:     map[string]string{},
 		permissions:      map[string]string{},
 		branches:         map[string]string{},
@@ -215,6 +218,14 @@ func (s *Server) SetCompare(base, head string, c Comparison) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.compares[base+"..."+head] = c
+}
+
+// SetCommit stores the commit SHA ref resolves to, for CommitSHA. An
+// unknown ref is a 404.
+func (s *Server) SetCommit(ref, sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commits[ref] = sha
 }
 
 // SetAssociation sets the author association GraphQL reports on login's
@@ -344,6 +355,7 @@ func (s *Server) routes() http.Handler {
 	handle("POST /pulls/{number}/reviews", "POST review", s.postReview)
 	handle("GET /contents/{path...}", "GET contents", s.getContents)
 	handle("GET /compare/{basehead}", "GET compare", s.getCompare)
+	handle("GET /commits/{ref...}", "GET commit", s.getCommit)
 	handle("POST /pulls/{number}/comments", "POST file comment", s.postFileComment)
 	handle("POST /pulls/{number}/comments/{id}/replies", "POST reply", s.postReply)
 	handle("DELETE /pulls/comments/{id}", "DELETE review comment", s.deleteReviewComment)
@@ -546,6 +558,17 @@ func (s *Server) getCompare(r *http.Request, _ string) (int, any) {
 		return http.StatusNotAcceptable, msg("Sorry, this diff is unavailable")
 	}
 	return http.StatusOK, rawBody(c.Diff)
+}
+
+func (s *Server) getCommit(r *http.Request, _ string) (int, any) {
+	sha, ok := s.commits[r.PathValue("ref")]
+	switch {
+	case !ok:
+		return http.StatusNotFound, msg("No commit found for SHA: " + r.PathValue("ref"))
+	case r.Header.Get("Accept") != "application/vnd.github.sha":
+		return http.StatusOK, map[string]any{"sha": sha}
+	}
+	return http.StatusOK, rawBody(sha)
 }
 
 // diffAt parses the PR's diff at commit, which must be a head the PR has had.

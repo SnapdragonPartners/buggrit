@@ -51,9 +51,18 @@ func (b benchStore) SaveExperiment(ctx context.Context, e *bench.ExperimentRecor
 	if err != nil {
 		return "", fmt.Errorf("encode the replay: %w", err)
 	}
+	c := e.Commits
+	if c == nil {
+		c = map[string]string{}
+	}
+	commits, err := json.Marshal(c)
+	if err != nil {
+		return "", fmt.Errorf("encode the commits: %w", err)
+	}
 	got, err := b.q.SaveExperiment(ctx, storedb.SaveExperimentParams{
 		ID: id, Name: e.Experiment.Name, WorkflowRun: e.Workflow.ID, Attempt: int32(e.Workflow.Attempt), //nolint:gosec // an attempt number fits
 		Spec: e.Spec, Benchmark: pgtype.Text{String: e.BenchmarkHash, Valid: e.BenchmarkHash != ""}, Replay: replay,
+		Commits: commits,
 	})
 	if err != nil {
 		return "", fmt.Errorf("save experiment %s: %w", e.Experiment.Name, err)
@@ -76,6 +85,9 @@ func (b benchStore) LoadExperiment(ctx context.Context, w bench.WorkflowRun) (*b
 	rec := &bench.ExperimentRecord{ID: row.ID.String(), Experiment: ex, Spec: row.Spec, Workflow: w, Replay: &bench.Replay{}}
 	if err := json.Unmarshal(row.Replay, rec.Replay); err != nil {
 		return nil, fmt.Errorf("the stored replay: %w", err)
+	}
+	if err := json.Unmarshal(row.Commits, &rec.Commits); err != nil {
+		return nil, fmt.Errorf("the stored commits: %w", err)
 	}
 	if row.Benchmark.Valid {
 		rec.BenchmarkHash = row.Benchmark.String

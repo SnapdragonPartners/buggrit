@@ -1371,7 +1371,9 @@ convergence matters more than speed per pass, so recall and whether the
 pass finished sit next to latency.
 
 - **An arm is a ref, an overlay and a name.** The ref is a buggrit
-  branch, tag or SHA, built per arm. A prompt or harness variant is a
+  branch, tag or SHA, built per arm. The harness resolves it to a commit
+  once, as the experiment starts, and every run of the arm builds that
+  commit, however late its job starts; the report shows both. A prompt or harness variant is a
   pushed branch, never merged; there's no runtime system for choosing
   prompts. The overlay changes only the models and the pass's deadline and
   concurrency, on a base config. The name is the runs' telemetry label,
@@ -1399,8 +1401,9 @@ pass finished sit next to latency.
   each in the database, and reports use the override.
 - **Scores live in the database** (migration 3: `benchmark`,
   `experiment`, `score`, `extra_finding`), so results build up over time.
-  Review runs don't use these tables and still need only v2; the harness
-  needs v3. The report averages only within an identity group (§6,
+  Migration 4 records the commit each arm's ref resolved to on its
+  experiment. Review runs don't use these tables and still need only v2;
+  the harness needs v4. The report averages only within an identity group (§6,
   "Telemetry") and places the groups side by side.
 
 ## 13. Decisions
