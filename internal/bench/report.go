@@ -101,7 +101,7 @@ func (r *report) arms() {
 		if id.MPH.Modified {
 			commit += " (modified)"
 		}
-		r.w("| %s | %s | `%s` | %s | %s | `%s` | `%s` | `%s` | %d |\n", g.arm, refOf(r.e.Experiment, g.arm), g.group,
+		r.w("| %s | %s | `%s` | %s | %s | `%s` | `%s` | `%s` | %d |\n", g.arm, refOf(r.e, g.arm), g.group,
 			orDash(model), orDash(effort), shortHash(find.PromptHash), shortHash(find.ToolsHash), orDash(commit), len(rs))
 	}
 }
@@ -433,10 +433,15 @@ func missingRuns(e *Experiment, runs []armRun) []string {
 	return out
 }
 
-func refOf(e *Experiment, arm string) string {
-	for i := range e.Arms {
-		if e.Arms[i].Name == arm {
-			return "`" + e.Arms[i].Ref + "`"
+// refOf is arm's ref, with the commit prepare resolved it to when that was
+// recorded.
+func refOf(e *ExperimentRecord, arm string) string {
+	for i := range e.Experiment.Arms {
+		if a := &e.Experiment.Arms[i]; a.Name == arm {
+			if c := e.Commits[a.Ref]; c != "" {
+				return "`" + a.Ref + " @ " + short(c) + "`"
+			}
+			return "`" + a.Ref + "`"
 		}
 	}
 	return dash

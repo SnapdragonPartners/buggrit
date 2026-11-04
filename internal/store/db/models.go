@@ -37,6 +37,7 @@ type BuggritExperiment struct {
 	Benchmark   pgtype.Text
 	Replay      []byte
 	CreatedAt   pgtype.Timestamptz
+	Commits     []byte
 }
 
 type BuggritExtraFinding struct {

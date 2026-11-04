@@ -309,7 +309,7 @@ func (q *Queries) InsertScore(ctx context.Context, arg InsertScoreParams) error 
 }
 
 const loadExperiment = `-- name: LoadExperiment :one
-SELECT e.id, e.spec, e.replay, e.benchmark, b.content AS benchmark_content
+SELECT e.id, e.spec, e.replay, e.commits, e.benchmark, b.content AS benchmark_content
 FROM buggrit.experiment e
 LEFT JOIN buggrit.benchmark b ON b.hash = e.benchmark
 WHERE e.workflow_run = $1 AND e.attempt = $2
@@ -324,6 +324,7 @@ type LoadExperimentRow struct {
 	ID               pgtype.UUID
 	Spec             []byte
 	Replay           []byte
+	Commits          []byte
 	Benchmark        pgtype.Text
 	BenchmarkContent []byte
 }
@@ -335,6 +336,7 @@ func (q *Queries) LoadExperiment(ctx context.Context, arg LoadExperimentParams) 
 		&i.ID,
 		&i.Spec,
 		&i.Replay,
+		&i.Commits,
 		&i.Benchmark,
 		&i.BenchmarkContent,
 	)
@@ -391,8 +393,8 @@ func (q *Queries) SaveBenchmark(ctx context.Context, arg SaveBenchmarkParams) er
 
 const saveExperiment = `-- name: SaveExperiment :one
 WITH ins AS (
-    INSERT INTO buggrit.experiment (id, name, workflow_run, attempt, spec, benchmark, replay)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO buggrit.experiment (id, name, workflow_run, attempt, spec, benchmark, replay, commits)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     ON CONFLICT (workflow_run, attempt) DO NOTHING
     RETURNING id
 )
@@ -410,6 +412,7 @@ type SaveExperimentParams struct {
 	Spec        []byte
 	Benchmark   pgtype.Text
 	Replay      []byte
+	Commits     []byte
 }
 
 // Saving a workflow run again keeps the first row and returns its ID.
@@ -422,6 +425,7 @@ func (q *Queries) SaveExperiment(ctx context.Context, arg SaveExperimentParams) 
 		arg.Spec,
 		arg.Benchmark,
 		arg.Replay,
+		arg.Commits,
 	)
 	var id pgtype.UUID
 	err := row.Scan(&id)

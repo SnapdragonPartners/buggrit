@@ -31,17 +31,15 @@ type Target struct {
 	Body  string `json:"body,omitempty"`
 }
 
-var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 func (t *Target) validate(field string) []error {
 	var errs []error
 	if _, err := github.ParseRepo(t.Repo); err != nil {
 		errs = append(errs, fmt.Errorf("%s.repo: %w", field, err))
 	}
-	if !fullSHA.MatchString(t.Base) {
+	if !github.IsFullSHA(t.Base) {
 		errs = append(errs, fmt.Errorf("%s.base must be a full commit SHA", field))
 	}
-	if !fullSHA.MatchString(t.Head) {
+	if !github.IsFullSHA(t.Head) {
 		errs = append(errs, fmt.Errorf("%s.head must be a full commit SHA", field))
 	}
 	if strings.TrimSpace(t.Title) == "" {

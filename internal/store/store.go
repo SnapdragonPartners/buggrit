@@ -30,7 +30,7 @@ import (
 
 // SchemaVersion is the buggrit schema's latest version, which `buggrit db
 // migrate` brings it to. A test keeps it equal to the highest migration.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // ReviewSchemaVersion is the oldest buggrit schema a review run works with:
 // v2 has the telemetry tables. A review doesn't need the benchmark tables
@@ -38,8 +38,9 @@ const SchemaVersion = 3
 const ReviewSchemaVersion = 2
 
 // BenchSchemaVersion is the oldest buggrit schema the benchmark harness
-// works with: v3 has its score tables.
-const BenchSchemaVersion = 3
+// works with: v3 has its score tables, and v4 the commits each experiment's
+// arms built.
+const BenchSchemaVersion = 4
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS

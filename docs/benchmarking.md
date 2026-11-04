@@ -26,9 +26,12 @@ An arm is a buggrit ref, a config overlay and a name:
 ```
 
 - **`ref`** is a branch, tag or SHA in this repository, default `main`.
-  Each arm builds its own binary from it. **A prompt or harness variant is
-  a ref:** push a branch with the change and name it. It needs no PR and
-  is never merged. There's no runtime switch for prompts.
+  Each arm builds its own binary from it. `prepare` resolves the ref to a
+  commit once, and every run of the arm builds that commit, so a branch
+  that moves mid-experiment doesn't split the arm across two builds.
+  Rerunning an experiment resolves it afresh. **A prompt or harness
+  variant is a ref:** push a branch with the change and name it. It needs
+  no PR and is never merged. There's no runtime switch for prompts.
 - **The ref must contain #49** (`216d2fa`), which records each run's
   identity; `prepare` refuses one that doesn't. Rebase an old branch on
   `main`.
@@ -151,27 +154,28 @@ gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
 ```
 
 Only `.github/workflows/bench.yml` has to be on `main`; it runs the
-harness from `main` and each arm from its own ref. Dispatch it from `main`
+harness from `main` and each arm from the commit its ref names when the
+experiment starts. Dispatch it from `main`
 (the default): the database's identity provider admits it only from
 there ([database.md](database.md)). One experiment runs at a time. The
 jobs:
 
-1. **prepare** validates the experiment, checks every arm's ref contains
-   #49, checks the database (it takes the workflow's login, is at v3, and
-   lets it write the runs' telemetry and the scores: a review that can't
-   use the database carries on without it, so a run would record nothing),
-   and opens the replay: branches `bench/<experiment>/<run>-<attempt>/base`
-   and `.../head` at the target's commits, and a **draft** PR between them.
-   `buggrit.yml` skips drafts, and CI runs only on PRs to `main`, so
-   nothing else reviews it.
-2. **review**, one job per arm × run, at most `parallel` at once: build the
-   arm's ref, write its merged config, and run `buggrit review --dry-run`
-   on the replay with the arm's label. The database is required; a run
-   that couldn't record would be wasted, so each job checks, with the
-   arm's own `buggrit db status`, that its login works and the schemas
-   are what the arm's binary needs (an arm's branch may add a
-   migration). An incomplete pass is a result,
-   not a failure. Each job's timeout is the arm's pass deadline plus 15
+1. **prepare** validates the experiment, resolves every arm's ref to a
+   commit and checks it contains #49, checks the database (it takes the
+   workflow's login, is at v4, and lets it write the runs' telemetry and
+   the scores: a review that can't use the database carries on without
+   it, so a run would record nothing), and opens the replay: branches
+   `bench/<experiment>/<run>-<attempt>/base` and `.../head` at the
+   target's commits, and a **draft** PR between them. `buggrit.yml` skips
+   drafts, and CI runs only on PRs to `main`, so nothing else reviews it.
+2. **review**, one job per arm × run, at most `parallel` at once: build
+   the commit prepare resolved the arm's ref to, write its merged config,
+   and run `buggrit review --dry-run` on the replay with the arm's label.
+   The database is required; a run that couldn't record would be wasted,
+   so each job checks, with the arm's own `buggrit db status`, that its
+   login works and the schemas are what the arm's binary needs (an arm's
+   branch may add a migration). An incomplete pass is a result, not a
+   failure. Each job's timeout is the arm's pass deadline plus 15
    minutes.
 3. **report** reads the runs back by workflow run and attempt, has the
    judge score each run not yet scored, records the scores, and writes the
@@ -189,15 +193,21 @@ jobs:
    bench/<experiment>/<run>-<attempt>/base`, and close the PR.
 
 Don't rerun failed jobs: cleanup has already closed the replay. Dispatch
-the experiment again; its runs join the same groups. Rerunning the whole
-workflow is fine, since a new attempt gets its own replay.
+the experiment again; its runs join the same groups as long as each arm's
+ref still names the same commit, since a new dispatch resolves the refs
+afresh. Rerunning the whole workflow is fine, since a new attempt gets its
+own replay.
 
 ## Reading the report
 
-- **Arms**: each arm's identity groups, with the find model and effort,
-  the prompt and tools hashes, and the commit. An arm normally has one
-  group. Two means its runs differed, for example a branch that moved
-  mid-experiment.
+- **Arms**: each arm's identity groups, with its ref and the commit
+  prepare resolved it to (`main @ 1234567`), the find model and effort,
+  the prompt and tools hashes, and the commit the runs report building.
+  A report covers one workflow run, in which every run of an arm builds
+  one commit with one config, so an arm has one group. Two mean its runs
+  differed, which shouldn't happen: find out why before reading its
+  numbers. (Across dispatches, a ref that moved in between legitimately
+  makes a new group; the Ref column shows which commit each built.)
 - **Runs**: per run, wall time, turns, seconds per turn, tool calls per
   turn, tokens, how the pass ended (complete, a stop reason, cut off or
   error), findings (blocking in brackets), and with a benchmark, recall
@@ -247,17 +257,19 @@ defect for later experiments (which makes a new benchmark version).
 
 ## The score tables
 
-Migration 3 adds four tables to the `buggrit` schema. Review runs don't use
-them; `buggrit-bench` needs them (`buggrit db migrate`).
+Migration 3 adds four tables to the `buggrit` schema, and migration 4 the
+experiment's `commits`. Review runs don't use them; `buggrit-bench` needs
+v4 (`buggrit db migrate`).
 
 - **`benchmark`**: one row per benchmark file version, keyed by `hash`
   (the sha256 of its bytes), with its name, repository, base and head, and
   the file's content.
 - **`experiment`**: one row per experiment run, keyed by `id` and unique
   by `(workflow_run, attempt)`: the experiment file as given (`spec`), its
-  `benchmark` hash and its `replay` (repository, PR, branches). Its runs are
-  `buggrit.run` rows of that replay PR whose `meta.workflow_run` is that
-  run and attempt.
+  `benchmark` hash, its `replay` (repository, PR, branches) and its
+  `commits`, each arm's ref mapped to the commit its runs built (`{}` for
+  an experiment recorded before v4). Its runs are `buggrit.run` rows of
+  that replay PR whose `meta.workflow_run` is that run and attempt.
 - **`score`**: per run and defect, the judge's `verdict` (`found`,
   `partial` or `missed`), the matched `finding` (its number among the
   run's kept findings, null when missed), the judge's `reasoning`, and a

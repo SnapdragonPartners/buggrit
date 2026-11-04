@@ -10,7 +10,7 @@ Judge: `claude-x` anthropic at high effort. **Its verdicts are drafts**: a perso
 
 | Arm | Ref | Group | Find model | Effort | Prompt | Tools | Commit | Runs |
 |---|---|---|---|---|---|---|---|---|
-| deepseek | `main` | `g1` | deepseek | medium | `aaaabbbb` | `11112222` | `1234567` | 2 |
+| deepseek | `main @ 1234567` | `g1` | deepseek | medium | `aaaabbbb` | `11112222` | `1234567` | 2 |
 | glm | `exp/glm` | `g2` | glm-5.3 | medium | `aaaabbbb` | `11112222` | `abcdef1` | 1 |
 
 ### Runs

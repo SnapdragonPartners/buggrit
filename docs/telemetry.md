@@ -32,8 +32,10 @@ moved, isn't recorded.
 
 Both tables are in the `buggrit` schema (migration 2). Migration 3 adds
 the benchmark harness's score tables, `benchmark`, `experiment`, `score`
-and `extra_finding`, which [benchmarking.md](benchmarking.md#the-score-tables)
-describes. A review run doesn't use them, and works with a v2 schema.
+and `extra_finding`, and migration 4 adds `experiment.commits`, the
+commit each arm's ref resolved to; [benchmarking.md](benchmarking.md#the-score-tables)
+describes them. A review run doesn't use them, and works with a v2
+schema; the harness needs v4.
 
 `run` has one row per run:
 - `id`: a random UUID, which the job log prints ("recording telemetry as

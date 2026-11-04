@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,17 +10,19 @@ import (
 	"strings"
 
 	"github.com/SnapdragonPartners/buggrit/internal/bench"
+	"github.com/SnapdragonPartners/buggrit/internal/github"
 )
 
 // runReport reads an experiment's runs from telemetry, has the judge score
 // any not yet scored, and writes the report. In the workflow it gets the
-// experiment and the replay and records them; given only --workflow-run, it
-// reads them back, so a report can be regenerated after overrides.
+// experiment, the replay and the commits and records them; given only
+// --workflow-run, it reads them back, so a report can be regenerated after
+// overrides.
 func runReport(ctx context.Context, d deps, args []string, getenv func(string) string, stdout, stderr io.Writer) error {
-	f := newFlags("report", getenv, stderr)
+	f := newFlags("report", getenv, stderr).workflowRunFlags().rootFlag()
 	path := f.fs.String("experiment", "", "the experiment file, in the workflow; omit to regenerate from the database")
 	replayJSON := f.fs.String("replay", "", "the replay, as prepare wrote it (with --experiment)")
-	f.fs.StringVar(&f.root, "root", ".", "buggrit's checkout, which the experiment's paths are relative to")
+	commitsJSON := f.fs.String("commits", "", "the arms' commits by ref, as prepare wrote them (with --experiment)")
 	out := f.fs.String("out", "", "write the report to this file instead of stdout")
 	noJudge := f.fs.Bool("no-judge", false, "don't judge runs that have no scores yet")
 	summary := getenv("GITHUB_STEP_SUMMARY")
@@ -31,8 +34,8 @@ func runReport(ctx context.Context, d deps, args []string, getenv func(string) s
 		return usagef("unexpected arguments: %s", strings.Join(f.fs.Args(), " "))
 	case f.workflowRun <= 0:
 		return usagef("no workflow run: set --workflow-run or GITHUB_RUN_ID")
-	case (*path == "") != (*replayJSON == ""):
-		return usagef("--experiment and --replay go together; give neither to regenerate a report")
+	case (*path == "") != (*replayJSON == "") || (*path == "") != (*commitsJSON == ""):
+		return usagef("--experiment, --replay and --commits go together; give none to regenerate a report")
 	}
 	url, err := databaseURL(getenv)
 	if err != nil {
@@ -45,7 +48,7 @@ func runReport(ctx context.Context, d deps, args []string, getenv func(string) s
 	defer func() { _ = db.Close() }()
 
 	w := bench.WorkflowRun{ID: f.workflowRun, Attempt: f.attempt}
-	rec, err := experimentRecord(ctx, d, db, w, f.root, *path, *replayJSON)
+	rec, err := experimentRecord(ctx, d, db, w, f.root, *path, *replayJSON, *commitsJSON)
 	if err != nil {
 		return err
 	}
@@ -104,7 +107,7 @@ func emit(report, out, summary string, stdout, stderr io.Writer) error {
 
 // experimentRecord records the experiment the workflow ran, or reads back
 // the one recorded for w.
-func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowRun, root, path, replayJSON string) (*bench.ExperimentRecord, error) {
+func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowRun, root, path, replayJSON, commitsJSON string) (*bench.ExperimentRecord, error) {
 	if path == "" {
 		rec, err := db.LoadExperiment(ctx, w)
 		if err != nil {
@@ -120,8 +123,12 @@ func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowR
 	if err != nil {
 		return nil, err
 	}
+	commits, err := parseCommits(commitsJSON, l.exp)
+	if err != nil {
+		return nil, err
+	}
 	rec := &bench.ExperimentRecord{
-		ID: d.newID(), Experiment: l.exp, Spec: l.spec, Workflow: w, Replay: replay,
+		ID: d.newID(), Experiment: l.exp, Spec: l.spec, Workflow: w, Replay: replay, Commits: commits,
 		Benchmark: l.bm, BenchmarkHash: l.hash,
 	}
 	if l.bm != nil {
@@ -133,6 +140,21 @@ func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowR
 		return nil, err //nolint:wrapcheck // names the experiment
 	}
 	return rec, nil
+}
+
+// parseCommits decodes prepare's commits, which must name a full SHA for
+// every arm's ref.
+func parseCommits(s string, e *bench.Experiment) (map[string]string, error) {
+	var commits map[string]string
+	if err := json.Unmarshal([]byte(s), &commits); err != nil {
+		return nil, usagef("--commits: %v", err)
+	}
+	for i := range e.Arms {
+		if c := commits[e.Arms[i].Ref]; !github.IsFullSHA(c) {
+			return nil, usagef("--commits: no commit for arm %s's ref %s: %s", e.Arms[i].Name, e.Arms[i].Ref, s)
+		}
+	}
+	return commits, nil
 }
 
 // judgeRuns scores each run that has a result and no scores yet. A run

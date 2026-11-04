@@ -80,8 +80,7 @@ func prepareEnv(output string) func(string) string {
 
 func TestPrepare(t *testing.T) {
 	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
-	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
-	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareIdentical})
+	setRefs(fake, github.CompareAhead, github.CompareIdentical)
 	output := filepath.Join(t.TempDir(), "output")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(output), &out, &errb)
@@ -113,6 +112,21 @@ func TestPrepare(t *testing.T) {
 	if len(matrix.Include) != 4 {
 		t.Fatalf("matrix = %+v", matrix)
 	}
+	// Each run carries its arm's ref and the commit it resolved to, which
+	// the job checks out.
+	for _, e := range matrix.Include {
+		want := map[string]string{"deepseek": mainCommit, "glm": glmCommit}[e.Arm]
+		if e.Commit != want {
+			t.Errorf("%s run %d: commit %q, want %q", e.Arm, e.Run, e.Commit, want)
+		}
+	}
+	var commits map[string]string
+	if err := json.Unmarshal([]byte(outputs["commits"]), &commits); err != nil || len(commits) != 2 || commits["main"] != mainCommit || commits["exp/glm"] != glmCommit {
+		t.Errorf("commits output = %s (%v)", outputs["commits"], err)
+	}
+	if !strings.Contains(errb.String(), "ref exp/glm @ "+glmCommit) {
+		t.Errorf("prepare doesn't log the resolved refs:\n%s", errb.String())
+	}
 	glm := matrix.Include[3]
 	if glm.Arm != "glm" || glm.Run != 2 || glm.Ref != "exp/glm" || glm.Label != "trial/glm" || glm.PR != replay.PR ||
 		glm.Head != "e61928194c1995a6743b2eedde530c0480206313" || glm.Timeout != 45 {
@@ -122,6 +136,24 @@ func TestPrepare(t *testing.T) {
 	if err != nil || cfg.Stage(config.StageFind).Model != "glm-5.3" || cfg.Stage(config.StageVerify).Model != "deepseek-4.1-flash" {
 		t.Fatalf("glm config: %v\n%s", err, glm.Config)
 	}
+}
+
+// The commits writeExperiment's arms' refs resolve to.
+var (
+	mainCommit = strings.Repeat("1", 40)
+	glmCommit  = strings.Repeat("2", 40)
+)
+
+// commitsArg is prepare's commits output for writeExperiment's arms.
+var commitsArg = `{"main": "` + mainCommit + `", "exp/glm": "` + glmCommit + `"}`
+
+// setRefs resolves main and exp/glm, writeExperiment's refs, and sets how
+// each commit compares to identityCommit.
+func setRefs(fake *githubtest.Server, mainStatus, glmStatus string) {
+	fake.SetCommit("main", mainCommit)
+	fake.SetCommit("exp/glm", glmCommit)
+	fake.SetCompare(identityCommit, mainCommit, githubtest.Comparison{Status: mainStatus})
+	fake.SetCompare(identityCommit, glmCommit, githubtest.Comparison{Status: glmStatus})
 }
 
 func readOutputs(t *testing.T, path string) map[string]string {
@@ -138,12 +170,75 @@ func readOutputs(t *testing.T, path string) map[string]string {
 	return out
 }
 
+// Each distinct ref, whether a branch, a tag or a SHA, is resolved once to
+// the commit every run of its arms builds, so a ref that moves mid-
+// experiment doesn't split an arm across commits (#60). A ref GitHub
+// doesn't know stops prepare before anything is opened.
+func TestPrepareResolvesRefs(t *testing.T) {
+	tagCommit, shaCommit := strings.Repeat("3", 40), strings.Repeat("4", 40)
+	spec := `{"name": "refs", "benchmark": "` + fixture + `", "judge": ` + judgeJSON + `, "runs": 2,
+	  "arms": [{"name": "branch"}, {"name": "branch-again", "overlay": {"limits": {"pass_deadline": "30m"}}},
+	    {"name": "tag", "ref": "v0.3.0"}, {"name": "sha", "ref": "4444444"}]}`
+	path := filepath.Join(t.TempDir(), "experiment.json")
+	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
+	fake.SetCommit("main", mainCommit)
+	fake.SetCommit("v0.3.0", tagCommit)
+	fake.SetCommit("4444444", shaCommit)
+	for _, c := range []string{mainCommit, tagCommit, shaCommit} {
+		fake.SetCompare(identityCommit, c, githubtest.Comparison{Status: github.CompareAhead})
+	}
+	resolves := 0
+	fake.OnRequest = func(op string) int {
+		if op == "GET commit" {
+			resolves++
+		}
+		return 0
+	}
+	output := filepath.Join(t.TempDir(), "output")
+	var out, errb bytes.Buffer
+	args := []string{"prepare", "--root", repoRoot, "--experiment", path}
+	if code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), args, prepareEnv(output), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if resolves != 3 {
+		t.Errorf("resolved refs %d times, want once per distinct ref (3)", resolves)
+	}
+	var matrix struct{ Include []matrixEntry }
+	if err := json.Unmarshal([]byte(readOutputs(t, output)["matrix"]), &matrix); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][2]string{
+		"branch": {"main", mainCommit}, "branch-again": {"main", mainCommit},
+		"tag": {"v0.3.0", tagCommit}, "sha": {"4444444", shaCommit},
+	}
+	if len(matrix.Include) != 8 {
+		t.Fatalf("matrix = %+v", matrix)
+	}
+	for _, e := range matrix.Include {
+		if w := want[e.Arm]; e.Ref != w[0] || e.Commit != w[1] {
+			t.Errorf("%s run %d: ref %q commit %q, want %q %q", e.Arm, e.Run, e.Ref, e.Commit, w[0], w[1])
+		}
+	}
+
+	// A ref GitHub doesn't know.
+	fake = githubtest.New(t, "SnapdragonPartners/buggrit")
+	fake.SetCommit("main", mainCommit)
+	fake.SetCompare(identityCommit, mainCommit, githubtest.Comparison{Status: github.CompareAhead})
+	errb.Reset()
+	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(""), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "arm glm: ref exp/glm: resolve exp/glm") || len(fake.Branches()) != 0 {
+		t.Fatalf("unknown ref: exit %d, branches %v: %s", code, fake.Branches(), errb.String())
+	}
+}
+
 // An arm whose ref predates the run identity is refused before anything
 // is opened.
 func TestPrepareRefusesAnOldRef(t *testing.T) {
 	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
-	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
-	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareDiverged})
+	setRefs(fake, github.CompareAhead, github.CompareDiverged)
 	var out, errb bytes.Buffer
 	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(""), &out, &errb)
 	if code != 1 || !strings.Contains(errb.String(), "doesn't contain 216d2fa") || len(fake.Branches()) != 0 {
@@ -155,8 +250,7 @@ func TestPrepareRefusesAnOldRef(t *testing.T) {
 // replay is opened, so no model time is spent.
 func TestPrepareChecksTheDatabase(t *testing.T) {
 	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
-	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
-	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareAhead})
+	setRefs(fake, github.CompareAhead, github.CompareAhead)
 	db := newMemDB()
 	db.writeErr = errors.New("this login can't write telemetry")
 	var out, errb bytes.Buffer
@@ -193,8 +287,7 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 // prepare closes it.
 func TestPrepareClosesTheReplayOnFailure(t *testing.T) {
 	fake := githubtest.New(t, "SnapdragonPartners/buggrit")
-	fake.SetCompare(identityCommit, "main", githubtest.Comparison{Status: github.CompareAhead})
-	fake.SetCompare(identityCommit, "exp/glm", githubtest.Comparison{Status: github.CompareAhead})
+	setRefs(fake, github.CompareAhead, github.CompareAhead)
 	var out, errb bytes.Buffer
 	code := run(context.Background(), fakeDeps(fake, newMemDB(), nil), []string{"prepare", "--root", repoRoot, "--experiment", writeExperiment(t, "")}, prepareEnv(t.TempDir()), &out, &errb)
 	if code != 1 || len(fake.Branches()) != 0 || !fake.PR(1).Closed {
@@ -338,7 +431,7 @@ func TestReport(t *testing.T) {
 	dir := t.TempDir()
 	summary, out := filepath.Join(dir, "summary.md"), filepath.Join(dir, "report.md")
 	var stdout, stderr bytes.Buffer
-	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--out", out}
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg, "--out", out}
 	if code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(summary), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -353,10 +446,13 @@ func TestReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"## Benchmark: trial", "**Missing runs:** glm has 1 of 2", "| deepseek 1 |", "| 1 of 10 |", "| deepseek 2 |", "cut off", "not scored", "[Workflow run](https://github.com/o/r/actions/runs/42/attempts/1)"} {
+	for _, want := range []string{"## Benchmark: trial", "**Missing runs:** glm has 1 of 2", "| deepseek 1 |", "| 1 of 10 |", "| deepseek 2 |", "cut off", "`main @ 1111111`", "not scored", "[Workflow run](https://github.com/o/r/actions/runs/42/attempts/1)"} {
 		if !strings.Contains(string(report), want) {
 			t.Errorf("report lacks %q:\n%s", want, report)
 		}
+	}
+	if c := db.experiment.Commits; c["main"] != mainCommit || c["exp/glm"] != glmCommit {
+		t.Errorf("recorded commits = %v", c)
 	}
 	if s, _ := os.ReadFile(summary); string(s) != string(report) {
 		t.Error("the job summary isn't the report")
@@ -380,7 +476,7 @@ func TestReportJudgeFailure(t *testing.T) {
 	judge := &testllm.FakeChatClient{Err: errors.New("judge down")}
 	replay := `{"repo": "o/r", "pr": 11, "base": "bench/t/base", "head": "bench/t/head"}`
 	var stdout, stderr bytes.Buffer
-	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay}
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg}
 	if code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(""), &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d", code)
 	}
@@ -403,7 +499,7 @@ func TestReportWithoutJudgeKey(t *testing.T) {
 		return reportEnv("")(k)
 	}
 	var stdout, stderr bytes.Buffer
-	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay}
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg}
 	if code := run(context.Background(), fakeDeps(fake, db, nil), args, noKey, &stdout, &stderr); code != 1 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -421,7 +517,7 @@ func TestReportJudgesAnUnattributedRun(t *testing.T) {
 	judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
 	replay := `{"repo": "o/r", "pr": 11, "base": "bench/t/base", "head": "bench/t/head"}`
 	var stdout, stderr bytes.Buffer
-	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay}
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg}
 	if code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -435,6 +531,13 @@ func TestReportUsage(t *testing.T) {
 	cases := [][]string{
 		{"report", "--experiment", "x.json"},
 		{"report", "--workflow-run", "0"},
+		// Each command takes only the flags it uses: report doesn't call
+		// GitHub, and cleanup reads nothing of the workflow run.
+		{"report", "--api-url", "https://api.example"},
+		{"cleanup", "--workflow-run", "42", "--replay", "{}"},
+		// prepare's three outputs go together.
+		{"report", "--experiment", "x.json", "--replay", "{}"},
+		{"report", "--commits", "{}"},
 	}
 	for _, args := range cases {
 		if code := run(context.Background(), deps{}, args, reportEnv(""), &stdout, &stderr); code != 2 {
@@ -448,5 +551,14 @@ func TestReportUsage(t *testing.T) {
 	dbErr := env(map[string]string{"GITHUB_RUN_ID": "42", "BUGGRIT_DATABASE_ERROR": "proxy didn't start"})
 	if code := run(context.Background(), deps{}, []string{"report"}, dbErr, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "proxy didn't start") {
 		t.Errorf("database error: exit %d: %s", code, stderr.String())
+	}
+	// Commits that miss an arm's ref aren't prepare's.
+	db := newMemDB()
+	replay := `{"repo": "o/r", "pr": 11, "base": "bench/t/base", "head": "bench/t/head"}`
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", `{"main": "` + mainCommit + `"}`}
+	stderr.Reset()
+	if code := run(context.Background(), fakeDeps(githubtest.New(t, "o/r"), db, nil), args, reportEnv(""), &stdout, &stderr); code != 2 ||
+		!strings.Contains(stderr.String(), "no commit for arm glm's ref exp/glm") || db.experiment != nil {
+		t.Errorf("incomplete commits: exit %d: %s", code, stderr.String())
 	}
 }

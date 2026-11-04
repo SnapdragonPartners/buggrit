@@ -3,7 +3,8 @@ name: bench
 # The benchmark harness (docs/design.md §12, "Benchmarks";
 # docs/benchmarking.md). One dispatch runs one experiment: arms × runs of
 # `buggrit review --dry-run` against a draft replay PR of the target, each
-# arm built from its own ref and run with its own config. The results come
+# arm built from the commit prepare resolved its ref to and run with its
+# own config. The results come
 # from telemetry, so it needs the database. Then report scores the runs
 # against the benchmark's known defects and writes the report, and cleanup
 # closes the replay.
@@ -40,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
+      commits: ${{ steps.prepare.outputs.commits }}
       matrix: ${{ steps.prepare.outputs.matrix }}
       parallel: ${{ steps.prepare.outputs.parallel }}
       report_timeout: ${{ steps.prepare.outputs.report_timeout }}
@@ -100,10 +102,12 @@ jobs:
       max-parallel: ${{ fromJSON(needs.prepare.outputs.parallel) }}
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
+      # The commit prepare resolved the arm's ref to, not the ref: a
+      # branch can move while the experiment runs (#60).
       - name: Check out the arm's buggrit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ matrix.ref }}
+          ref: ${{ matrix.commit }}
           path: arm
           persist-credentials: false
 
@@ -232,6 +236,7 @@ jobs:
         env:
           EXPERIMENT: ${{ inputs.experiment }}
           REPLAY: ${{ needs.prepare.outputs.replay }}
+          COMMITS: ${{ needs.prepare.outputs.commits }}
           LUNAROUTE_API_KEY: ${{ secrets.LUNAROUTE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -241,7 +246,7 @@ jobs:
         run: |
           printf '%s' "$EXPERIMENT" > "$RUNNER_TEMP/experiment.json"
           "$RUNNER_TEMP/buggrit-bench" report --experiment "$RUNNER_TEMP/experiment.json" \
-            --replay "$REPLAY" --out "$RUNNER_TEMP/report.md"
+            --replay "$REPLAY" --commits "$COMMITS" --out "$RUNNER_TEMP/report.md"
 
   cleanup:
     needs: [prepare, review, report]
