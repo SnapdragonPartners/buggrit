@@ -238,12 +238,15 @@ For a model in **Ollama**:
 
 - **Set the context size in the model.** buggrit can't send Ollama's
   `num_ctx`, and Ollama silently cuts a prompt longer than its small
-  default, so recall would measure the cut. The finder's opening alone
-  can be 30k tokens. Make a variant whose name records the setting:
+  default, so recall would measure the cut. The finder's opening on
+  `pr9-e619281` alone is about 84k tokens, before any file it reads, so
+  use the model's full context if it fits in memory (Qwen3-Coder 30B's
+  256k takes about 25 GB of cache on top of its 19 GB of weights). Make a
+  variant whose name records the setting:
 
   ```sh
-  printf 'FROM qwen3-coder:30b\nPARAMETER num_ctx 131072\n' > Modelfile
-  ollama create qwen3-coder-30b-128k -f Modelfile
+  printf 'FROM qwen3-coder:30b\nPARAMETER num_ctx 262144\n' > Modelfile
+  ollama create qwen3-coder-30b-256k -f Modelfile
   ```
 
 - **The overlay** clears what the base's LunaRoute model sets and the
@@ -256,7 +259,7 @@ For a model in **Ollama**:
 
   ```json
   {"name": "qwen-local", "overlay": {
-    "models": {"find": {"provider": "ollama", "model": "qwen3-coder-30b-128k", "base_url": "",
+    "models": {"find": {"provider": "ollama", "model": "qwen3-coder-30b-256k", "base_url": "",
                         "api_key_env": "", "reasoning_effort": "", "request_timeout": "30m"}},
     "limits": {"pass_deadline": "6h"}}}
   ```
