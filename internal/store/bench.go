@@ -17,7 +17,8 @@ import (
 
 // Bench returns the benchmark harness's view of the database (design §12,
 // "Benchmarks"): the runs an experiment recorded, and its scores. Open the
-// store with OpenBench, which checks for the score tables.
+// store with OpenBench, which checks for the harness's schema version: the
+// score tables (v3) and each experiment's recorded commits (v4).
 func (s *Store) Bench() bench.Store { return benchStore{s: s, q: storedb.New(s.pool)} }
 
 type benchStore struct {
