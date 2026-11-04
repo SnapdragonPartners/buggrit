@@ -16,21 +16,27 @@ import (
 )
 
 // A review works with schema v2, which has no score tables; the harness
-// needs v4, which records the commits an experiment's arms built.
+// needs v4, which records the commits an experiment's arms built, and
+// refuses v3 as well as v2.
 func TestOpenBenchNeedsV4(t *testing.T) {
+	if BenchSchemaVersion != 4 {
+		t.Fatalf("BenchSchemaVersion = %d, want 4 (experiment.commits)", BenchSchemaVersion)
+	}
 	dsn := newDatabase(t)
 	migrateAll(t, dsn)
-	exec(t, dsn, "DELETE FROM buggrit.schema_version WHERE version IN (3, 4)")
 	ctx := context.Background()
+	for _, found := range []int{3, 2} {
+		exec(t, dsn, fmt.Sprintf("DELETE FROM buggrit.schema_version WHERE version > %d", found))
+		var se *SchemaError
+		if _, err := OpenBench(ctx, dsn); !errors.As(err, &se) || se.Required != 4 || se.Found != found {
+			t.Fatalf("OpenBench against v%d: %v", found, err)
+		}
+	}
 	s, err := Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("a review against v2: %v", err)
 	}
 	_ = s.Close()
-	var se *SchemaError
-	if _, err := OpenBench(ctx, dsn); !errors.As(err, &se) || se.Required != BenchSchemaVersion || se.Found != 2 {
-		t.Fatalf("OpenBench against v2: %v", err)
-	}
 }
 
 // fakeRun writes a finished dry run of PR 11 with a finder session: two

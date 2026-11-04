@@ -154,7 +154,8 @@ gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
 ```
 
 Only `.github/workflows/bench.yml` has to be on `main`; it runs the
-harness from `main` and each arm from its own ref. Dispatch it from `main`
+harness from `main` and each arm from the commit its ref names when the
+experiment starts. Dispatch it from `main`
 (the default): the database's identity provider admits it only from
 there ([database.md](database.md)). One experiment runs at a time. The
 jobs:
@@ -192,17 +193,21 @@ jobs:
    bench/<experiment>/<run>-<attempt>/base`, and close the PR.
 
 Don't rerun failed jobs: cleanup has already closed the replay. Dispatch
-the experiment again; its runs join the same groups. Rerunning the whole
-workflow is fine, since a new attempt gets its own replay.
+the experiment again; its runs join the same groups as long as each arm's
+ref still names the same commit, since a new dispatch resolves the refs
+afresh. Rerunning the whole workflow is fine, since a new attempt gets its
+own replay.
 
 ## Reading the report
 
 - **Arms**: each arm's identity groups, with its ref and the commit
   prepare resolved it to (`main @ 1234567`), the find model and effort,
-  the prompt and tools hashes, and the commit the runs report building. An arm normally has one
-  group. Two mean its runs differed, which shouldn't happen: every run
-  of an arm builds one commit with one config. Find out why before
-  reading its numbers.
+  the prompt and tools hashes, and the commit the runs report building.
+  A report covers one workflow run, in which every run of an arm builds
+  one commit with one config, so an arm has one group. Two mean its runs
+  differed, which shouldn't happen: find out why before reading its
+  numbers. (Across dispatches, a ref that moved in between legitimately
+  makes a new group; the Ref column shows which commit each built.)
 - **Runs**: per run, wall time, turns, seconds per turn, tool calls per
   turn, tokens, how the pass ended (complete, a stop reason, cut off or
   error), findings (blocking in brackets), and with a benchmark, recall

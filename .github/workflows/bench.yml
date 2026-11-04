@@ -3,7 +3,8 @@ name: bench
 # The benchmark harness (docs/design.md §12, "Benchmarks";
 # docs/benchmarking.md). One dispatch runs one experiment: arms × runs of
 # `buggrit review --dry-run` against a draft replay PR of the target, each
-# arm built from its own ref and run with its own config. The results come
+# arm built from the commit prepare resolved its ref to and run with its
+# own config. The results come
 # from telemetry, so it needs the database. Then report scores the runs
 # against the benchmark's known defects and writes the report, and cleanup
 # closes the replay.
