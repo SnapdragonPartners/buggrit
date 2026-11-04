@@ -193,6 +193,8 @@ func TestBenchLocal(t *testing.T) {
 		env   []string
 		code  int
 		calls []string
+		// used leaves an earlier experiment's outputs in BENCH_DIR.
+		used bool
 	}{
 		{name: "complete", env: keys, calls: full},
 		{name: "an incomplete pass is a result", env: append([]string{"FAKE_REVIEW_EXIT=1"}, keys...), calls: full},
@@ -204,11 +206,21 @@ func TestBenchLocal(t *testing.T) {
 			env:   append([]string{"FAKE_DB_STATUS=buggrit schema: v1; this binary needs v2"}, keys...),
 			calls: []string{"bench check", "bench prepare", "bench cleanup"}},
 		{name: "a failed report still cleans up", env: append([]string{"FAKE_REPORT_EXIT=1"}, keys...), code: 1, calls: full},
+		{name: "a used BENCH_DIR stops before anything runs", env: keys, used: true, code: 1},
 		{name: "an interrupt reports what ran and cleans up", env: append([]string{"FAKE_INTERRUPT=1"}, keys...), code: 130,
 			calls: []string{"bench check", "bench prepare", "review", "bench report", "bench cleanup"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newBenchLocal(t)
+			if tc.used {
+				dir := filepath.Join(b.root, "bench")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "outputs"), []byte("replay={}\n"), 0o644); err != nil { //nolint:gosec // test files
+					t.Fatal(err)
+				}
+			}
 			code, log := b.run(tc.env...)
 			if code != tc.code {
 				t.Errorf("exit code %d, want %d", code, tc.code)

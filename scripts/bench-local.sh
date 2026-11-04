@@ -36,8 +36,9 @@
 #                         SnapdragonPartners/buggrit)
 #   BENCH_REMOTE          git remote for BENCH_REPO here (default origin)
 #   BENCH_RUN_ID          the workflow run ID to record under (default: now)
-#   BENCH_DIR             where builds, checkouts, logs and the report go
-#                         (default: a new temporary directory)
+#   BENCH_DIR             where builds, checkouts, logs and the report go:
+#                         a new or empty directory (default: a new
+#                         temporary one)
 #   and each api_key_env the arms' configs and the judge name.
 set -euo pipefail
 
@@ -69,6 +70,10 @@ unset GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID GITHUB_RUN_ATTEMPT \
 dir=${BENCH_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/bench-local.XXXXXX")}
 mkdir -p "$dir"
 dir=$(cd "$dir" && pwd)
+# An earlier experiment's files would break this one after its replay is
+# open: prepare appends to outputs (and cleanup can't read two replays),
+# and the target checkout and arm worktrees can't be made again.
+[ -z "$(ls -A "$dir")" ] || die "$dir isn't empty; give BENCH_DIR a new or empty directory"
 bench=$dir/buggrit-bench
 say "workflow run $run_id; files in $dir"
 

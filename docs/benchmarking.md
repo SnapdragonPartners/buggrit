@@ -218,7 +218,8 @@ ignores `parallel`, since a local model serves one request at a time. Then
 it runs report and cleanup. Cleanup closes the replay however the script
 ends after prepare. Ctrl-C ends the review in progress, skips the rest, and
 still reports. The run ID, the logs and `report.md` are in the directory
-it names (`BENCH_DIR`, default a temporary one). Regenerate the report
+it names (`BENCH_DIR`, a new or empty directory, default a temporary
+one). Regenerate the report
 with `--workflow-run <that ID> --attempt 1`.
 
 It needs `GITHUB_TOKEN` (yours can open the replay), every `api_key_env`
