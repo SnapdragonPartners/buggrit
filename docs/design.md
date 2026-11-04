@@ -1387,6 +1387,10 @@ pass finished sit next to latency.
   each kept finding records its 1-based position among the finder's
   submissions, so the harness can attach the submitted text (§6,
   "Telemetry").
+  For a model the runners can't reach, such as one in a local Ollama,
+  `scripts/bench-local.sh` runs the same steps on the operator's machine
+  against the same database, one run at a time, under a made-up workflow
+  run ID below any real one.
 - **Nothing is tied to one repository.** A benchmark names its target's
   repository, and replays go through an interface (`bench.Replayer`), so
   another host can plug in. Today it's a draft PR in the target's own

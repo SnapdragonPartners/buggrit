@@ -198,6 +198,69 @@ ref still names the same commit, since a new dispatch resolves the refs
 afresh. Rerunning the whole workflow is fine, since a new attempt gets its
 own replay.
 
+## Running one locally
+
+GitHub's runners can't reach a model on your machine, such as one in a
+local Ollama. `scripts/bench-local.sh` does what the workflow does, from
+your machine and against the same database, so its runs, scores and
+report are recorded as a dispatched experiment's are:
+
+```sh
+scripts/bench-local.sh my-experiment.json
+```
+
+It checks the experiment, then runs prepare under a made-up workflow run
+ID: the time in Unix seconds, which is far below any real Actions run's
+ID. Next it builds each arm's commit (from a worktree of this checkout, so
+the build info carries the commit), checks the database for it, and runs
+every arm × run **one at a time** from a checkout of the target's head. It
+ignores `parallel`, since a local model serves one request at a time. Then
+it runs report and cleanup. Cleanup closes the replay however the script
+ends after prepare. Ctrl-C ends the review in progress, skips the rest, and
+still reports. The run ID, the logs and `report.md` are in the directory
+it names (`BENCH_DIR`, default a temporary one). Regenerate the report
+with `--workflow-run <that ID> --attempt 1`.
+
+It needs `GITHUB_TOKEN` (yours can open the replay), every `api_key_env`
+the arms and the judge name, `go`, `gh` and `jq`, and
+`BUGGRIT_DATABASE_URL` through an Auth Proxy logged in as the operator
+([database.md](database.md#migrations)). The runs outlast the hour an
+access token is good for, so give the proxy credentials that refresh,
+your application-default ones, not `--token`:
+
+```sh
+gcloud auth application-default login   # as the operator
+cloud-sql-proxy --auto-iam-authn --port 5433 buggrit:us-east1:buggrit-db &
+export BUGGRIT_DATABASE_URL='postgres://dan%40snapdragonpartners.com@127.0.0.1:5433/buggrit?sslmode=disable&options=-c%20role%3Dbuggrit_owner'
+```
+
+For a model in **Ollama**:
+
+- **Set the context size in the model.** buggrit can't send Ollama's
+  `num_ctx`, and Ollama silently cuts a prompt longer than its small
+  default, so recall would measure the cut. The finder's opening alone
+  can be 30k tokens. Make a variant whose name records the setting:
+
+  ```sh
+  printf 'FROM qwen3-coder:30b\nPARAMETER num_ctx 131072\n' > Modelfile
+  ollama create qwen3-coder-30b-128k -f Modelfile
+  ```
+
+- **The overlay** clears what the base's LunaRoute model sets and the
+  Ollama provider can't take: the key, the endpoint (the default is
+  `localhost:11434`), and `reasoning_effort` for a model without
+  thinking, which Ollama refuses outright (`does not support thinking`).
+  A local model takes minutes per turn, so give the pass a long deadline
+  and each call a long timeout, so the run measures recall rather than the
+  deadline:
+
+  ```json
+  {"name": "qwen-local", "overlay": {
+    "models": {"find": {"provider": "ollama", "model": "qwen3-coder-30b-128k", "base_url": "",
+                        "api_key_env": "", "reasoning_effort": "", "request_timeout": "30m"}},
+    "limits": {"pass_deadline": "6h"}}}
+  ```
+
 ## Reading the report
 
 - **Arms**: each arm's identity groups, with its ref and the commit

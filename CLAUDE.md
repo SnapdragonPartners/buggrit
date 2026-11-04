@@ -52,7 +52,7 @@ docs/adr/          # Architecture decision records (index in its README)
 hooks/             # Git hooks (pre-push: lint + test)
 action.yml         # Composite action: install the release binary, run review (design §3)
 .github/actions/database/  # Composite action: the optional database's credentials and Auth Proxy (design §3)
-scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh, move-majors.sh; their tests
+scripts/           # install.sh (the action's download and checksum step); release.sh, pin-release.sh, verify-release.sh, move-majors.sh; bench-local.sh (an experiment run locally); their tests
 .goreleaser.yaml   # Release archives, built by .github/workflows/release.yml on vX.Y.Z tags
 .github/workflows/ # ci, buggrit (dogfood, builds main), review (reusable, for other repos), release, livecheck, bench (dispatched experiments)
 ```
