@@ -224,8 +224,8 @@ it runs report and cleanup. Cleanup closes the replay however the script
 ends after prepare. Ctrl-C ends the review in progress, skips the rest, and
 still reports. The run ID, the logs and `report.md` are in the directory
 it names (`BENCH_DIR`, a new or empty directory, default a temporary
-one). Regenerate the report
-with `--workflow-run <that ID> --attempt 1`.
+one). Regenerate the report from your checkout with
+`BUGGRIT_DATABASE_URL=... go run ./cmd/buggrit-bench report --workflow-run <that ID> --attempt 1 --no-judge`.
 
 It needs `GITHUB_TOKEN` (yours can open the replay), every `api_key_env`
 the arms and the judge name, `go`, `gh` and `jq`, and

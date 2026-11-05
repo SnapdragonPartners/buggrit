@@ -42,8 +42,8 @@
 #   and each api_key_env the arms' configs and the judge name.
 set -euo pipefail
 
-experiment=${1:?usage: bench-local.sh <experiment.json>}
 [ $# -eq 1 ] || { echo "usage: bench-local.sh <experiment.json>" >&2; exit 2; }
+experiment=$1
 [ -f "$experiment" ] || { echo "bench-local: no experiment file $experiment" >&2; exit 2; }
 experiment=$(cd "$(dirname "$experiment")" && pwd)/$(basename "$experiment")
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -114,7 +114,7 @@ finish() {
   # report whose judge failed on a run is still written.
   if [ -e "$dir/report.md" ]; then
     say "workflow run $run_id attempt 1; report in $dir/report.md"
-    say "regenerate it: BUGGRIT_DATABASE_URL=... buggrit-bench report --workflow-run $run_id --attempt 1 --no-judge"
+    say "regenerate it: BUGGRIT_DATABASE_URL=... $bench report --root $root --workflow-run $run_id --attempt 1 --no-judge"
   else
     say "workflow run $run_id attempt 1: no report written"
   fi

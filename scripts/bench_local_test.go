@@ -232,8 +232,9 @@ func TestBenchLocal(t *testing.T) {
 			// and the regenerate command needs the database.
 			reported := slices.Contains(tc.calls, "bench report")
 			for msg, want := range map[string]bool{
-				"report in " + filepath.Join(b.root, "bench", "report.md"):                         reported,
-				"regenerate it: BUGGRIT_DATABASE_URL=... buggrit-bench report --workflow-run 4242": reported,
+				"report in " + filepath.Join(b.root, "bench", "report.md"): reported,
+				"regenerate it: BUGGRIT_DATABASE_URL=... " + filepath.Join(b.root, "bench", "buggrit-bench") +
+					" report --root " + b.dir + " --workflow-run 4242": reported,
 				"no report written": !reported && slices.Contains(tc.calls, "bench prepare"),
 			} {
 				if strings.Contains(out, msg) != want {
@@ -280,5 +281,28 @@ func (b *benchLocal) checkLog(log []string) {
 				b.t.Errorf("%s\n  missing %q", l, w)
 			}
 		}
+	}
+}
+
+// A bad command line exits 2, as buggrit-bench's does, and runs nothing.
+func TestBenchLocalUsage(t *testing.T) {
+	b := newBenchLocal(t)
+	for name, args := range map[string][]string{
+		"no experiment":   nil,
+		"two experiments": {"a.json", "b.json"},
+		"missing file":    {filepath.Join(b.root, "missing.json")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := exec.Command("bash", append([]string{filepath.Join(b.dir, "scripts", "bench-local.sh")}, args...)...) //nolint:noctx,gosec // a test of local scripts
+			cmd.Dir = b.dir
+			cmd.Env = b.env
+			out, err := cmd.CombinedOutput()
+			if ee := (*exec.ExitError)(nil); !errors.As(err, &ee) || ee.ExitCode() != 2 {
+				t.Errorf("exit %v, want 2:\n%s", err, out)
+			}
+			if _, err := os.Stat(b.log); !os.IsNotExist(err) {
+				t.Errorf("a fake ran: %v", err)
+			}
+		})
 	}
 }
