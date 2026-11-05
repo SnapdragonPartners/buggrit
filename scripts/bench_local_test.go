@@ -12,7 +12,8 @@ import (
 
 // fakeGo builds by writing a fake binary: buggrit-bench, or buggrit with
 // BUILT set to the commit its -C directory is at, as the real build info
-// would carry it.
+// would carry it. Building buggrit interrupts the script when
+// FAKE_INTERRUPT_BUILD is set.
 const fakeGo = `#!/usr/bin/env bash
 [ "$1" = build ] || { echo "fake go: unexpected call: $*" >&2; exit 1; }
 shift
@@ -23,7 +24,9 @@ while [ $# -gt 1 ]; do
 done
 case $1 in
   ./cmd/buggrit-bench) cp "$FAKE_BIN/bench" "$out" ;;
-  ./cmd/buggrit) { echo '#!/usr/bin/env bash'; echo "BUILT=$(git -C "$dir" rev-parse HEAD)"; cat "$FAKE_BIN/buggrit"; } >"$out" ;;
+  ./cmd/buggrit)
+    { echo '#!/usr/bin/env bash'; echo "BUILT=$(git -C "$dir" rev-parse HEAD)"; cat "$FAKE_BIN/buggrit"; } >"$out"
+    [ -z "${FAKE_INTERRUPT_BUILD:-}" ] || kill -INT "$PPID" ;;
   *) echo "fake go: unexpected package $1" >&2; exit 1 ;;
 esac
 chmod +x "$out"
@@ -31,7 +34,9 @@ chmod +x "$out"
 
 // fakeBench logs each call. prepare writes a two-run matrix of arm "a" at
 // FAKE_COMMIT, reviewing o/target#7 at FAKE_HEAD with a config that names
-// ARM_KEY; report exits FAKE_REPORT_EXIT.
+// ARM_KEY; FAKE_PREPARE=fail makes it fail before writing anything, and
+// FAKE_PREPARE=partial makes it write the replay alone. report exits
+// FAKE_REPORT_EXIT.
 const fakeBench = `#!/usr/bin/env bash
 echo "bench $*" >>"$FAKE_LOG"
 cmd=$1
@@ -43,6 +48,10 @@ while [ $# -gt 0 ]; do
 done
 case $cmd in
   prepare)
+    case ${FAKE_PREPARE:-} in
+      fail) exit 1 ;;
+      partial) echo 'replay={"repo":"o/target","pr":7}' >>"$out"; exit 0 ;;
+    esac
     cfg='{"models":{"default":{"api_key_env":"ARM_KEY"}}}'
     matrix=$(jq -cn --arg c "$FAKE_COMMIT" --arg h "$FAKE_HEAD" --arg cfg "$cfg" \
       '{include: [range(1; 3) as $n | {arm: "a", ref: "main", commit: $c, run: $n, label: "exp/a", config: $cfg, repo: "o/target", pr: 7, head: $h, timeout: 30}]}')
@@ -207,6 +216,14 @@ func TestBenchLocal(t *testing.T) {
 			calls: []string{"bench check", "bench prepare", "bench cleanup"}},
 		{name: "a failed report still cleans up", env: append([]string{"FAKE_REPORT_EXIT=1"}, keys...), code: 1, calls: full},
 		{name: "a used BENCH_DIR stops before anything runs", env: keys, used: true, code: 1},
+		{name: "a failed prepare has no replay to close", env: append([]string{"FAKE_PREPARE=fail"}, keys...), code: 1,
+			calls: []string{"bench check", "bench prepare"}},
+		{name: "a replay prepare wrote is closed whatever else it wrote", code: 1,
+			env:   append([]string{"FAKE_PREPARE=partial"}, keys...),
+			calls: []string{"bench check", "bench prepare", "bench cleanup"}},
+		{name: "an interrupt while building runs nothing and still reports", code: 130,
+			env:   append([]string{"FAKE_INTERRUPT_BUILD=1"}, keys...),
+			calls: []string{"bench check", "bench prepare", "bench report", "bench cleanup"}},
 		{name: "an interrupt reports what ran and cleans up", env: append([]string{"FAKE_INTERRUPT=1"}, keys...), code: 130,
 			calls: []string{"bench check", "bench prepare", "review", "bench report", "bench cleanup"}},
 	} {
@@ -240,6 +257,10 @@ func TestBenchLocal(t *testing.T) {
 				if strings.Contains(out, msg) != want {
 					t.Errorf("output contains %q: %v, want %v", msg, !want, want)
 				}
+			}
+			// The target is cloned only for a review to run.
+			if _, err := os.Stat(filepath.Join(b.root, "bench", "target")); (err == nil) != slices.Contains(tc.calls, "review") {
+				t.Errorf("target cloned: %v, want %v", err == nil, !(err == nil))
 			}
 			if wt := b.git(b.dir, "worktree", "list"); strings.Count(wt, "\n") != 0 {
 				t.Errorf("arm worktrees left behind:\n%s", wt)

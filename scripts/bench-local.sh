@@ -91,21 +91,20 @@ go build -C "$root" -o "$bench" ./cmd/buggrit-bench
 "$bench" check --root "$root" "$experiment"
 check_keys "the judge" "$(jq -c '.judge // {}' "$experiment")"
 
-"$bench" prepare --root "$root" --experiment "$experiment" \
-  --workflow-run "$run_id" --attempt 1 --buggrit-repo "$repo" --output "$dir/outputs"
-output() { sed -n "s/^$1=//p" "$dir/outputs"; }
-replay=$(output replay)
-commits=$(output commits)
-matrix=$(output matrix)
-[ -n "$replay" ] && [ -n "$commits" ] && [ -n "$matrix" ] || die "prepare wrote no replay, commits or matrix"
-
-# From here the replay is open: close it however the script ends.
+# The replay is open once prepare has written it to outputs (prepare
+# closes it itself if it fails before then): from here, close it however
+# the script ends, as bench.yml's cleanup job does whenever prepare
+# reported one.
+output() { sed -n "s/^$1=//p" "$dir/outputs" 2>/dev/null; }
 worktrees=()
 stopped=
 finish() {
-  local code=$?
+  local code=$? replay
   trap - EXIT
-  "$bench" cleanup --replay "$replay" || { say "cleanup failed: close the replay by hand (docs/benchmarking.md)"; code=1; }
+  replay=$(output replay || true)
+  if [ -n "$replay" ]; then
+    "$bench" cleanup --replay "$replay" || { say "cleanup failed: close the replay by hand (docs/benchmarking.md)"; code=1; }
+  fi
   local w
   for w in "${worktrees[@]+"${worktrees[@]}"}"; do
     git -C "$root" worktree remove --force "$w" || true
@@ -121,12 +120,21 @@ finish() {
   exit "$code"
 }
 trap finish EXIT
+
+"$bench" prepare --root "$root" --experiment "$experiment" \
+  --workflow-run "$run_id" --attempt 1 --buggrit-repo "$repo" --output "$dir/outputs"
+replay=$(output replay)
+commits=$(output commits)
+matrix=$(output matrix)
+[ -n "$replay" ] && [ -n "$commits" ] && [ -n "$matrix" ] || die "prepare wrote no replay, commits or matrix"
+
 trap 'stopped=1; say "interrupted: no more runs; reporting what ran"' INT TERM
 
 # Every arm's binary is built, and the database checked for it, before
 # any model time is spent.
 binary() { printf '%s/buggrit-%s' "$dir" "$1"; }
 while IFS= read -r commit; do
+  [ -z "$stopped" ] || break
   bin=$(binary "$commit")
   git -C "$root" fetch -q "$remote" "$commit"
   git -C "$root" worktree add -q --detach "$dir/arm-$commit" "$commit"
@@ -147,10 +155,13 @@ while IFS= read -r config; do
 done < <(jq -c '.include[].config | fromjson' <<<"$matrix")
 
 # Every entry reviews the same replay, from a checkout of the target's head.
+# After an interrupt there's nothing to review, so nothing to clone.
 target_repo=$(jq -r '.include[0].repo' <<<"$matrix")
 head=$(jq -r '.include[0].head' <<<"$matrix")
-gh repo clone "$target_repo" "$dir/target" -- -q --no-checkout
-git -C "$dir/target" fetch -q origin "$head"
+if [ -z "$stopped" ]; then
+  gh repo clone "$target_repo" "$dir/target" -- -q --no-checkout
+  git -C "$dir/target" fetch -q origin "$head"
+fi
 
 count=$(jq '.include | length' <<<"$matrix")
 field() { jq -r ".$1" <<<"$entry"; }
