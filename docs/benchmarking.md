@@ -255,18 +255,21 @@ For a model in **Ollama**:
   ollama create qwen3-coder-30b-256k -f Modelfile
   ```
 
-- **The overlay** clears what the base's LunaRoute model sets and the
-  Ollama provider can't take: the key, the endpoint (the default is
-  `localhost:11434`), and `reasoning_effort` for a model without
-  thinking, which Ollama refuses outright (`does not support thinking`).
-  A local model takes minutes per turn, so give the pass a long deadline
-  and each call a long timeout, so the run measures recall rather than the
-  deadline:
+- **The overlay** sets `models.default`, so every stage is local, and
+  clears what the base's LunaRoute model sets and the Ollama provider
+  can't take: the key, the endpoint (the default is `localhost:11434`),
+  and `reasoning_effort` for a model without thinking, which Ollama
+  refuses outright (`does not support thinking`). A fresh first pass
+  calls only the finder, so overlaying `models.find` alone gives the same
+  runs, but the other stages would keep LunaRoute's key, and the script
+  requires every key an arm's config names. A local model takes minutes
+  per turn, so give the pass a long deadline and each call a long
+  timeout, so the run measures recall rather than the deadline:
 
   ```json
   {"name": "qwen-local", "overlay": {
-    "models": {"find": {"provider": "ollama", "model": "qwen3-coder-30b-256k", "base_url": "",
-                        "api_key_env": "", "reasoning_effort": "", "request_timeout": "30m"}},
+    "models": {"default": {"provider": "ollama", "model": "qwen3-coder-30b-256k", "base_url": "",
+                           "api_key_env": "", "reasoning_effort": "", "request_timeout": "30m"}},
     "limits": {"pass_deadline": "6h"}}}
   ```
 
