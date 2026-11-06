@@ -131,7 +131,7 @@ func Tag(experiment string, w WorkflowRun) string {
 // made-up ID below any real one, and attempt 1. Telemetry records both on
 // each review run (meta.workflow_run), and the report reads back the runs
 // of exactly this one. Each records at most one experiment: prepare
-// refuses one that already has.
+// refuses one that already has, and report refuses to record another.
 type WorkflowRun struct {
 	ID      int64 `json:"id"`
 	Attempt int   `json:"attempt"`

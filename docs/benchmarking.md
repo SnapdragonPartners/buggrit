@@ -218,7 +218,8 @@ scripts/bench-local.sh my-experiment.json
 It checks the experiment, then runs prepare under a made-up workflow run
 ID: the time in Unix seconds, which is far below any real Actions run's
 ID. Set `BENCH_RUN_ID` to choose one; prepare refuses an ID that already
-recorded an experiment, since report would file the scores under that one. Next it builds each arm's commit (from a worktree of this checkout, so
+recorded an experiment, and report refuses to record another experiment
+under one, since the scores would be filed under the first. Next it builds each arm's commit (from a worktree of this checkout, so
 the build info carries the commit), checks the database for it, and runs
 every arm × run **one at a time** from a checkout of the target's head. It
 ignores `parallel`, since a local model serves one request at a time. Then

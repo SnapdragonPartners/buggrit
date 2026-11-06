@@ -295,6 +295,16 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 	if code = run(context.Background(), fakeDeps(fake, db, nil), append(args, "--attempt", "2"), prepareEnv(t.TempDir()+"/out"), &out, &errb); code != 0 {
 		t.Fatalf("another attempt: exit %d: %s", code, errb.String())
 	}
+	// A database that can't say whether the run is used refuses too.
+	fake = githubtest.New(t, "SnapdragonPartners/buggrit")
+	setRefs(fake, github.CompareAhead, github.CompareAhead)
+	db = newMemDB()
+	db.loadErr = errors.New("connection reset")
+	errb.Reset()
+	code = run(context.Background(), fakeDeps(fake, db, nil), args, prepareEnv(t.TempDir()+"/out"), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "the database: connection reset") || len(fake.Branches()) != 0 {
+		t.Fatalf("a failed read: exit %d, branches %v: %s", code, fake.Branches(), errb.String())
+	}
 }
 
 // If the outputs can't be written, nothing downstream knows the replay, so
@@ -337,6 +347,7 @@ type memDB struct {
 	benchmarks map[string]*bench.Benchmark
 	runs       []bench.RunResult
 	writeErr   error
+	loadErr    error
 	mu         sync.Mutex
 }
 
@@ -361,6 +372,9 @@ func (m *memDB) SaveExperiment(_ context.Context, e *bench.ExperimentRecord) (st
 }
 
 func (m *memDB) LoadExperiment(_ context.Context, w bench.WorkflowRun) (*bench.ExperimentRecord, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
 	if m.experiment == nil || m.experiment.Workflow != w {
 		return nil, bench.ErrNoExperiment
 	}
@@ -479,6 +493,37 @@ func TestReport(t *testing.T) {
 	}
 	if len(judge.Calls()) != 1 || !strings.Contains(stdout.String(), "| 1 of 10 |") {
 		t.Fatalf("regenerated report:\n%s", stdout.String())
+	}
+}
+
+// A workflow run that already recorded another experiment (another
+// replay) is refused before anything is scored under it; the same
+// experiment's report again goes ahead.
+func TestReportRefusesAUsedWorkflowRun(t *testing.T) {
+	fake := githubtest.New(t, "o/r")
+	judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
+	replay := `{"repo": "o/r", "pr": 11, "base": "bench/trial/42-1/base", "head": "bench/trial/42-1/head"}`
+	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg}
+	for name, tc := range map[string]struct {
+		pr   int
+		code int
+	}{"another experiment": {pr: 9, code: 1}, "the same one again": {pr: 11}} {
+		t.Run(name, func(t *testing.T) {
+			db := newMemDB()
+			db.experiment = &bench.ExperimentRecord{
+				ID: "e1", Experiment: &bench.Experiment{Name: "earlier"}, Workflow: bench.WorkflowRun{ID: 42, Attempt: 1},
+				Replay: &bench.Replay{Repo: "o/r", PR: tc.pr},
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(""), &stdout, &stderr)
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d: %s", code, tc.code, stderr.String())
+			}
+			refused := strings.Contains(stderr.String(), "workflow run 42 attempt 1 already recorded experiment earlier")
+			if refused != (tc.code != 0) || (tc.code != 0 && len(db.scores) != 0) {
+				t.Fatalf("refused %v, scores %v: %s", refused, db.scores, stderr.String())
+			}
+		})
 	}
 }
 

@@ -136,9 +136,26 @@ func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowR
 			return nil, serr //nolint:wrapcheck // names the benchmark
 		}
 	}
-	if rec.ID, err = db.SaveExperiment(ctx, rec); err != nil {
+	id, err := db.SaveExperiment(ctx, rec)
+	if err != nil {
 		return nil, err //nolint:wrapcheck // names the experiment
 	}
+	if id != rec.ID {
+		// The workflow run already recorded an experiment. This one's
+		// report again (a rerun report step) has its replay; any other
+		// would have its scores filed under that one. prepare refuses a
+		// used workflow run earlier, but report can run without it, and two
+		// local runs given one ID both pass prepare before either reports.
+		prev, lerr := db.LoadExperiment(ctx, w)
+		if lerr != nil {
+			return nil, lerr //nolint:wrapcheck // names the workflow run
+		}
+		if prev.Replay == nil || prev.Replay.Repo != replay.Repo || prev.Replay.PR != replay.PR {
+			return nil, fmt.Errorf("workflow run %d attempt %d already recorded experiment %s; give this one a workflow run of its own",
+				w.ID, w.Attempt, prev.Experiment.Name)
+		}
+	}
+	rec.ID = id
 	return rec, nil
 }
 
