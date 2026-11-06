@@ -1382,7 +1382,8 @@ pass finished sit next to latency.
   (`.github/workflows/bench.yml`) or, for a model the runners can't
   reach, such as one in a local Ollama, on the operator's machine
   (`scripts/bench-local.sh`: the same steps and database, one run at a
-  time, under a made-up workflow run ID below any real one). Either way
+  time, under a made-up workflow run ID below any real one, which
+  prepare refuses if an experiment is already recorded under it). Either way
   it runs against a draft replay PR of the
   target opened for the experiment and closed after it. Results come from
   telemetry, read back by the workflow run that recorded them, so the

@@ -37,7 +37,9 @@
 #   BENCH_REPO            the repository the arms' refs are in (default
 #                         SnapdragonPartners/buggrit)
 #   BENCH_REMOTE          git remote for BENCH_REPO here (default origin)
-#   BENCH_RUN_ID          the workflow run ID to record under (default: now)
+#   BENCH_RUN_ID          the workflow run ID to record under: one no
+#                         experiment has recorded, which prepare checks
+#                         (default: now)
 #   BENCH_DIR             where builds, checkouts, logs and the report go:
 #                         a new or empty directory (default: a new
 #                         temporary one)

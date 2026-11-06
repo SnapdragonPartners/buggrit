@@ -169,7 +169,8 @@ jobs:
    commit and checks it contains #49, checks the database (it takes the
    workflow's login, is at v4, and lets it write the runs' telemetry and
    the scores: a review that can't use the database carries on without
-   it, so a run would record nothing), and opens the replay: branches
+   it, so a run would record nothing; and no experiment is recorded
+   under this workflow run yet), and opens the replay: branches
    `bench/<experiment>/<run>-<attempt>/base` and `.../head` at the
    target's commits, and a **draft** PR between them. `buggrit.yml` skips
    drafts, and CI runs only on PRs to `main`, so nothing else reviews it.
@@ -216,7 +217,8 @@ scripts/bench-local.sh my-experiment.json
 
 It checks the experiment, then runs prepare under a made-up workflow run
 ID: the time in Unix seconds, which is far below any real Actions run's
-ID. Next it builds each arm's commit (from a worktree of this checkout, so
+ID. Set `BENCH_RUN_ID` to choose one; prepare refuses an ID that already
+recorded an experiment, since report would file the scores under that one. Next it builds each arm's commit (from a worktree of this checkout, so
 the build info carries the commit), checks the database for it, and runs
 every arm × run **one at a time** from a checkout of the target's head. It
 ignores `parallel`, since a local model serves one request at a time. Then

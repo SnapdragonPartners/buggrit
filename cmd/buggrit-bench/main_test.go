@@ -18,6 +18,7 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
+	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 const (
@@ -281,6 +282,20 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 	if code != 1 || !strings.Contains(errb.String(), "the database couldn't be set up: the identity provider refused the token") || len(fake.Branches()) != 0 {
 		t.Fatalf("a failed database action: exit %d: %s", code, errb.String())
 	}
+	// A workflow run that already recorded an experiment would get this
+	// one's scores filed under it: refused, before the replay opens. Another
+	// attempt of it is fine.
+	db = newMemDB()
+	db.experiment = &bench.ExperimentRecord{ID: "e1", Experiment: &bench.Experiment{Name: "earlier"}, Workflow: bench.WorkflowRun{ID: 42, Attempt: 1}}
+	errb.Reset()
+	code = run(context.Background(), fakeDeps(fake, db, nil), args, prepareEnv(t.TempDir()+"/out"), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "workflow run 42 attempt 1 already recorded experiment earlier") || len(fake.Branches()) != 0 {
+		t.Fatalf("a used workflow run: exit %d, branches %v: %s", code, fake.Branches(), errb.String())
+	}
+	db.experiment.Workflow.Attempt = 2
+	if code = run(context.Background(), fakeDeps(fake, db, nil), args, prepareEnv(t.TempDir()+"/out"), &out, &errb); code != 0 {
+		t.Fatalf("another attempt: exit %d: %s", code, errb.String())
+	}
 }
 
 // If the outputs can't be written, nothing downstream knows the replay, so
@@ -348,7 +363,7 @@ func (m *memDB) SaveExperiment(_ context.Context, e *bench.ExperimentRecord) (st
 
 func (m *memDB) LoadExperiment(_ context.Context, w bench.WorkflowRun) (*bench.ExperimentRecord, error) {
 	if m.experiment == nil || m.experiment.Workflow != w {
-		return nil, errors.New("no experiment")
+		return nil, store.ErrNoExperiment
 	}
 	return m.experiment, nil
 }
