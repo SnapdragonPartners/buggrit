@@ -13,7 +13,8 @@ import (
 // fakeGo builds by writing a fake binary: buggrit-bench, or buggrit with
 // BUILT set to the commit its -C directory is at, as the real build info
 // would carry it. Building buggrit interrupts the script when
-// FAKE_INTERRUPT_BUILD is set.
+// FAKE_INTERRUPT_BUILD is set, and then fails, as an interrupted build
+// does.
 const fakeGo = `#!/usr/bin/env bash
 [ "$1" = build ] || { echo "fake go: unexpected call: $*" >&2; exit 1; }
 shift
@@ -26,7 +27,7 @@ case $1 in
   ./cmd/buggrit-bench) cp "$FAKE_BIN/bench" "$out" ;;
   ./cmd/buggrit)
     { echo '#!/usr/bin/env bash'; echo "BUILT=$(git -C "$dir" rev-parse HEAD)"; cat "$FAKE_BIN/buggrit"; } >"$out"
-    [ -z "${FAKE_INTERRUPT_BUILD:-}" ] || kill -INT "$PPID" ;;
+    [ -z "${FAKE_INTERRUPT_BUILD:-}" ] || { kill -INT "$PPID"; exit 1; } ;;
   *) echo "fake go: unexpected package $1" >&2; exit 1 ;;
 esac
 chmod +x "$out"
@@ -78,7 +79,7 @@ const fakeBuggrit = `case $1 in
     done
     stray=no
     [ ! -e "$ws/stray" ] || stray=yes
-    echo "review built=$BUILT run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT label=$BUGGRIT_TELEMETRY_LABEL repository=${GITHUB_REPOSITORY-unset} head=$(git -C "$ws" rev-parse HEAD) stray=$stray config=$(cat "$cfg")" >>"$FAKE_LOG"
+    echo "review built=$BUILT run=$GITHUB_RUN_ID attempt=$GITHUB_RUN_ATTEMPT label=$BUGGRIT_TELEMETRY_LABEL repository=${GITHUB_REPOSITORY-unset} api=${GITHUB_API_URL-unset} head=$(git -C "$ws" rev-parse HEAD) stray=$stray config=$(cat "$cfg")" >>"$FAKE_LOG"
     touch "$ws/stray"
     [ -z "${FAKE_INTERRUPT:-}" ] || kill -INT "$PPID"
     exit "${FAKE_REVIEW_EXIT:-0}" ;;
@@ -147,7 +148,7 @@ func newBenchLocal(t *testing.T) *benchLocal {
 		"BENCH_REPO=o/buggrit", "BENCH_RUN_ID=4242", "BENCH_DIR="+filepath.Join(root, "bench"),
 		"GITHUB_TOKEN=t", "BUGGRIT_DATABASE_URL=postgres://db",
 		// Left over from a shell; the script must keep them from the runs.
-		"GITHUB_REPOSITORY=stray/repo", "BUGGRIT_TELEMETRY_LABEL=stray/label",
+		"GITHUB_REPOSITORY=stray/repo", "GITHUB_API_URL=https://stray.example/api", "BUGGRIT_TELEMETRY_LABEL=stray/label",
 	)
 	if err := os.WriteFile(filepath.Join(root, "exp.json"), []byte(`{"judge": {"api_key_env": "JUDGE_KEY"}}`), 0o644); err != nil { //nolint:gosec // test files
 		t.Fatal(err)
@@ -221,9 +222,9 @@ func TestBenchLocal(t *testing.T) {
 		{name: "a replay prepare wrote is closed whatever else it wrote", code: 1,
 			env:   append([]string{"FAKE_PREPARE=partial"}, keys...),
 			calls: []string{"bench check", "bench prepare", "bench cleanup"}},
-		{name: "an interrupt while building runs nothing and still reports", code: 130,
+		{name: "an interrupt before the reviews stops there and cleans up", code: 130,
 			env:   append([]string{"FAKE_INTERRUPT_BUILD=1"}, keys...),
-			calls: []string{"bench check", "bench prepare", "bench report", "bench cleanup"}},
+			calls: []string{"bench check", "bench prepare", "bench cleanup"}},
 		{name: "an interrupt reports what ran and cleans up", env: append([]string{"FAKE_INTERRUPT=1"}, keys...), code: 130,
 			calls: []string{"bench check", "bench prepare", "review", "bench report", "bench cleanup"}},
 	} {
@@ -287,7 +288,7 @@ func (b *benchLocal) checkLog(log []string) {
 			// Each review leaves a stray file; the checkout is cleaned
 			// between runs.
 			want = []string{
-				"built=" + b.armCommit, "run=4242 attempt=1 label=exp/a repository=unset",
+				"built=" + b.armCommit, "run=4242 attempt=1 label=exp/a repository=unset api=unset",
 				"head=" + b.targetHead, "stray=no", `config={"models":{"default":{"api_key_env":"ARM_KEY"}}}`,
 			}
 		case f[0] == "bench" && f[1] == "report":

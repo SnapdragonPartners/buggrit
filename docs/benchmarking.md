@@ -221,8 +221,8 @@ the build info carries the commit), checks the database for it, and runs
 every arm × run **one at a time** from a checkout of the target's head. It
 ignores `parallel`, since a local model serves one request at a time. Then
 it runs report and cleanup. Cleanup closes the replay however the script
-ends after prepare. Ctrl-C ends the review in progress, skips the rest, and
-still reports. The run ID, the logs and `report.md` are in the directory
+ends after prepare. Ctrl-C during the reviews ends the one in progress,
+skips the rest, and still reports; before they start, it just stops. The run ID, the logs and `report.md` are in the directory
 it names (`BENCH_DIR`, a new or empty directory, default a temporary
 one). Regenerate the report from your checkout with
 `BUGGRIT_DATABASE_URL=... go run ./cmd/buggrit-bench report --workflow-run <that ID> --attempt 1 --no-judge`.

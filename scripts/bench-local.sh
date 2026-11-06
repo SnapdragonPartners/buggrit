@@ -18,9 +18,11 @@
 # 4. report: judge the runs, record the scores, write the report;
 # 5. cleanup: close the replay, whatever happened after prepare.
 #
-# Ctrl-C ends the review in progress (it records a canceled pass), skips
-# the rest, and still reports and cleans up; Ctrl-C again stops the report
-# too, and the replay is still closed.
+# Ctrl-C before the reviews start stops there (nothing has run, so there's
+# nothing to report) and closes the replay. Once they've started, Ctrl-C
+# ends the review in progress (it records a canceled pass), skips the rest,
+# and still reports and cleans up; Ctrl-C again stops the report too, and
+# the replay is still closed.
 #
 # The run ID defaults to the time in Unix seconds. Actions' run IDs were
 # past 4×10^10 in 2026 and only grow, so it can't name a real workflow run,
@@ -60,10 +62,11 @@ say() { printf 'bench-local: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
 # The commands read these from Actions' environment. Left over in a shell,
-# they'd change what's recorded: GITHUB_REPOSITORY gives the report a link
+# they'd change what's recorded or where: GITHUB_API_URL would send every
+# GitHub call elsewhere, GITHUB_REPOSITORY gives the report a link
 # to an Actions run that doesn't exist, and a stray label or run ID would
 # file the runs under another experiment.
-unset GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID GITHUB_RUN_ATTEMPT \
+unset GITHUB_API_URL GITHUB_REPOSITORY GITHUB_SERVER_URL GITHUB_RUN_ID GITHUB_RUN_ATTEMPT \
   GITHUB_OUTPUT GITHUB_STEP_SUMMARY GITHUB_WORKSPACE GITHUB_EVENT_NAME \
   BUGGRIT_TELEMETRY_LABEL BUGGRIT_DATABASE_ERROR BUGGRIT_PR
 
@@ -128,13 +131,14 @@ commits=$(output commits)
 matrix=$(output matrix)
 [ -n "$replay" ] && [ -n "$commits" ] && [ -n "$matrix" ] || die "prepare wrote no replay, commits or matrix"
 
-trap 'stopped=1; say "interrupted: no more runs; reporting what ran"' INT TERM
+# Until the reviews start, an interrupt just ends the script: whatever it
+# interrupts fails anyway, and there are no runs to report.
+trap 'say "interrupted before any review: nothing to report"; exit 130' INT TERM
 
 # Every arm's binary is built, and the database checked for it, before
 # any model time is spent.
 binary() { printf '%s/buggrit-%s' "$dir" "$1"; }
 while IFS= read -r commit; do
-  [ -z "$stopped" ] || break
   bin=$(binary "$commit")
   git -C "$root" fetch -q "$remote" "$commit"
   git -C "$root" worktree add -q --detach "$dir/arm-$commit" "$commit"
@@ -155,14 +159,14 @@ while IFS= read -r config; do
 done < <(jq -c '.include[].config | fromjson' <<<"$matrix")
 
 # Every entry reviews the same replay, from a checkout of the target's head.
-# After an interrupt there's nothing to review, so nothing to clone.
 target_repo=$(jq -r '.include[0].repo' <<<"$matrix")
 head=$(jq -r '.include[0].head' <<<"$matrix")
-if [ -z "$stopped" ]; then
-  gh repo clone "$target_repo" "$dir/target" -- -q --no-checkout
-  git -C "$dir/target" fetch -q origin "$head"
-fi
+gh repo clone "$target_repo" "$dir/target" -- -q --no-checkout
+git -C "$dir/target" fetch -q origin "$head"
 
+# From here an interrupt ends the review in progress, and what ran is
+# still reported.
+trap 'stopped=1; say "interrupted: no more runs; reporting what ran"' INT TERM
 count=$(jq '.include | length' <<<"$matrix")
 field() { jq -r ".$1" <<<"$entry"; }
 for ((i = 0; i < count; i++)); do
