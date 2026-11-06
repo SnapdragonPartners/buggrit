@@ -15,7 +15,6 @@ import (
 
 	"github.com/SnapdragonPartners/buggrit/internal/bench"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
-	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 // identityCommit is the commit that added meta.mph to telemetry (#49). An
@@ -185,7 +184,7 @@ func checkDatabase(ctx context.Context, d deps, url string, w bench.WorkflowRun)
 	case err == nil:
 		return fmt.Errorf("workflow run %d attempt %d already recorded experiment %s; give this one a workflow run of its own",
 			w.ID, w.Attempt, rec.Experiment.Name)
-	case !errors.Is(err, store.ErrNoExperiment):
+	case !errors.Is(err, bench.ErrNoExperiment):
 		return fmt.Errorf("the database: %w", err)
 	}
 	return nil

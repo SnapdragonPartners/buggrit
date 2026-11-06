@@ -18,7 +18,6 @@ import (
 	"github.com/SnapdragonPartners/buggrit/internal/config"
 	"github.com/SnapdragonPartners/buggrit/internal/github"
 	"github.com/SnapdragonPartners/buggrit/internal/github/githubtest"
-	"github.com/SnapdragonPartners/buggrit/internal/store"
 )
 
 const (
@@ -284,7 +283,8 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 	}
 	// A workflow run that already recorded an experiment would get this
 	// one's scores filed under it: refused, before the replay opens. Another
-	// attempt of it is fine.
+	// attempt of it is fine: a re-run over an experiment its first attempt
+	// recorded.
 	db = newMemDB()
 	db.experiment = &bench.ExperimentRecord{ID: "e1", Experiment: &bench.Experiment{Name: "earlier"}, Workflow: bench.WorkflowRun{ID: 42, Attempt: 1}}
 	errb.Reset()
@@ -292,8 +292,7 @@ func TestPrepareChecksTheDatabase(t *testing.T) {
 	if code != 1 || !strings.Contains(errb.String(), "workflow run 42 attempt 1 already recorded experiment earlier") || len(fake.Branches()) != 0 {
 		t.Fatalf("a used workflow run: exit %d, branches %v: %s", code, fake.Branches(), errb.String())
 	}
-	db.experiment.Workflow.Attempt = 2
-	if code = run(context.Background(), fakeDeps(fake, db, nil), args, prepareEnv(t.TempDir()+"/out"), &out, &errb); code != 0 {
+	if code = run(context.Background(), fakeDeps(fake, db, nil), append(args, "--attempt", "2"), prepareEnv(t.TempDir()+"/out"), &out, &errb); code != 0 {
 		t.Fatalf("another attempt: exit %d: %s", code, errb.String())
 	}
 }
@@ -363,7 +362,7 @@ func (m *memDB) SaveExperiment(_ context.Context, e *bench.ExperimentRecord) (st
 
 func (m *memDB) LoadExperiment(_ context.Context, w bench.WorkflowRun) (*bench.ExperimentRecord, error) {
 	if m.experiment == nil || m.experiment.Workflow != w {
-		return nil, store.ErrNoExperiment
+		return nil, bench.ErrNoExperiment
 	}
 	return m.experiment, nil
 }
