@@ -136,6 +136,32 @@ func TestGrepPathUnsearchable(t *testing.T) {
 	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "pipe"}`), "not a regular file")
 }
 
+// A named directory grep can't read is an error, not "no matches".
+func TestGrepPathUnreadableDir(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs Unix permissions enforced for the test user")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "a.go"), []byte("hit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o100); err != nil { // traversable, not listable
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	ws, closeFn, err := OpenDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeFn() }()
+	tools := readOnlyTools(&toolEnv{ws: ws, diff: testDiffParsed(t)})
+	wantErr(t, call(t, tools, "grep", `{"pattern": "hit", "path": "locked"}`), "grep locked: permission denied")
+}
+
 func TestGrepTruncates(t *testing.T) {
 	var b strings.Builder
 	for range maxGrepMatches + 50 {

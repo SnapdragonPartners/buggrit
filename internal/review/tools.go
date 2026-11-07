@@ -250,8 +250,10 @@ func (e *toolEnv) grep(ctx context.Context, call llms.ToolCall) (toolloop.ToolRe
 
 // grepRoot is where grep's walk starts: the repository root, or the file or
 // directory named by path. path gets read_file's rules: cleanPath, then the
-// symlink check. It must exist, and a file must be one grep can search, so
-// a typo or a skipped file is reported rather than answered "no matches".
+// symlink check. It must exist, a file must be one grep can search, and a
+// directory must be readable, so a typo or a path the walk would skip is
+// reported rather than answered "no matches". (Entries below a readable
+// directory are skipped silently, as in a whole-repository search.)
 // path_glob still matches whole paths from the root, so with both, grep
 // searches their intersection.
 func grepRoot(ws Workspace, p string) (string, error) {
@@ -267,6 +269,9 @@ func grepRoot(ws Workspace, p string) (string, error) {
 		return "", fmt.Errorf("grep %s: %s", name, describeFSError(err))
 	}
 	if info.IsDir() {
+		if _, rerr := readDir(ws, name); rerr != nil {
+			return "", fmt.Errorf("grep %s: %s", name, describeFSError(rerr))
+		}
 		return name, nil
 	}
 	// The walk skips files it can't search; for a file the model named,
