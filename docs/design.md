@@ -490,8 +490,10 @@ Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
 - `read_file(path, start_line, end_line)`
 - `grep(pattern, path, path_glob, ignore_case)`: `path` is a file or a
-  directory to search below; `path_glob` narrows by pattern; given both,
-  grep searches their intersection
+  directory to search below; `path_glob` narrows by pattern, matched
+  against the whole repository-relative path; given both, grep searches
+  their intersection. A named file grep can't search (binary, over 1 MiB)
+  is an error, not "no matches"
 - `list_dir(path)`
 - `get_diff(path, offset)`: one file's diff with head-side line numbers, or,
   with no path, the list of changed files. `offset` continues output that

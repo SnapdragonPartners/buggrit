@@ -116,6 +116,24 @@ func TestGrepPath(t *testing.T) {
 	wantErr(t, call(t, tools, "grep", `{"pattern": "SECRET", "path": ".git"}`), "not available")
 	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "../etc"}`), "inside the repository")
 	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "/etc"}`), "relative to the repository root")
+	// path_glob matches whole paths, not paths relative to path.
+	if res := call(t, tools, "grep", `{"pattern": "map", "path": "internal/cache", "path_glob": "*.go"}`); res.Content != "no matches" {
+		t.Errorf("path_glob matched relative to path: %s", res.Content)
+	}
+}
+
+// A named file grep would skip mid-walk is an error, not "no matches".
+func TestGrepPathUnsearchable(t *testing.T) {
+	big := strings.Repeat("x\n", maxGrepFile/2+1)
+	env := &toolEnv{ws: fstest.MapFS{
+		"big.txt":  {Data: []byte(big)},
+		"blob.bin": {Data: []byte("x\x00x\n")},
+		"pipe":     {Mode: fs.ModeNamedPipe},
+	}, diff: testDiffParsed(t)}
+	tools := readOnlyTools(env)
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "big.txt"}`), "-byte limit; use read_file")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "blob.bin"}`), "grep blob.bin: binary file")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "pipe"}`), "not a regular file")
 }
 
 func TestGrepTruncates(t *testing.T) {
