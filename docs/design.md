@@ -1378,8 +1378,14 @@ pass finished sit next to latency.
   prompts. The overlay changes only the models and the pass's deadline and
   concurrency, on a base config. The name is the runs' telemetry label,
   `<experiment>/<arm>`.
-- **A run is `buggrit review --dry-run` on GitHub Actions**
-  (`.github/workflows/bench.yml`), against a draft replay PR of the
+- **A run is `buggrit review --dry-run`**, on GitHub Actions
+  (`.github/workflows/bench.yml`) or, for a model the runners can't
+  reach, such as one in a local Ollama, on the operator's machine
+  (`scripts/bench-local.sh`: the same steps and database, one run at a
+  time, under a made-up workflow run ID below any real one; prepare
+  refuses one that already recorded an experiment, and report refuses to
+  record a second there). Either way
+  it runs against a draft replay PR of the
   target opened for the experiment and closed after it. Results come from
   telemetry, read back by the workflow run that recorded them, so the
   database is required. The front end writes the arm's config and passes
@@ -1453,7 +1459,8 @@ pass finished sit next to latency.
 - **Benchmarks** (November 2026,
   [#19](https://github.com/SnapdragonPartners/buggrit/issues/19)): a
   separate `buggrit-bench` command, kept out of the released binary, runs
-  experiments through a dispatched workflow. Arms are refs plus config
+  experiments through a dispatched workflow, or locally for a model the
+  runners can't reach. Arms are refs plus config
   overlays, replays are draft PRs behind an interface, the judge has no
   default, and its verdicts are drafts a person overrides in the database
   (§12, "Benchmarks").

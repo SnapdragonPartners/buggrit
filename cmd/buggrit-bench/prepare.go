@@ -123,12 +123,12 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 	if err != nil {
 		return err
 	}
-	if derr := checkDatabase(ctx, d, dbURL); derr != nil {
+	w := bench.WorkflowRun{ID: f.workflowRun, Attempt: f.attempt}
+	if derr := checkDatabase(ctx, d, dbURL, w); derr != nil {
 		return derr
 	}
 
 	t := l.target()
-	w := bench.WorkflowRun{ID: f.workflowRun, Attempt: f.attempt}
 	replayer := d.replayer(gh)
 	replay, err := replayer.Open(ctx, t, bench.Tag(l.exp.Name, w))
 	if err != nil {
@@ -165,13 +165,26 @@ func runPrepare(ctx context.Context, d deps, args []string, getenv func(string) 
 // runs' telemetry and the scores. A review that can't use the database
 // carries on without it (design §6), so a run would otherwise record
 // nothing. Each review job also checks its own login.
-func checkDatabase(ctx context.Context, d deps, url string) error {
+//
+// It also checks no experiment is recorded under w yet: report files the
+// scores under the experiment recorded for its workflow run and attempt,
+// so a second one there would score its runs under the first. An Actions
+// run's prepare always comes before its report, but a local run's ID is
+// chosen by hand (scripts/bench-local.sh).
+func checkDatabase(ctx context.Context, d deps, url string, w bench.WorkflowRun) error {
 	db, err := d.openStore(ctx, url)
 	if err != nil {
 		return fmt.Errorf("the database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 	if err := db.CheckWrites(ctx); err != nil {
+		return fmt.Errorf("the database: %w", err)
+	}
+	switch rec, err := db.LoadExperiment(ctx, w); {
+	case err == nil:
+		return fmt.Errorf("workflow run %d attempt %d already recorded experiment %s; give this one a workflow run of its own",
+			w.ID, w.Attempt, rec.Experiment.Name)
+	case !errors.Is(err, bench.ErrNoExperiment):
 		return fmt.Errorf("the database: %w", err)
 	}
 	return nil

@@ -8,7 +8,8 @@ summary; this is the runbook.
 An **experiment** runs several **arms** (variants of buggrit) a few times
 each against one **target**, a pull request replayed from two commits.
 Each run is a fresh first pass, `buggrit review --dry-run`, on GitHub
-Actions. Everything except recall comes from the runs' telemetry
+Actions, or, for a model the runners can't reach, on your own machine
+([Running one locally](#running-one-locally)). Everything except recall comes from the runs' telemetry
 ([telemetry.md](telemetry.md)). With a **benchmark**, the target's list
 of known defects, a **judge** model scores each run's findings against
 those defects, and the scores go in the database.
@@ -149,6 +150,10 @@ overlay and prints what would run. It opens nothing.
 
 ## Running one
 
+Dispatch the bench workflow. For a model GitHub's runners can't reach,
+`scripts/bench-local.sh` takes the same steps from your machine
+([below](#running-one-locally)), with the same database and cleanup.
+
 ```sh
 gh workflow run bench.yml -f experiment="$(cat my-experiment.json)"
 ```
@@ -164,7 +169,8 @@ jobs:
    commit and checks it contains #49, checks the database (it takes the
    workflow's login, is at v4, and lets it write the runs' telemetry and
    the scores: a review that can't use the database carries on without
-   it, so a run would record nothing), and opens the replay: branches
+   it, so a run would record nothing; and no experiment is recorded
+   under this workflow run yet), and opens the replay: branches
    `bench/<experiment>/<run>-<attempt>/base` and `.../head` at the
    target's commits, and a **draft** PR between them. `buggrit.yml` skips
    drafts, and CI runs only on PRs to `main`, so nothing else reviews it.
@@ -197,6 +203,112 @@ the experiment again; its runs join the same groups as long as each arm's
 ref still names the same commit, since a new dispatch resolves the refs
 afresh. Rerunning the whole workflow is fine, since a new attempt gets its
 own replay.
+
+## Running one locally
+
+GitHub's runners can't reach a model on your machine, such as one in a
+local Ollama. `scripts/bench-local.sh` does what the workflow does, from
+your machine and against the same database, so its runs, scores and
+report are recorded as a dispatched experiment's are:
+
+```sh
+scripts/bench-local.sh my-experiment.json
+```
+
+It checks the experiment, then runs prepare under a made-up workflow run
+ID: the time in Unix seconds, which is far below any real Actions run's
+ID. Set `BENCH_RUN_ID` to choose one; prepare refuses an ID that already
+recorded an experiment, and report refuses to record another experiment
+under one, since the scores would be filed under the first. Next it builds each arm's commit (from a worktree of this checkout, so
+the build info carries the commit), checks the database for it, and runs
+every arm × run **one at a time** from a checkout of the target's head. It
+ignores `parallel`, since a local model serves one request at a time. Then
+it runs report and cleanup. Cleanup closes the replay however the script
+ends after prepare. Ctrl-C during the reviews ends the one in progress,
+skips the rest, and still reports; before they start, it just stops. The run ID, the logs and `report.md` are in the directory
+it names (`BENCH_DIR`, a new or empty directory, default a temporary
+one). Regenerate the report from your checkout with
+`BUGGRIT_DATABASE_URL=... go run ./cmd/buggrit-bench report --workflow-run <that ID> --attempt 1 --no-judge`.
+
+It needs `GITHUB_TOKEN` (yours can open the replay), every `api_key_env`
+the arms and the judge name, `go`, `gh` and `jq`, and
+`BUGGRIT_DATABASE_URL` through an Auth Proxy logged in as the operator
+([database.md](database.md#migrations)). The runs outlast the hour an
+access token is good for, so give the proxy credentials that refresh,
+your application-default ones, not `--token`:
+
+```sh
+gcloud auth application-default login   # as the operator
+cloud-sql-proxy --auto-iam-authn --port 5433 buggrit:us-east1:buggrit-db &
+export BUGGRIT_DATABASE_URL='postgres://dan%40snapdragonpartners.com@127.0.0.1:5433/buggrit?sslmode=disable&options=-c%20role%3Dbuggrit_owner'
+```
+
+For a model in **Ollama**:
+
+- **Set the context size in the model.** buggrit can't send Ollama's
+  `num_ctx`, and Ollama silently cuts a prompt longer than its small
+  default, so recall would measure the cut. The finder's opening on
+  `pr9-e619281` alone is about 84k tokens, before any file it reads, so
+  use the model's full context if it fits in memory (Qwen3-Coder 30B's
+  256k takes about 25 GB of cache on top of its 19 GB of weights). Make a
+  variant whose name records the setting:
+
+  ```sh
+  printf 'FROM qwen3-coder:30b\nPARAMETER num_ctx 262144\n' > Modelfile
+  ollama create qwen3-coder-30b-256k -f Modelfile
+  ```
+
+- **The overlay** sets `models.default`, so every stage is local, and
+  clears what the base's LunaRoute model sets and the Ollama provider
+  can't take: the key, the endpoint (the default is `localhost:11434`),
+  and `reasoning_effort` for a model without thinking, which Ollama
+  refuses outright (`does not support thinking`). A fresh first pass
+  calls only the finder, so overlaying `models.find` alone gives the same
+  runs, but the other stages would keep LunaRoute's key, and the script
+  requires every key an arm's config names. A local model takes minutes
+  per turn, so give the pass a long deadline and each call a long
+  timeout, so the run measures recall rather than the deadline:
+
+  ```json
+  {"name": "qwen-local", "overlay": {
+    "models": {"default": {"provider": "ollama", "model": "qwen3-coder-30b-256k", "base_url": "",
+                           "api_key_env": "", "reasoning_effort": "", "request_timeout": "30m"}},
+    "limits": {"pass_deadline": "6h"}}}
+  ```
+
+What the first local model (Qwen3-Coder 30B at Q4, Ollama 0.33.2, a
+128 GB Mac, #67) taught, for the next one:
+
+- **Smoke-test it first** with one `buggrit review --dry-run --config`
+  on a small PR. Check that it calls tools sensibly and that its
+  request is accepted (a refused `think` fails on the first call). Pick a
+  PR whose head buggrit hasn't completed a pass on, or the review skips
+  it. Nothing needs the database for this.
+- **Check the opening prompt's size against the context.** Each turn's
+  log line gives its prompt tokens (`83453 in`). Keep the largest well
+  under `num_ctx`: Ollama cuts silently, and the judge sees only
+  findings, so a cut run just looks like a weak one. A file read adds
+  roughly 6k tokens. A 128k context left too little room on
+  `pr9-e619281`, so that run was stopped and rerun at 256k.
+- **Budget memory for the cache, not just the weights.** `ollama ps`
+  shows what a context costs: 32 GB at 128k and 45 GB at 256k for this
+  model. Unload other models first (`ollama stop <name>`).
+- **Expect a slow first turn.** Ollama processed the 84k-token opening
+  at 120–180 tokens a second, slower as the context grew: 21 minutes.
+  Later turns process only what's new: seconds for a short tool result,
+  3–4 minutes for a file read. The review log is silent until a turn
+  returns, so watch progress in Ollama's own log
+  (`~/.ollama/logs/server.log`, its `prompt processing ... progress`
+  lines).
+- **Compare turns, not wall time, across runs.** Ollama keeps the
+  processed prompt between runs, and every run's opening is identical,
+  so only the first run's first turn pays for it (later ones took about
+  20 seconds). The report's wall times aren't comparable across an
+  arm's runs.
+- **Read the turn counts before the recall.** A run that submits on its
+  first turn without calling a tool ("complete" or "partial") is the
+  model stopping early, not a harness failure. This model did that in 2
+  of 3 runs.
 
 ## Reading the report
 

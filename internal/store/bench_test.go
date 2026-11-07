@@ -154,7 +154,7 @@ func TestBenchStoreRoundTrip(t *testing.T) {
 	if got, lerr := b.LoadExperiment(ctx, oldW); lerr != nil || got.Experiment.Name != "old" || !strings.Contains(string(got.Spec), `"Issue": 19`) || len(got.Commits) != 0 {
 		t.Fatalf("LoadExperiment of a recorded issue = %+v, %v", got, lerr)
 	}
-	if _, lerr := b.LoadExperiment(ctx, bench.WorkflowRun{ID: 7, Attempt: 1}); !errors.Is(lerr, ErrNoExperiment) {
+	if _, lerr := b.LoadExperiment(ctx, bench.WorkflowRun{ID: 7, Attempt: 1}); !errors.Is(lerr, bench.ErrNoExperiment) {
 		t.Fatalf("LoadExperiment of an unknown run: %v", lerr)
 	}
 

@@ -126,9 +126,12 @@ func Tag(experiment string, w WorkflowRun) string {
 	return experiment + "/" + strconv.FormatInt(w.ID, 10) + "-" + strconv.Itoa(w.Attempt)
 }
 
-// WorkflowRun is the Actions run, and its attempt, that ran an experiment.
-// Telemetry records both on each review run (meta.workflow_run), and the
-// report reads back the runs of exactly this one.
+// WorkflowRun is the Actions run, and its attempt, that ran an experiment;
+// for one run on the operator's machine (scripts/bench-local.sh), a
+// made-up ID below any real one, and attempt 1. Telemetry records both on
+// each review run (meta.workflow_run), and the report reads back the runs
+// of exactly this one. Each records at most one experiment: prepare
+// refuses one that already has, and report refuses to record another.
 type WorkflowRun struct {
 	ID      int64 `json:"id"`
 	Attempt int   `json:"attempt"`

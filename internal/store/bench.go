@@ -26,10 +26,6 @@ type benchStore struct {
 	q *storedb.Queries
 }
 
-// ErrNoExperiment is LoadExperiment's error for a workflow run with no
-// experiment recorded.
-var ErrNoExperiment = errors.New("no experiment recorded for that workflow run")
-
 func (b benchStore) SaveBenchmark(ctx context.Context, hash string, bm *bench.Benchmark) error {
 	content, err := json.Marshal(bm)
 	if err != nil {
@@ -75,7 +71,7 @@ func (b benchStore) LoadExperiment(ctx context.Context, w bench.WorkflowRun) (*b
 	row, err := b.q.LoadExperiment(ctx, storedb.LoadExperimentParams{WorkflowRun: w.ID, Attempt: int32(w.Attempt)}) //nolint:gosec // an attempt number fits
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return nil, fmt.Errorf("workflow run %d attempt %d: %w", w.ID, w.Attempt, ErrNoExperiment)
+		return nil, fmt.Errorf("workflow run %d attempt %d: %w", w.ID, w.Attempt, bench.ErrNoExperiment)
 	case err != nil:
 		return nil, fmt.Errorf("load the experiment of workflow run %d: %w", w.ID, err)
 	}

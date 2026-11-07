@@ -3,6 +3,7 @@ package bench
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -195,6 +196,10 @@ func (r *RunResult) Wall() time.Duration {
 	return 0
 }
 
+// ErrNoExperiment is Store.LoadExperiment's error for a workflow run with
+// no experiment recorded.
+var ErrNoExperiment = errors.New("no experiment recorded for that workflow run")
+
 // Store is the database the harness reads runs from and keeps scores in;
 // internal/store implements it.
 type Store interface {
@@ -207,7 +212,9 @@ type Store interface {
 	// the same workflow run again returns the existing ID and changes
 	// nothing.
 	SaveExperiment(ctx context.Context, e *ExperimentRecord) (string, error)
-	// LoadExperiment reads back an experiment run, with its benchmark.
+	// LoadExperiment reads back an experiment run, with its benchmark. It
+	// returns an error wrapping ErrNoExperiment when none is recorded
+	// under w.
 	LoadExperiment(ctx context.Context, w WorkflowRun) (*ExperimentRecord, error)
 	// Runs returns the dry runs of the replay that ran in the workflow
 	// run, in label then start order.

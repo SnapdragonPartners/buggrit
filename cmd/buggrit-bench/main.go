@@ -2,7 +2,9 @@
 // reviews of a replayed pull request, scored from their telemetry (design
 // §12, "Benchmarks"; docs/benchmarking.md). The bench workflow
 // (.github/workflows/bench.yml) runs prepare, the reviews, report and
-// cleanup; report also runs locally to regenerate a report.
+// cleanup; scripts/bench-local.sh runs the same steps on the operator's
+// machine, for a model the runners can't reach. report also runs alone to
+// regenerate a report.
 package main
 
 import (
@@ -22,7 +24,7 @@ commands:
                             validate an experiment, its benchmark and every
                             arm's merged config, without opening anything
   prepare [flags]           validate an experiment, open its replay PR and
-                            write the review matrix (in the bench workflow)
+                            write the review matrix
   report [flags]            score an experiment's runs and write the report;
                             with --workflow-run, regenerate it from the
                             database, overrides applied

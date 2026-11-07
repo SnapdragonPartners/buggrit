@@ -45,7 +45,9 @@ schema; the harness needs v4.
   effective `models` per stage (key variable names, never keys),
   `limits`, `review` thresholds, `shared_rate_limit`, `mph` (see
   [Identity](#identity)), and `workflow_run` (`id`, `attempt` and
-  `event`) in Actions.
+  `event`) in Actions. A benchmark run on the operator's machine
+  (`scripts/bench-local.sh`) records a made-up `id`, `attempt` 1 and
+  an empty `event`.
 - `outcome`: `exit_code`, plus `status` (the status line), `stopped` or
   `error`.
 - `events_emitted` and `events_written`, then `complete`, which is true
