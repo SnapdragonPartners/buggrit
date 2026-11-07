@@ -180,13 +180,16 @@ func grepDef() llms.ToolDefinition {
 	return llms.ToolDefinition{
 		Name: "grep",
 		Description: "Search repository files for a regular expression (RE2 syntax, as in Go). " +
-			"Returns \"path:line: text\" for each match, up to 200 matches. Use path_glob to narrow " +
-			"the search, for example \"internal/**/*.go\" or \"docs/**\".",
+			"Returns \"path:line: text\" for each match, up to 200 matches. Use path to search one " +
+			"file or directory, and path_glob to narrow by pattern, for example \"internal/**/*.go\" " +
+			"or \"docs/**\". path_glob matches the whole path from the repository root, so use ** " +
+			"for any depth. Given both, grep searches the files under path that match path_glob.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "pattern": {"type": "string", "description": "RE2 regular expression"},
-    "path_glob": {"type": "string", "description": "Only search paths matching this glob; ** matches any number of directories (default: all files)"},
+    "path": {"type": "string", "description": "A file or directory relative to the repository root; a directory is searched recursively (default: the root)"},
+    "path_glob": {"type": "string", "description": "Only search paths matching this glob, matched against the whole path from the repository root; ** matches any number of directories (default: all files)"},
     "ignore_case": {"type": "boolean"}
   },
   "required": ["pattern"],
@@ -199,6 +202,7 @@ func grepDef() llms.ToolDefinition {
 func (e *toolEnv) grep(ctx context.Context, call llms.ToolCall) (toolloop.ToolResult, error) {
 	var args struct {
 		Pattern    string `json:"pattern"`
+		Path       string `json:"path"`
 		PathGlob   string `json:"path_glob"`
 		IgnoreCase bool   `json:"ignore_case"`
 	}
@@ -217,12 +221,16 @@ func (e *toolEnv) grep(ctx context.Context, call llms.ToolCall) (toolloop.ToolRe
 	if pathGlob == "" {
 		pathGlob = "**"
 	}
-	if err := glob.Validate(pathGlob); err != nil {
+	if err = glob.Validate(pathGlob); err != nil {
 		return toolError("bad path_glob: %v", err)
+	}
+	root, err := grepRoot(e.ws, args.Path)
+	if err != nil {
+		return toolError("%v", err)
 	}
 
 	g := &grepper{ws: e.ws, re: re, glob: pathGlob}
-	walkErr := fs.WalkDir(e.ws, ".", func(name string, d fs.DirEntry, werr error) error {
+	walkErr := fs.WalkDir(e.ws, root, func(name string, d fs.DirEntry, werr error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr //nolint:wrapcheck // returned to WalkDir, wrapped below
 		}
@@ -235,9 +243,54 @@ func (e *toolEnv) grep(ctx context.Context, call llms.ToolCall) (toolloop.ToolRe
 		return ok("no matches")
 	}
 	if g.truncated {
-		fmt.Fprintf(&g.out, "[stopped after %d matches; narrow pattern or path_glob]\n", g.matches)
+		fmt.Fprintf(&g.out, "[stopped after %d matches; narrow pattern, path or path_glob]\n", g.matches)
 	}
 	return ok(g.out.String())
+}
+
+// grepRoot is where grep's walk starts: the repository root, or the file or
+// directory named by path. path gets read_file's rules: cleanPath, then the
+// symlink check. It must exist, a file must be one grep can search, and a
+// directory must be readable, so a typo or a path the walk would skip is
+// reported rather than answered "no matches". (Entries below a readable
+// directory are skipped silently, as in a whole-repository search.)
+// path_glob still matches whole paths from the root, so with both, grep
+// searches their intersection.
+func grepRoot(ws Workspace, p string) (string, error) {
+	name, err := cleanPath(p)
+	if err != nil {
+		return "", err
+	}
+	if linkErr := checkNoSymlink(ws, name); linkErr != nil {
+		return "", linkErr
+	}
+	info, err := fs.Stat(ws, name)
+	if err != nil {
+		return "", fmt.Errorf("grep %s: %s", name, describeFSError(err))
+	}
+	if info.IsDir() {
+		if _, rerr := readDir(ws, name); rerr != nil {
+			return "", fmt.Errorf("grep %s: %s", name, describeFSError(rerr))
+		}
+		return name, nil
+	}
+	// The walk skips files it can't search; for a file the model named,
+	// that would be a confident "no matches", so say why instead.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("grep %s: not a regular file", name)
+	}
+	if info.Size() > maxGrepFile {
+		return "", fmt.Errorf("grep %s: the file is %d bytes, over grep's %d-byte limit; use read_file", name, info.Size(), maxGrepFile)
+	}
+	f, _, err := openText(ws, name)
+	if errors.Is(err, errBinary) {
+		return "", fmt.Errorf("grep %s: binary file", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("grep %s: %s", name, describeFSError(err))
+	}
+	_ = f.Close()
+	return name, nil
 }
 
 // grepper accumulates grep matches across a directory walk.

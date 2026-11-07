@@ -88,6 +88,80 @@ func TestGrep(t *testing.T) {
 	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path_glob": "a**"}`), "bad path_glob")
 }
 
+// path narrows grep to one file or directory; with path_glob, to their
+// intersection (#73).
+func TestGrepPath(t *testing.T) {
+	tools := readOnlyTools(testEnv(t))
+	only := func(args string, want, notWant []string) {
+		t.Helper()
+		res := call(t, tools, "grep", args)
+		wantOK(t, res, want...)
+		for _, n := range notWant {
+			if strings.Contains(res.Content, n) {
+				t.Errorf("grep %s searched %s:\n%s", args, n, res.Content)
+			}
+		}
+	}
+	only(`{"pattern": "map", "path": "internal/cache/lru.go"}`, []string{"internal/cache/lru.go:3:"}, []string{"cache.go"})
+	only(`{"pattern": "map", "path": "./internal/cache/"}`, []string{"internal/cache/cache.go:2:", "internal/cache/lru.go:3:"}, nil)
+	only(`{"pattern": "map", "path": "internal", "path_glob": "**/lru.go"}`, []string{"lru.go"}, []string{"cache.go"})
+	only(`{"pattern": "(?i)call new", "path": ""}`, []string{"README.md:2:"}, nil)
+	if res := call(t, tools, "grep", `{"pattern": "map", "path": "internal/cache", "path_glob": "docs/**"}`); res.Content != "no matches" {
+		t.Errorf("disjoint path and path_glob matched: %s", res.Content)
+	}
+	if res := call(t, tools, "grep", `{"pattern": "map", "path": "README.md"}`); res.Content != "no matches" {
+		t.Errorf("file path searched beyond the file: %s", res.Content)
+	}
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "nope"}`), "grep nope: no such file")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "SECRET", "path": ".git"}`), "not available")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "../etc"}`), "inside the repository")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "/etc"}`), "relative to the repository root")
+	// path_glob matches whole paths, not paths relative to path.
+	if res := call(t, tools, "grep", `{"pattern": "map", "path": "internal/cache", "path_glob": "*.go"}`); res.Content != "no matches" {
+		t.Errorf("path_glob matched relative to path: %s", res.Content)
+	}
+}
+
+// A named file grep would skip mid-walk is an error, not "no matches".
+func TestGrepPathUnsearchable(t *testing.T) {
+	big := strings.Repeat("x\n", maxGrepFile/2+1)
+	env := &toolEnv{ws: fstest.MapFS{
+		"big.txt":  {Data: []byte(big)},
+		"blob.bin": {Data: []byte("x\x00x\n")},
+		"pipe":     {Mode: fs.ModeNamedPipe},
+	}, diff: testDiffParsed(t)}
+	tools := readOnlyTools(env)
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "big.txt"}`), "-byte limit; use read_file")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "blob.bin"}`), "grep blob.bin: binary file")
+	wantErr(t, call(t, tools, "grep", `{"pattern": "x", "path": "pipe"}`), "not a regular file")
+}
+
+// A named directory grep can't read is an error, not "no matches".
+func TestGrepPathUnreadableDir(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs Unix permissions enforced for the test user")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "a.go"), []byte("hit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o100); err != nil { // traversable, not listable
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	ws, closeFn, err := OpenDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closeFn() }()
+	tools := readOnlyTools(&toolEnv{ws: ws, diff: testDiffParsed(t)})
+	wantErr(t, call(t, tools, "grep", `{"pattern": "hit", "path": "locked"}`), "grep locked: permission denied")
+}
+
 func TestGrepTruncates(t *testing.T) {
 	var b strings.Builder
 	for range maxGrepMatches + 50 {
@@ -193,6 +267,10 @@ func TestOpenDirConfines(t *testing.T) {
 	if res := call(t, tools, "grep", `{"pattern": "SECRET"}`); res.Content != "no matches" {
 		t.Errorf("grep followed an escaping symlink: %s", res.Content)
 	}
+	wantErr(t, call(t, tools, "grep", `{"pattern": "fine", "path": "inside.txt"}`), "symbolic link to ok.txt")
+	if res := call(t, tools, "grep", `{"pattern": "SECRET", "path": "escape.txt"}`); !res.IsError || strings.Contains(res.Content, "SECRET") {
+		t.Errorf("grep path followed an escaping symlink: %+v", res)
+	}
 }
 
 // A symlink pointing into .git must not expose it (design §10).
@@ -216,6 +294,8 @@ func TestSymlinkIntoGitRefused(t *testing.T) {
 	for _, tc := range []struct{ tool, args string }{
 		{"read_file", `{"path": "metadata/config"}`},
 		{"list_dir", `{"path": "metadata"}`},
+		{"grep", `{"pattern": "SECRET", "path": "metadata"}`},
+		{"grep", `{"pattern": "SECRET", "path": "metadata/config"}`},
 	} {
 		res := call(t, tools, tc.tool, tc.args)
 		if !res.IsError || strings.Contains(res.Content, "SECRET") || strings.Contains(res.Content, "config\n") {
