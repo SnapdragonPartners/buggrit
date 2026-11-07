@@ -266,6 +266,79 @@ ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 ```
 
 ```sql
+-- The finder's turn metrics by identity group, over live runs, for
+-- changes that aim to cut turns (#72). front_load: of the files the
+-- opening message names that the finder reads at some point (read_file or
+-- get_diff), the share it first reads on turn 1. The opening names the
+-- changed files, shown or deferred, and any file whose path appears in its
+-- text; a named file never read isn't counted. reads_per_file and
+-- lines_per_read cover read_file calls that returned lines, measured from
+-- the result's "(lines a-b of n)" header and any truncation note.
+-- ctx_per_turn is a find call's mean InputTokens: the context each turn
+-- carries. Paths are compared as written, so "./a.go" isn't "a.go".
+WITH r AS (
+    SELECT id, repo, label,
+           jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
+                              'limits', meta->'limits', 'review', meta->'review') AS identity
+    FROM buggrit.run
+    WHERE complete AND NOT dry_run
+), reads AS (
+    SELECT run_id, call, payload->>'name' AS tool, payload->'parameters'->>'path' AS path,
+           CASE WHEN payload->>'name' = 'read_file' AND NOT coalesce((payload->>'is_error')::boolean, false) THEN
+               coalesce(substring(payload->>'result' FROM '\[truncated at line (\d+);')::int,
+                        substring(payload->>'result' FROM '^[^\n]* \(lines \d+-(\d+) of \d+\)')::int)
+               - substring(payload->>'result' FROM '^[^\n]* \(lines (\d+)-\d+ of \d+\)')::int + 1
+           END AS lines
+    FROM buggrit.event
+    WHERE run_id IN (SELECT id FROM r) AND kind = 'tool' AND session = 'find'
+      AND payload->>'name' IN ('read_file', 'get_diff') AND payload->'parameters'->>'path' IS NOT NULL
+), opening AS (
+    SELECT run_id, string_agg(c->>'Text', E'\n') AS text
+    FROM buggrit.event, jsonb_array_elements(payload->'message'->'Content') AS c
+    WHERE run_id IN (SELECT id FROM r) AND kind = 'message' AND session = 'find' AND call = 1
+      AND (payload->>'pos')::int = 0
+    GROUP BY run_id
+), named AS (
+    SELECT run_id, f->>'path' AS path
+    FROM buggrit.event, jsonb_array_elements(payload->'diff') AS f
+    WHERE run_id IN (SELECT id FROM r) AND kind = 'opening' AND session = 'find'
+    UNION
+    SELECT run_id, d
+    FROM buggrit.event, jsonb_array_elements_text(coalesce(payload->'deferred', '[]')) AS d
+    WHERE run_id IN (SELECT id FROM r) AND kind = 'opening' AND session = 'find'
+    UNION
+    SELECT reads.run_id, reads.path FROM reads JOIN opening USING (run_id) WHERE strpos(opening.text, reads.path) > 0
+), per_run AS (
+    SELECT r.id,
+           (SELECT count(*) FILTER (WHERE min_call = 1)::numeric / nullif(count(*), 0)
+            FROM (SELECT min(reads.call) AS min_call FROM named JOIN reads USING (run_id, path)
+                  WHERE named.run_id = r.id GROUP BY named.path) n) AS front_load,
+           (SELECT count(*)::numeric / nullif(count(DISTINCT path), 0) FROM reads
+            WHERE run_id = r.id AND lines IS NOT NULL) AS reads_per_file,
+           (SELECT avg(lines) FROM reads WHERE run_id = r.id) AS lines_per_read,
+           (SELECT count(*) FROM buggrit.event WHERE run_id = r.id AND kind = 'call' AND session = 'find') AS turns,
+           (SELECT avg((payload->'response'->'usage'->>'InputTokens')::int) FROM buggrit.event
+            WHERE run_id = r.id AND kind = 'call' AND session = 'find') AS ctx_per_turn
+    FROM r
+)
+SELECT r.repo, left(md5(r.identity::text), 8) AS "group",
+       r.identity->'models'->'find'->>'model' AS find_model,
+       left(r.identity->'mph'->'stages'->'find'->>'prompt_hash', 15) AS prompt,
+       left(r.identity->'mph'->>'commit', 7) AS commit, r.label,
+       count(*) AS runs,
+       round(avg(p.front_load), 2) AS front_load,
+       round(stddev_samp(p.front_load), 2) AS front_load_sd,
+       round(avg(p.reads_per_file), 2) AS reads_per_file,
+       round(avg(p.lines_per_read)) AS lines_per_read,
+       round(avg(p.turns), 1) AS turns,
+       round(avg(p.ctx_per_turn)) AS ctx_per_turn
+FROM r JOIN per_run p ON p.id = r.id
+WHERE p.turns > 0
+GROUP BY r.repo, r.identity, r.label
+ORDER BY r.repo, find_model, prompt, commit, r.label, "group";
+```
+
+```sql
 -- Recall by identity group over benchmark runs (benchmarking.md): each
 -- run's credit for the known defects (found 1, partial ½; a person's
 -- override replaces the judge's draft) over the benchmark's defects, and
