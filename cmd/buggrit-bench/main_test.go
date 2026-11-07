@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -496,32 +497,63 @@ func TestReport(t *testing.T) {
 	}
 }
 
-// A workflow run that already recorded another experiment (another
-// replay) is refused before anything is scored under it; the same
-// experiment's report again goes ahead.
+// A workflow run that already recorded an experiment takes only that
+// experiment's report again, from the recorded experiment; anything else
+// is refused before a score is filed under it.
 func TestReportRefusesAUsedWorkflowRun(t *testing.T) {
 	fake := githubtest.New(t, "o/r")
-	judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
 	replay := `{"repo": "o/r", "pr": 11, "base": "bench/trial/42-1/base", "head": "bench/trial/42-1/head"}`
 	args := []string{"report", "--root", repoRoot, "--experiment", writeExperiment(t, ""), "--replay", replay, "--commits", commitsArg}
-	for name, tc := range map[string]struct {
-		pr   int
-		code int
-	}{"another experiment": {pr: 9, code: 1}, "the same one again": {pr: 11}} {
+	db := newMemDB()
+	ids := 0
+	report := func() (int, string) {
+		judge := &testllm.FakeChatClient{Responses: []llms.ChatResponse{testllm.ToolCallResponse("c", "submit_judgment", judgment(t))}}
+		d := fakeDeps(fake, db, judge)
+		// Each report makes a new experiment ID, as the real one does, so
+		// a second finds the first's row.
+		d.newID = func() string { ids++; return fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012d", ids) }
+		var stdout, stderr bytes.Buffer
+		code := run(context.Background(), d, args, reportEnv(""), &stdout, &stderr)
+		return code, stderr.String()
+	}
+	if code, errs := report(); code != 0 {
+		t.Fatalf("first report: exit %d: %s", code, errs)
+	}
+	recorded := db.experiment
+	scored := len(db.scores)
+
+	// The same experiment again goes ahead, from the recorded one.
+	if code, errs := report(); code != 0 {
+		t.Fatalf("the same report again: exit %d: %s", code, errs)
+	}
+	if db.experiment != recorded || len(db.scores) != scored {
+		t.Fatalf("the report again recorded something new: %+v", db.scores)
+	}
+
+	for name, change := range map[string]func(e *bench.ExperimentRecord){
+		"another benchmark":      func(e *bench.ExperimentRecord) { e.BenchmarkHash = "other" },
+		"another experiment":     func(e *bench.ExperimentRecord) { e.Spec = []byte(`{"name": "other"}`) },
+		"other commits":          func(e *bench.ExperimentRecord) { e.Commits = map[string]string{"main": glmCommit} },
+		"another replay":         func(e *bench.ExperimentRecord) { e.Replay = &bench.Replay{Repo: "o/r", PR: 9} },
+		"an unreadable database": nil,
+	} {
 		t.Run(name, func(t *testing.T) {
-			db := newMemDB()
-			db.experiment = &bench.ExperimentRecord{
-				ID: "e1", Experiment: &bench.Experiment{Name: "earlier"}, Workflow: bench.WorkflowRun{ID: 42, Attempt: 1},
-				Replay: &bench.Replay{Repo: "o/r", PR: tc.pr},
+			e := *recorded
+			db.experiment, db.scores, db.loadErr = &e, map[string]*bench.RunScore{}, nil
+			want := "already recorded experiment trial; give this one a workflow run of its own"
+			switch {
+			case change == nil:
+				db.loadErr = errors.New("connection reset")
+				want = "connection reset"
+			case name == "another replay":
+				change(&e)
+			default:
+				change(&e)
+				want = "recorded experiment trial from another experiment file, benchmark or commits"
 			}
-			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), fakeDeps(fake, db, judge), args, reportEnv(""), &stdout, &stderr)
-			if code != tc.code {
-				t.Fatalf("exit %d, want %d: %s", code, tc.code, stderr.String())
-			}
-			refused := strings.Contains(stderr.String(), "workflow run 42 attempt 1 already recorded experiment earlier")
-			if refused != (tc.code != 0) || (tc.code != 0 && len(db.scores) != 0) {
-				t.Fatalf("refused %v, scores %v: %s", refused, db.scores, stderr.String())
+			code, errs := report()
+			if code != 1 || !strings.Contains(errs, want) || len(db.scores) != 0 {
+				t.Fatalf("exit %d, scores %v, want %q in: %s", code, db.scores, want, errs)
 			}
 		})
 	}

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/SnapdragonPartners/buggrit/internal/bench"
@@ -140,23 +142,45 @@ func experimentRecord(ctx context.Context, d deps, db benchDB, w bench.WorkflowR
 	if err != nil {
 		return nil, err //nolint:wrapcheck // names the experiment
 	}
-	if id != rec.ID {
-		// The workflow run already recorded an experiment. This one's
-		// report again (a rerun report step) has its replay; any other
-		// would have its scores filed under that one. prepare refuses a
-		// used workflow run earlier, but report can run without it, and two
-		// local runs given one ID both pass prepare before either reports.
-		prev, lerr := db.LoadExperiment(ctx, w)
-		if lerr != nil {
-			return nil, lerr //nolint:wrapcheck // names the workflow run
-		}
-		if prev.Replay == nil || prev.Replay.Repo != replay.Repo || prev.Replay.PR != replay.PR {
-			return nil, fmt.Errorf("workflow run %d attempt %d already recorded experiment %s; give this one a workflow run of its own",
-				w.ID, w.Attempt, prev.Experiment.Name)
-		}
+	if id == rec.ID {
+		return rec, nil
 	}
-	rec.ID = id
-	return rec, nil
+	return recordedAgain(ctx, db, rec)
+}
+
+// recordedAgain handles a report whose workflow run already recorded an
+// experiment, which rec (its own, unsaved) is checked against.
+func recordedAgain(ctx context.Context, db benchDB, rec *bench.ExperimentRecord) (*bench.ExperimentRecord, error) {
+	w, replay := rec.Workflow, rec.Replay
+	// The workflow run already recorded an experiment, and its scores are
+	// filed under that one. Another replay is another experiment: refused.
+	// (prepare refuses a used workflow run earlier, but report can run
+	// without it, and two local runs given one ID both pass prepare before
+	// either reports.) The same replay is that experiment's report again,
+	// such as a rerun report step: it goes ahead from the recorded
+	// experiment, as a regenerated report does, and only if the file,
+	// benchmark and commits are the ones recorded, since scores refer to
+	// the defects they were judged against.
+	prev, err := db.LoadExperiment(ctx, w)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // names the workflow run
+	}
+	if prev.Replay == nil || prev.Replay.Repo != replay.Repo || prev.Replay.PR != replay.PR {
+		return nil, fmt.Errorf("workflow run %d attempt %d already recorded experiment %s; give this one a workflow run of its own",
+			w.ID, w.Attempt, prev.Experiment.Name)
+	}
+	if prev.BenchmarkHash != rec.BenchmarkHash || !maps.Equal(prev.Commits, rec.Commits) || !sameJSON(prev.Spec, rec.Spec) {
+		return nil, fmt.Errorf("workflow run %d attempt %d recorded experiment %s from another experiment file, benchmark or commits; "+
+			"regenerate its report with --workflow-run alone", w.ID, w.Attempt, prev.Experiment.Name)
+	}
+	return prev, nil
+}
+
+// sameJSON reports whether a and b hold the same JSON value. The database
+// keeps a spec as jsonb, which doesn't keep its bytes.
+func sameJSON(a, b []byte) bool {
+	var va, vb any
+	return json.Unmarshal(a, &va) == nil && json.Unmarshal(b, &vb) == nil && reflect.DeepEqual(va, vb)
 }
 
 // parseCommits decodes prepare's commits, which must name a full SHA for
