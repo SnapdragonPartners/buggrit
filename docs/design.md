@@ -489,7 +489,9 @@ so a large file costs time, not memory.
 Each stage is a `toolloop` run. The tools are read-only and rooted at the
 checkout:
 - `read_file(path, start_line, end_line)`
-- `grep(pattern, path_glob, ignore_case)`
+- `grep(pattern, path, path_glob, ignore_case)`: `path` is a file or a
+  directory to search below; `path_glob` narrows by pattern; given both,
+  grep searches their intersection
 - `list_dir(path)`
 - `get_diff(path, offset)`: one file's diff with head-side line numbers, or,
   with no path, the list of changed files. `offset` continues output that
