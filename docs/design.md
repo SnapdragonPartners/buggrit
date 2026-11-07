@@ -492,8 +492,10 @@ checkout:
 - `grep(pattern, path, path_glob, ignore_case)`: `path` is a file or a
   directory to search below; `path_glob` narrows by pattern, matched
   against the whole repository-relative path; given both, grep searches
-  their intersection. A named file grep can't search (binary, over 1 MiB),
-  or a named directory it can't read, is an error, not "no matches"
+  their intersection. `path` follows `read_file`'s rules (§10) and must
+  exist: a missing path, a path through a symlink, a file grep can't
+  search (binary, over 1 MiB, not a regular file), or a directory it
+  can't read is an error, not "no matches"
 - `list_dir(path)`
 - `get_diff(path, offset)`: one file's diff with head-side line numbers, or,
   with no path, the list of changed files. `offset` continues output that
