@@ -269,11 +269,11 @@ ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 -- The finder's turn metrics by identity group, over live runs, for
 -- changes that aim to cut turns (#72). front_load: of the files the
 -- opening message names that the finder reads at some point (read_file or
--- get_diff), the share it first reads on turn 1. The opening names the
+-- get_diff calls that succeeded), the share it first reads on turn 1. The opening names the
 -- changed files, shown or deferred, and any file whose path appears in its
 -- text; a named file never read isn't counted. reads_per_file and
 -- lines_per_read cover read_file calls that returned lines, measured from
--- the result's "(lines a-b of n)" header and any truncation note.
+-- the result's "(lines a-b of n)" header and its closing truncation note.
 -- ctx_per_turn is a find call's mean InputTokens: the context each turn
 -- carries. Paths are compared as written, so "./a.go" isn't "a.go".
 WITH r AS (
@@ -284,14 +284,15 @@ WITH r AS (
     WHERE complete AND NOT dry_run
 ), reads AS (
     SELECT run_id, call, payload->>'name' AS tool, payload->'parameters'->>'path' AS path,
-           CASE WHEN payload->>'name' = 'read_file' AND NOT coalesce((payload->>'is_error')::boolean, false) THEN
-               coalesce(substring(payload->>'result' FROM '\[truncated at line (\d+);')::int,
+           CASE WHEN payload->>'name' = 'read_file' THEN
+               coalesce(substring(payload->>'result' FROM '\n\[truncated at line (\d+); call read_file with start_line=\d+ to continue\]\n$')::int,
                         substring(payload->>'result' FROM '^[^\n]* \(lines \d+-(\d+) of \d+\)')::int)
                - substring(payload->>'result' FROM '^[^\n]* \(lines (\d+)-\d+ of \d+\)')::int + 1
            END AS lines
     FROM buggrit.event
     WHERE run_id IN (SELECT id FROM r) AND kind = 'tool' AND session = 'find'
       AND payload->>'name' IN ('read_file', 'get_diff') AND payload->'parameters'->>'path' IS NOT NULL
+      AND NOT coalesce((payload->>'is_error')::boolean, false)
 ), opening AS (
     SELECT run_id, string_agg(c->>'Text', E'\n') AS text
     FROM buggrit.event, jsonb_array_elements(payload->'message'->'Content') AS c

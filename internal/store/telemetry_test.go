@@ -90,13 +90,15 @@ func TestTelemetryRoundTrip(t *testing.T) {
 			s.Tool(toolloop.ToolCallEvent{Call: llms.ToolCall{ID: "t", Name: "get_diff", Parameters: json.RawMessage(`{"path": "a.go"}`)}})
 		}
 		// Reads for the turn metrics: a truncated read of a.go on turn 1
-		// (lines 10-2009, 2,000 lines), then b.go (50 lines) and a failed
-		// read on turn 2.
+		// (lines 10-2009, 2,000 lines) and a failed read of b.go, which
+		// doesn't count; then b.go (50 lines, one of which quotes a
+		// truncation note) and a failed read of c.go on turn 2.
 		switch i {
 		case 0:
 			s.Tool(readFile("a.go", "a.go (lines 10-2100 of 3000)\n    10| x\n[truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
+			s.Tool(readFile("b.go", "b.go has 50 lines; start_line 60 is past the end", true))
 		case 1:
-			s.Tool(readFile("b.go", "b.go (lines 1-50 of 50)\n     1| x\n", false))
+			s.Tool(readFile("b.go", "b.go (lines 1-50 of 50)\n     1| [truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
 			s.Tool(readFile("c.go", "read c.go: no such file or directory", true))
 		}
 	}
@@ -179,9 +181,10 @@ func readFile(path, result string, isErr bool) toolloop.ToolCallEvent {
 
 // The documented turn metrics compute what they say on the round trip's
 // run, copied so its group has two runs and a spread: a.go is changed and
-// b.go named in the opening, a.go read on turn 1 and b.go on turn 2
-// (front load ½); two reads that returned lines, of two files, 2,000 and
-// 50 lines long; four calls of 100 input tokens.
+// b.go named in the opening, a.go read on turn 1 and b.go on turn 2,
+// after a failed read on turn 1 (front load ½); two reads that returned
+// lines, of two files, 2,000 and 50 lines long; four calls of 100 input
+// tokens.
 func checkTurnMetrics(t *testing.T, db *sql.DB, runID string) {
 	t.Helper()
 	const copyID = "0d9e8f7a-6b5c-4d3e-8f21-0a1b2c3d4e5f"
