@@ -89,16 +89,22 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		if i < 2 {
 			s.Tool(toolloop.ToolCallEvent{Call: llms.ToolCall{ID: "t", Name: "get_diff", Parameters: json.RawMessage(`{"path": "a.go"}`)}})
 		}
-		// Reads for the turn metrics: a truncated read of a.go on turn 1
-		// (lines 10-2009, 2,000 lines) and a failed read of b.go, which
-		// doesn't count; then b.go (50 lines, one of which quotes a
-		// truncation note) and a failed read of c.go on turn 2.
+		// Reads for the turn metrics, each result ending with the pass
+		// clock's footer as recorded: a truncated read of a.go on turn 1
+		// (lines 10-2009, 2,000 lines), a get_diff listing (no path; it
+		// isn't a read) and a failed read of b.go, which doesn't count; then
+		// b.go, spelled " ./b.go" (50 lines, one of which quotes a
+		// truncation note), and a failed read of c.go on turn 2.
 		switch i {
 		case 0:
 			s.Tool(readFile("a.go", "a.go (lines 10-2100 of 3000)\n    10| x\n[truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
+			s.Tool(toolloop.ToolCallEvent{
+				Call:   llms.ToolCall{ID: "l", Name: "get_diff", Parameters: json.RawMessage(`{"path": ""}`)},
+				Result: toolloop.ToolResult{Content: "a.go (modified)" + clockFooter},
+			})
 			s.Tool(readFile("b.go", "b.go has 50 lines; start_line 60 is past the end", true))
 		case 1:
-			s.Tool(readFile("b.go", "b.go (lines 1-50 of 50)\n     1| [truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
+			s.Tool(readFile(" ./b.go", "b.go (lines 1-50 of 50)\n     1| [truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
 			s.Tool(readFile("c.go", "read c.go: no such file or directory", true))
 		}
 	}
@@ -172,10 +178,14 @@ func TestTelemetryRoundTrip(t *testing.T) {
 	checkDocQueries(t, db, run.ID, false)
 }
 
+// clockFooter ends every tool result a timed pass records (review's
+// passClock.timed).
+const clockFooter = "\n\n[time: 3 min of 30 min used; submit by 22 min]"
+
 func readFile(path, result string, isErr bool) toolloop.ToolCallEvent {
 	return toolloop.ToolCallEvent{
 		Call:   llms.ToolCall{ID: "r", Name: "read_file", Parameters: json.RawMessage(`{"path": "` + path + `"}`)},
-		Result: toolloop.ToolResult{Content: result, IsError: isErr},
+		Result: toolloop.ToolResult{Content: result + clockFooter, IsError: isErr},
 	}
 }
 

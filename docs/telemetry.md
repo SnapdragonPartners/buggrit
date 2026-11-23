@@ -269,13 +269,16 @@ ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 -- The finder's turn metrics by identity group, over live runs, for
 -- changes that aim to cut turns (#72). front_load: of the files the
 -- opening message names that the finder reads at some point (read_file or
--- get_diff calls that succeeded), the share it first reads on turn 1. The opening names the
--- changed files, shown or deferred, and any file whose path appears in its
--- text; a named file never read isn't counted. reads_per_file and
+-- get_diff calls that succeeded; get_diff without a path only lists the
+-- changed files), the share it first reads on turn 1. The opening names
+-- the changed files, shown or deferred, and any file whose path appears in
+-- its text; a named file never read isn't counted. reads_per_file and
 -- lines_per_read cover read_file calls that returned lines, measured from
--- the result's "(lines a-b of n)" header and its closing truncation note.
--- ctx_per_turn is a find call's mean InputTokens: the context each turn
--- carries. Paths are compared as written, so "./a.go" isn't "a.go".
+-- the result's "(lines a-b of n)" header and its truncation note (the
+-- pass clock's footer follows it). ctx_per_turn is a find call's mean
+-- InputTokens: the context each turn carries. Paths are trimmed and lose
+-- a leading "./", as get_diff does; other spellings ("x/../a.go") aren't
+-- cleaned.
 WITH r AS (
     SELECT id, repo, label,
            jsonb_build_object('models', meta->'models', 'mph', meta->'mph',
@@ -283,16 +286,21 @@ WITH r AS (
     FROM buggrit.run
     WHERE complete AND NOT dry_run
 ), reads AS (
-    SELECT run_id, call, payload->>'name' AS tool, payload->'parameters'->>'path' AS path,
-           CASE WHEN payload->>'name' = 'read_file' THEN
-               coalesce(substring(payload->>'result' FROM '\n\[truncated at line (\d+); call read_file with start_line=\d+ to continue\]\n$')::int,
-                        substring(payload->>'result' FROM '^[^\n]* \(lines \d+-(\d+) of \d+\)')::int)
-               - substring(payload->>'result' FROM '^[^\n]* \(lines (\d+)-\d+ of \d+\)')::int + 1
+    SELECT run_id, call, tool, path,
+           CASE WHEN tool = 'read_file' THEN
+               coalesce(substring(result FROM '\n\[truncated at line (\d+); call read_file with start_line=\d+ to continue\]\n')::int,
+                        substring(result FROM '^[^\n]* \(lines \d+-(\d+) of \d+\)')::int)
+               - substring(result FROM '^[^\n]* \(lines (\d+)-\d+ of \d+\)')::int + 1
            END AS lines
-    FROM buggrit.event
-    WHERE run_id IN (SELECT id FROM r) AND kind = 'tool' AND session = 'find'
-      AND payload->>'name' IN ('read_file', 'get_diff') AND payload->'parameters'->>'path' IS NOT NULL
-      AND NOT coalesce((payload->>'is_error')::boolean, false)
+    FROM (
+        SELECT run_id, call, payload->>'name' AS tool, payload->>'result' AS result,
+               regexp_replace(regexp_replace(payload->'parameters'->>'path', '^\s+|\s+$', '', 'g'), '^\./', '') AS path
+        FROM buggrit.event
+        WHERE run_id IN (SELECT id FROM r) AND kind = 'tool' AND session = 'find'
+          AND payload->>'name' IN ('read_file', 'get_diff')
+          AND NOT coalesce((payload->>'is_error')::boolean, false)
+    ) t
+    WHERE path <> ''
 ), opening AS (
     SELECT run_id, string_agg(c->>'Text', E'\n') AS text
     FROM buggrit.event, jsonb_array_elements(payload->'message'->'Content') AS c
