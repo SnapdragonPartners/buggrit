@@ -1371,14 +1371,20 @@ v0.8.0), the LunaRoute path
 ([#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
 v0.8.1), and the toolloop preallocation fix
 ([#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73),
-v0.9.0). Since then, buggrit is on maestro-llms v0.14.0, which brought the
-empty-response and deadline outcomes and the unlimited-iteration setting
-(v0.10.0), per-stage reasoning control (§4,
-[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86), v0.11.0),
-the context-overflow outcome and the `openaicompat` rename (v0.13.0), and
-toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit
-still drops a canceled run's dangling tool-call turn before the wrap-up
-(§9); that isn't toolloop's to fix.
+v0.9.0). Later releases brought the empty-response and deadline outcomes
+and the unlimited-iteration setting (v0.10.0), per-stage reasoning control
+(§4, [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86),
+v0.11.0), `bucket/postgres` for the shared rate limit (§9, v0.12.0), the
+context-overflow outcome and the `openaicompat` rename (v0.13.0), and
+toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit is
+now on maestro-llms v1.8.0. v1.8.0 raises the bucket schema to v2, which
+`buggrit db migrate` applies, and reports an acquire whose commit outcome is
+unknown as an error rather than a refusal, which §9's breaker counts as a
+backend failure. Open upstream:
+[#197](https://github.com/SnapdragonPartners/maestro-llms/issues/197), a
+single timed-out acquire attempt ends the whole wait; the breaker covers it
+meanwhile. buggrit still drops a canceled run's dangling tool-call turn
+before the wrap-up (§9); that isn't toolloop's to fix.
 
 ### Benchmarks
 
