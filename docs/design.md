@@ -1185,14 +1185,27 @@ ADR-0025).
   own.
 - **A run never hangs on the bucket.** A lease wait is bounded by the
   bucket's `max_wait`, a quarter of `pass_deadline` by default. When the
-  wait runs out, or the backend fails, the run uses only its own limit from
-  then on, and says why in the database warning (§6). A lease lost while a
-  call held it (its renewal failed, so the limit may have been exceeded
-  once) goes in the warning too, but the run keeps using the bucket. A call
-  whose own context ends while waiting fails as it would without the
-  bucket. Leases are renewed for at most the longest stage's
+  wait runs out, or the bucket can never admit the call, the bucket is
+  working but can't serve this run, so the run uses only its own limit from
+  then on. A call whose own context ends while waiting fails as it would
+  without the bucket. Leases are renewed for at most the longest stage's
   `request_timeout` plus a minute (at least maestro-llms' default of 15
   minutes), so a call that runs to its timeout keeps its lease.
+- **A backend failure is a blip until it repeats.** A call whose lease
+  fails for any other reason (acquiring, reconciling tokens or releasing)
+  goes ahead on the run's own limit, and the next call asks the bucket
+  again. Three failures in a row open a circuit breaker: calls skip the
+  bucket for a minute, then one trial call asks it, and when that works the
+  run uses the bucket again. A failed trial doubles the wait, up to eight
+  minutes. The breaker covers every stage, since every bucket lives in the
+  one backend. One dropped round trip on the internet path from a runner to
+  the database is expected, and taking a run off the shared limit for the
+  rest of its pass would let it exceed the limit the other runs keep.
+- **The warning says what happened** (§6): one line summing up the
+  backend's failures and how long the run was off the shared limit, the
+  reason a bucket was given up, and any lease lost while a call held it
+  (its renewal failed, so the limit may have been exceeded once). A lost
+  lease doesn't stop the run using the bucket.
 - **Queueing shows.** The job summary says how long the run waited for
   leases in total, so time spent behind other repositories' runs isn't
   mistaken for model time.
