@@ -72,7 +72,7 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		return resp, nil
 	}}
 	s := rec.Session("find")
-	s.Emit(telemetry.KindOpening, map[string]any{"diff": []map[string]any{{"path": "a.go", "bytes": 10}}})
+	s.Emit(telemetry.KindOpening, map[string]any{"diff": []map[string]any{{"path": "a.go", "bytes": 10}}, "deferred": []string{"d.go"}})
 	// Through maestro-llms' middleware, so each call's attempt is recorded.
 	client := s.Chat(middleware.RecommendedChat(fake, middleware.RecommendedConfig{Observer: attempts{rec}}))
 	var msgs []llms.Message
@@ -94,7 +94,8 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		// (lines 10-2009, 2,000 lines), a get_diff listing (no path; it
 		// isn't a read) and a failed read of b.go, which doesn't count; then
 		// b.go, spelled " ./b.go" (50 lines, one of which quotes a
-		// truncation note), and a failed read of c.go on turn 2.
+		// truncation note), a failed read of c.go, and the deferred d.go,
+		// read only through get_diff, on turn 2.
 		switch i {
 		case 0:
 			s.Tool(readFile("a.go", "a.go (lines 10-2100 of 3000)\n    10| x\n[truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
@@ -106,6 +107,10 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		case 1:
 			s.Tool(readFile(" ./b.go", "b.go (lines 1-50 of 50)\n     1| [truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
 			s.Tool(readFile("c.go", "read c.go: no such file or directory", true))
+			s.Tool(toolloop.ToolCallEvent{
+				Call:   llms.ToolCall{ID: "d", Name: "get_diff", Parameters: json.RawMessage(`{"path": "d.go"}`)},
+				Result: toolloop.ToolResult{Content: "=== d.go\n@@ -1 +1 @@" + clockFooter},
+			})
 		}
 	}
 	// A clean pass, and a verifier whose opening showed no diff: the
@@ -190,9 +195,10 @@ func readFile(path, result string, isErr bool) toolloop.ToolCallEvent {
 }
 
 // The documented turn metrics compute what they say on the round trip's
-// run, copied so its group has two runs and a spread: a.go is changed and
-// b.go named in the opening, a.go read on turn 1 and b.go on turn 2,
-// after a failed read on turn 1 (front load ½); two reads that returned
+// run, copied so its group has two runs and a spread: a.go is changed,
+// d.go changed and deferred, and b.go named in the opening; a.go is read
+// on turn 1, b.go on turn 2 after a failed read on turn 1, and d.go on
+// turn 2 through get_diff alone (front load ⅓); two reads that returned
 // lines, of two files, 2,000 and 50 lines long; four calls of 100 input
 // tokens.
 func checkTurnMetrics(t *testing.T, db *sql.DB, runID string) {
@@ -244,7 +250,7 @@ func checkTurnMetrics(t *testing.T, db *sql.DB, runID string) {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"runs": "2", "front_load": "0.50", "front_load_sd": "0.00", "reads_per_file": "1.00",
+		"runs": "2", "front_load": "0.33", "front_load_sd": "0.00", "reads_per_file": "1.00",
 		"lines_per_read": "1025", "turns": "4.0", "ctx_per_turn": "100",
 	}
 	if len(got) != 1 {

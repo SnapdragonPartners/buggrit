@@ -272,12 +272,16 @@ ORDER BY r.repo, find_model, effort, prompt, tools, commit, r.label, "group";
 -- get_diff calls that succeeded; get_diff without a path only lists the
 -- changed files), the share it first reads on turn 1. The opening names
 -- the changed files, shown or deferred, and any file whose path appears in
--- its text; a named file never read isn't counted. reads_per_file and
+-- its text; a named file never read isn't counted. front_load_sd is the
+-- sample sd, empty for a group of one run. reads_per_file and
 -- lines_per_read cover read_file calls that returned lines, measured from
 -- the result's "(lines a-b of n)" header and its truncation note (the
 -- pass clock's footer follows it). ctx_per_turn is a find call's mean
--- InputTokens: the context each turn carries. Paths are trimmed and lose
--- a leading "./", as get_diff does; other spellings ("x/../a.go") aren't
+-- InputTokens: the context each turn carries. runs counts the runs in
+-- which the finder made a call; a run with nothing to measure for a
+-- metric (no named file read, or no read_file that returned lines) is
+-- left out of that metric's average and sd. Paths are trimmed and lose a
+-- leading "./", as get_diff does; other spellings ("x/../a.go") aren't
 -- cleaned.
 WITH r AS (
     SELECT id, repo, label,
