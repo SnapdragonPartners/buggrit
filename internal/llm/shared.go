@@ -324,13 +324,14 @@ type sharedReservation struct {
 	own, lease ratelimit.Reservation
 	limiter    *sharedLimiter
 	// failed is set once this lease's backend has failed, so a call whose
-	// commit and release both fail counts once toward the breaker.
+	// commit and release both fail counts once.
 	failed bool
 }
 
 // Commit implements ratelimit.Reservation. The middleware discards its
-// error, so a backend failure here counts toward the breaker, as one while
-// acquiring does.
+// error, so a backend failure is counted and reported here. It joins
+// the streak, but the next granted lease ends that, so it can't open the
+// breaker alone.
 //
 //nolint:gocritic // hugeParam: the signature is fixed by ratelimit.Reservation
 func (r *sharedReservation) Commit(ctx context.Context, usage llms.Usage) error {
@@ -344,7 +345,7 @@ func (r *sharedReservation) Commit(ctx context.Context, usage llms.Usage) error 
 // Release implements ratelimit.Reservation. A lease that was lost while
 // held (its renewal failed, so another holder may have had the slot) is
 // reported, and the run goes on using the bucket. Any other failure is the
-// backend's, and counts toward the breaker; the middleware discards the
+// backend's, and is counted as Commit's is; the middleware discards the
 // error, so this is the only place it's seen.
 func (r *sharedReservation) Release(ctx context.Context) error {
 	err := r.lease.Release(ctx)

@@ -1148,8 +1148,9 @@ turns leave more of the budget for reasoning.
 **Concurrency.** Every model call goes through a `Limiter` seam in
 `internal/llm`: a semaphore of `max_concurrency` for the run, and for a
 stage that shares a rate limit across runs (below), a lease on its bucket
-too. Retry, timeout and circuit-breaker policy come from the `maestro-llms`
-recommended chain.
+too. Retry, timeout and circuit-breaker policy for model calls come from
+the `maestro-llms` recommended chain. The shared limit's own breaker,
+below, is buggrit's, and guards only the bucket's backend.
 
 ### Shared rate limit
 
@@ -1191,14 +1192,18 @@ ADR-0025).
   without the bucket. Leases are renewed for at most the longest stage's
   `request_timeout` plus a minute (at least maestro-llms' default of 15
   minutes), so a call that runs to its timeout keeps its lease.
-- **A backend failure is a blip until it repeats.** A call whose lease
-  fails for any other reason (acquiring, reconciling tokens or releasing)
-  goes ahead on the run's own limit, and the next call asks the bucket
-  again. Three failures in a row open a circuit breaker: calls skip the
-  bucket for a minute, then one trial call asks it, and when that works the
-  run uses the bucket again. A failed trial doubles the wait, up to eight
-  minutes. The breaker covers every stage, since every bucket lives in the
-  one backend. One dropped round trip on the internet path from a runner to
+- **A backend failure is a blip until it repeats.** A call whose acquire
+  fails for any other reason goes ahead on the run's own limit, and the
+  next call asks the bucket again. Three failures in a row open a circuit
+  breaker, buggrit's own and separate from the model calls' middleware:
+  calls skip the bucket for a minute, then one trial call asks it, and when
+  that works the run uses the bucket again. A failed trial doubles the
+  wait, up to eight minutes. A lease granted is the backend working, so it
+  ends the streak; a failure reconciling tokens or releasing a granted
+  lease goes in the warning and into the streak, but the next granted lease
+  clears it, so those failures alone never open the breaker. (The bucket
+  takes back an unreleased lease when it expires.) The breaker covers every
+  stage, since every bucket lives in the one backend. One dropped round trip on the internet path from a runner to
   the database is expected, and taking a run off the shared limit for the
   rest of its pass would let it exceed the limit the other runs keep.
 - **The warning says what happened** (§6): one line summing up the

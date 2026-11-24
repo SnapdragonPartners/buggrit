@@ -479,6 +479,51 @@ func TestSharedCanceledWait(t *testing.T) {
 	}
 }
 
+// A lease granted before the breaker opened, failing on release while it's
+// open, is counted and reported but changes nothing: the breaker stays open
+// for its first cooldown, and it's still the first time it opened.
+func TestSharedReleaseFailsWhileOpen(t *testing.T) {
+	ctx := context.Background()
+	clk := &fakeClock{t: time.Date(2026, 11, 23, 21, 0, 0, 0, time.UTC)}
+	state := &SharedState{now: clk.now}
+	local, err := ratelimit.NewInMemoryLimiter(ratelimit.Config{MaxConcurrency: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &fakeBucket{lease: &fakeLease{releaseErr: errors.New("release: timeout")}}
+	l := newSharedLimiter(local, b, SharedStage{Bucket: "luna"}, state)
+	reserve := func() ratelimit.Reservation {
+		t.Helper()
+		r, err := l.Reserve(ctx, reservation())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	held := reserve()
+
+	b.err = errors.New("connection refused")
+	for range breakerThreshold {
+		_ = reserve().Release(ctx)
+	}
+	asked(t, b, breakerThreshold+1)
+
+	clk.advance(breakerCooldown / 2)
+	if err := held.Release(ctx); err == nil || !strings.Contains(err.Error(), "release: timeout") {
+		t.Fatalf("release = %v", err)
+	}
+	_ = reserve().Release(ctx)
+	asked(t, b, breakerThreshold+1)
+
+	clk.advance(breakerCooldown / 2)
+	_ = reserve().Release(ctx)
+	asked(t, b, breakerThreshold+2)
+	p := state.Problems()
+	if len(p) != 1 || !strings.Contains(p[0], "failed 5 times") || !strings.Contains(p[0], "its own limit 1 time") {
+		t.Errorf("problems = %q", p)
+	}
+}
+
 // A lease lost while held is reported, and the run goes on using the
 // bucket.
 func TestSharedLostLease(t *testing.T) {
@@ -504,9 +549,10 @@ func reservation() ratelimit.ReservationRequest {
 }
 
 // A backend failure after the lease was granted, while reconciling tokens
-// or releasing, counts toward the breaker like one while acquiring,
-// although the middleware discards the error. A call whose commit and
-// release both fail counts once.
+// or releasing, is counted and reported, although the middleware discards
+// the error. A call whose commit and release both fail counts once. The
+// next granted lease ends the streak, so these alone never open the
+// breaker.
 func TestSharedLeaseBackendFailure(t *testing.T) {
 	for name, tc := range map[string]struct {
 		lease *fakeLease
