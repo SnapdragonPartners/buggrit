@@ -188,7 +188,7 @@ func TestReviewSharedLimitFails(t *testing.T) {
 		t.Errorf("ensured %v, closed %v", fs.buckets.ensured, fs.closed)
 	}
 	summary, err := os.ReadFile(e.summary)
-	if err != nil || !strings.Contains(string(summary), "### Shared rate limit") || !strings.Contains(string(summary), `"luna" failed`) {
+	if err != nil || !strings.Contains(string(summary), "### Shared rate limit") || !strings.Contains(string(summary), `shared rate limit failed 1 time (last: "luna": `) {
 		t.Errorf("job summary = %q, %v", summary, err)
 	}
 	var warned bool

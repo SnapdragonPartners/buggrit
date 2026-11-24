@@ -1148,8 +1148,9 @@ turns leave more of the budget for reasoning.
 **Concurrency.** Every model call goes through a `Limiter` seam in
 `internal/llm`: a semaphore of `max_concurrency` for the run, and for a
 stage that shares a rate limit across runs (below), a lease on its bucket
-too. Retry, timeout and circuit-breaker policy come from the `maestro-llms`
-recommended chain.
+too. Retry, timeout and circuit-breaker policy for model calls come from
+the `maestro-llms` recommended chain. The shared limit's own breaker,
+below, is buggrit's, and guards only the bucket's backend.
 
 ### Shared rate limit
 
@@ -1185,14 +1186,31 @@ ADR-0025).
   own.
 - **A run never hangs on the bucket.** A lease wait is bounded by the
   bucket's `max_wait`, a quarter of `pass_deadline` by default. When the
-  wait runs out, or the backend fails, the run uses only its own limit from
-  then on, and says why in the database warning (§6). A lease lost while a
-  call held it (its renewal failed, so the limit may have been exceeded
-  once) goes in the warning too, but the run keeps using the bucket. A call
-  whose own context ends while waiting fails as it would without the
-  bucket. Leases are renewed for at most the longest stage's
+  wait runs out, or the bucket can never admit the call, the bucket is
+  working but can't serve this run, so the run uses only its own limit from
+  then on. A call whose own context ends while waiting fails as it would
+  without the bucket. Leases are renewed for at most the longest stage's
   `request_timeout` plus a minute (at least maestro-llms' default of 15
   minutes), so a call that runs to its timeout keeps its lease.
+- **A backend failure is a blip until it repeats.** A call whose acquire
+  fails for any other reason goes ahead on the run's own limit, and the
+  next call asks the bucket again. Three failures in a row open a circuit
+  breaker, buggrit's own and separate from the model calls' middleware:
+  calls skip the bucket for a minute, then one trial call asks it, and when
+  that works the run uses the bucket again. A failed trial doubles the
+  wait, up to eight minutes. A lease granted is the backend working, so it
+  ends the streak; a failure reconciling tokens or releasing a granted
+  lease goes in the warning and into the streak, but the next granted lease
+  clears it, so those failures alone never open the breaker. (The bucket
+  takes back an unreleased lease when it expires.) The breaker covers every
+  stage, since every bucket lives in the one backend. One dropped round trip on the internet path from a runner to
+  the database is expected, and taking a run off the shared limit for the
+  rest of its pass would let it exceed the limit the other runs keep.
+- **The warning says what happened** (§6): one line summing up the
+  backend's failures and how long the run was off the shared limit, the
+  reason a bucket was given up, and any lease lost while a call held it
+  (its renewal failed, so the limit may have been exceeded once). A lost
+  lease doesn't stop the run using the bucket.
 - **Queueing shows.** The job summary says how long the run waited for
   leases in total, so time spent behind other repositories' runs isn't
   mistaken for model time.
@@ -1358,14 +1376,20 @@ v0.8.0), the LunaRoute path
 ([#54](https://github.com/SnapdragonPartners/maestro-llms/issues/54),
 v0.8.1), and the toolloop preallocation fix
 ([#73](https://github.com/SnapdragonPartners/maestro-llms/issues/73),
-v0.9.0). Since then, buggrit is on maestro-llms v0.14.0, which brought the
-empty-response and deadline outcomes and the unlimited-iteration setting
-(v0.10.0), per-stage reasoning control (§4,
-[#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86), v0.11.0),
-the context-overflow outcome and the `openaicompat` rename (v0.13.0), and
-toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit
-still drops a canceled run's dangling tool-call turn before the wrap-up
-(§9); that isn't toolloop's to fix.
+v0.9.0). Later releases brought the empty-response and deadline outcomes
+and the unlimited-iteration setting (v0.10.0), per-stage reasoning control
+(§4, [#86](https://github.com/SnapdragonPartners/maestro-llms/issues/86),
+v0.11.0), `bucket/postgres` for the shared rate limit (§9, v0.12.0), the
+context-overflow outcome and the `openaicompat` rename (v0.13.0), and
+toolloop compaction (v0.14.0), which buggrit doesn't use (§13). buggrit is
+now on maestro-llms v1.8.0. v1.8.0 raises the bucket schema to v2, which
+`buggrit db migrate` applies, and reports an acquire whose commit outcome is
+unknown as an error rather than a refusal, which §9's breaker counts as a
+backend failure. Open upstream:
+[#197](https://github.com/SnapdragonPartners/maestro-llms/issues/197), a
+single timed-out acquire attempt ends the whole wait; the breaker covers it
+meanwhile. buggrit still drops a canceled run's dangling tool-call turn
+before the wrap-up (§9); that isn't toolloop's to fix.
 
 ### Benchmarks
 
