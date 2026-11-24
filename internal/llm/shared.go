@@ -110,6 +110,11 @@ func (s *SharedState) breakerProblem() string {
 		off += s.now().Sub(s.openedAt)
 		end = "it was still on its own limit at the end"
 	}
+	if s.done {
+		// A bucket given up on keeps the run on its own limit, whatever
+		// the breaker did; the give-up's own line says why.
+		end = "it was on its own limit at the end"
+	}
 	return fmt.Sprintf("%s; %d failures in a row switched this run to its own limit %d %s, for %s in all, and %s",
 		failed, breakerThreshold, s.opened, plural(s.opened, "time", "times"), off.Round(time.Second), end)
 }

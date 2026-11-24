@@ -366,6 +366,56 @@ func TestSharedPermanentRefusal(t *testing.T) {
 	oneProblem(t, c, `"luna" can never admit`, "tokens exceed capacity")
 }
 
+// A refusal on the breaker's trial call gives the bucket up like any other:
+// no later trial asks it, and the warning says why. Each kind of refusal:
+// a permanent one, and max_wait running out.
+func TestSharedRefusalOnTrial(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err       error
+		untilDone bool
+		want      string
+	}{
+		"permanent": {err: &bucket.LimitError{Key: "luna", Reason: "tokens exceed capacity", Permanent: true}, want: `"luna" can never admit`},
+		"max_wait":  {err: &bucket.LimitError{Key: "luna", Reason: "full"}, untilDone: true, want: "no lease within max_wait (10ms)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := &fakeBucket{err: errors.New("connection refused")}
+			c, clk := breakerClients(t, b, 10*time.Millisecond)
+			calls(t, c, breakerThreshold)
+			clk.advance(breakerCooldown)
+			b.err, b.untilDone = tc.err, tc.untilDone
+			calls(t, c, 1)
+			asked(t, b, breakerThreshold+1)
+
+			clk.advance(time.Hour)
+			calls(t, c, 3)
+			asked(t, b, breakerThreshold+1)
+			p := c.Shared.Problems()
+			if len(p) != 2 || !strings.Contains(p[0], "it was on its own limit at the end") || !strings.Contains(p[1], tc.want) {
+				t.Errorf("problems = %q", p)
+			}
+		})
+	}
+}
+
+// A bucket given up on after the breaker closed: the breaker's line
+// doesn't claim the run was back on the shared limit.
+func TestSharedGiveUpAfterBreakerClosed(t *testing.T) {
+	b := &fakeBucket{err: errors.New("connection refused")}
+	c, clk := breakerClients(t, b, 0)
+	calls(t, c, breakerThreshold)
+	clk.advance(breakerCooldown)
+	b.err = nil
+	calls(t, c, 1)
+	b.err = &bucket.LimitError{Key: "luna", Reason: "tokens exceed capacity", Permanent: true}
+	calls(t, c, 2)
+	asked(t, b, breakerThreshold+2)
+	p := c.Shared.Problems()
+	if len(p) != 2 || !strings.Contains(p[0], "for 1m0s in all, and it was on its own limit at the end") || !strings.Contains(p[1], "can never admit") {
+		t.Errorf("problems = %q", p)
+	}
+}
+
 // An error that isn't a refusal is the backend's even when it arrives as
 // max_wait ends (maestro-llms reports a commit whose outcome is unknown
 // that way): it counts toward the breaker instead of giving the bucket up.
