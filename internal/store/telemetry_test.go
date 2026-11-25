@@ -72,12 +72,12 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		return resp, nil
 	}}
 	s := rec.Session("find")
-	s.Emit(telemetry.KindOpening, map[string]any{"diff": []map[string]any{{"path": "a.go", "bytes": 10}}})
+	s.Emit(telemetry.KindOpening, map[string]any{"diff": []map[string]any{{"path": "a.go", "bytes": 10}}, "deferred": []string{"d.go"}})
 	// Through maestro-llms' middleware, so each call's attempt is recorded.
 	client := s.Chat(middleware.RecommendedChat(fake, middleware.RecommendedConfig{Observer: attempts{rec}}))
 	var msgs []llms.Message
 	for i := range 4 {
-		msgs = append(msgs, llms.UserText(strings.Repeat("x", i)+"\x00"))
+		msgs = append(msgs, llms.UserText("b.go"+strings.Repeat("x", i)+"\x00")) // the opening names b.go
 		if i == 3 {
 			msgs = append(msgs[:2], llms.UserText("nudge")) // cut back, then append
 		}
@@ -88,6 +88,29 @@ func TestTelemetryRoundTrip(t *testing.T) {
 		// opening, then repeated too.
 		if i < 2 {
 			s.Tool(toolloop.ToolCallEvent{Call: llms.ToolCall{ID: "t", Name: "get_diff", Parameters: json.RawMessage(`{"path": "a.go"}`)}})
+		}
+		// Reads for the turn metrics, each result ending with the pass
+		// clock's footer as recorded: a truncated read of a.go on turn 1
+		// (lines 10-2009, 2,000 lines), a get_diff listing (no path; it
+		// isn't a read) and a failed read of b.go, which doesn't count; then
+		// b.go, spelled " ./b.go" (50 lines, one of which quotes a
+		// truncation note), a failed read of c.go, and the deferred d.go,
+		// read only through get_diff, on turn 2.
+		switch i {
+		case 0:
+			s.Tool(readFile("a.go", "a.go (lines 10-2100 of 3000)\n    10| x\n[truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
+			s.Tool(toolloop.ToolCallEvent{
+				Call:   llms.ToolCall{ID: "l", Name: "get_diff", Parameters: json.RawMessage(`{"path": ""}`)},
+				Result: toolloop.ToolResult{Content: "a.go (modified)" + clockFooter},
+			})
+			s.Tool(readFile("b.go", "b.go has 50 lines; start_line 60 is past the end", true))
+		case 1:
+			s.Tool(readFile(" ./b.go", "b.go (lines 1-50 of 50)\n     1| [truncated at line 2009; call read_file with start_line=2010 to continue]\n", false))
+			s.Tool(readFile("c.go", "read c.go: no such file or directory", true))
+			s.Tool(toolloop.ToolCallEvent{
+				Call:   llms.ToolCall{ID: "d", Name: "get_diff", Parameters: json.RawMessage(`{"path": "d.go"}`)},
+				Result: toolloop.ToolResult{Content: "=== d.go\n@@ -1 +1 @@" + clockFooter},
+			})
 		}
 	}
 	// A clean pass, and a verifier whose opening showed no diff: the
@@ -156,7 +179,88 @@ func TestTelemetryRoundTrip(t *testing.T) {
 			t.Errorf("call %d rebuilt as %v, want %v", n+1, got, want)
 		}
 	}
+	checkTurnMetrics(t, db, run.ID)
 	checkDocQueries(t, db, run.ID, false)
+}
+
+// clockFooter ends every tool result a timed pass records (review's
+// passClock.timed).
+const clockFooter = "\n\n[time: 3 min of 30 min used; submit by 22 min]"
+
+func readFile(path, result string, isErr bool) toolloop.ToolCallEvent {
+	return toolloop.ToolCallEvent{
+		Call:   llms.ToolCall{ID: "r", Name: "read_file", Parameters: json.RawMessage(`{"path": "` + path + `"}`)},
+		Result: toolloop.ToolResult{Content: result + clockFooter, IsError: isErr},
+	}
+}
+
+// The documented turn metrics compute what they say on the round trip's
+// run, copied so its group has two runs and a spread: a.go is changed,
+// d.go changed and deferred, and b.go named in the opening; a.go is read
+// on turn 1, b.go on turn 2 after a failed read on turn 1, and d.go on
+// turn 2 through get_diff alone (front load ⅓); two reads that returned
+// lines, of two files, 2,000 and 50 lines long; four calls of 100 input
+// tokens.
+func checkTurnMetrics(t *testing.T, db *sql.DB, runID string) {
+	t.Helper()
+	const copyID = "0d9e8f7a-6b5c-4d3e-8f21-0a1b2c3d4e5f"
+	for _, q := range []string{
+		`INSERT INTO buggrit.run (id, started_at, ended_at, repo, pr, head_sha, dry_run, label, meta, outcome, events_emitted, events_written, complete)
+		 SELECT $2, started_at, ended_at, repo, pr, head_sha, dry_run, label, meta, outcome, events_emitted, events_written, complete
+		 FROM buggrit.run WHERE id = $1`,
+		`INSERT INTO buggrit.event (run_id, seq, at, kind, session, call, payload)
+		 SELECT $2, seq, at, kind, session, call, payload FROM buggrit.event WHERE run_id = $1`,
+	} {
+		if _, err := db.Exec(q, runID, copyID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var query string
+	for _, q := range docQueries(t, strings.NewReplacer()) {
+		if strings.Contains(q, "front_load") {
+			query = q
+		}
+	}
+	if query == "" {
+		t.Fatal("no turn-metrics query in docs/telemetry.md")
+	}
+	rows, err := db.Query(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	cols, _ := rows.Columns()
+	var got []map[string]string
+	for rows.Next() {
+		vals := make([]sql.NullString, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		row := map[string]string{}
+		for i, c := range cols {
+			row[c] = vals[i].String
+		}
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"runs": "2", "front_load": "0.33", "front_load_sd": "0.00", "reads_per_file": "1.00",
+		"lines_per_read": "1025", "turns": "4.0", "ctx_per_turn": "100",
+	}
+	if len(got) != 1 {
+		t.Fatalf("turn metrics: %d rows, want 1: %v", len(got), got)
+	}
+	for k, v := range want {
+		if got[0][k] != v {
+			t.Errorf("turn metrics: %s = %q, want %q", k, got[0][k], v)
+		}
+	}
 }
 
 // Every documented query runs against the schema, and each of its columns
